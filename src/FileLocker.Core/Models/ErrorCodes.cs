@@ -61,6 +61,20 @@ public static class ErrorCodes
     public const string FolderGuardPathNotFolder = "FOLDER_GUARD_PATH_NOT_FOLDER";
     public const string FolderGuardContainsNestedGuarded = "FOLDER_GUARD_CONTAINS_NESTED_GUARDED";
 
+    // 對應「密碼庫」（Password Locker）：獨立於加密 Vault、資料夾防護之外的第三套憑證儲存，
+    // 見 FileLocker_密碼庫_功能規劃.md。跟 FolderGuard* 一樣不重用 Vault 既有的通用錯誤代碼，
+    // 因為前端要顯示的訊息文案（「密碼庫密碼錯誤」而不是泛用的「密碼錯誤」）需要各自獨立的翻譯詞條。
+    public const string PasswordLockerNotConfigured = "PASSWORD_LOCKER_NOT_CONFIGURED";
+    public const string PasswordLockerPasswordIncorrect = "PASSWORD_LOCKER_PASSWORD_INCORRECT";
+    public const string PasswordLockerPasskeyNotEnabled = "PASSWORD_LOCKER_PASSKEY_NOT_ENABLED";
+    public const string PasswordLockerPasskeyFailed = "PASSWORD_LOCKER_PASSKEY_FAILED";
+    public const string PasswordLockerRecoveryKeyNotEnabled = "PASSWORD_LOCKER_RECOVERY_KEY_NOT_ENABLED";
+    public const string PasswordLockerRecoveryKeyInvalidFormat = "PASSWORD_LOCKER_RECOVERY_KEY_INVALID_FORMAT";
+    public const string PasswordLockerRecoveryKeyIncorrect = "PASSWORD_LOCKER_RECOVERY_KEY_INCORRECT";
+    public const string PasswordLockerLockedOut = "PASSWORD_LOCKER_LOCKED_OUT";
+    public const string PasswordLockerEntryNotFound = "PASSWORD_LOCKER_ENTRY_NOT_FOUND";
+    public const string PasswordLockerNotVerified = "PASSWORD_LOCKER_NOT_VERIFIED";
+
     // 對應軟體更新檢查（installer_config.json 版本比對 GitHub release）。
     public const string UpdateCheckNotInstalled = "UPDATE_CHECK_NOT_INSTALLED";
     public const string UpdateCheckFailed = "UPDATE_CHECK_FAILED";

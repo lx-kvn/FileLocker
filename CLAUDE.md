@@ -11,7 +11,7 @@ FileLocker：Windows 檔案/資料夾加密工具。使用者在檔案總管選�
 
 另設有不使用加密功能，僅透過 Windows 存取權限限制資料夾的 `資料夾保護功能` ，詳情請見技術規格文件。
 
-GitHub: `https://github.com/Lai-xuan/FileLocker`（公開的Repo）
+GitHub: `https://github.com/lx-kvn/FileLocker`（公開的Repo）
 
 ## 技術棧
 

@@ -24,7 +24,7 @@
 
 ### 下載與安裝
 
-前往 [Releases](https://github.com/Lai-xuan/FileLocker/releases) 頁面下載最新安裝檔。安裝程式由作者自己開發的另一個專案 [mac-style-windows-installer](https://github.com/Lai-xuan/mac-style-windows-installer) 打包產生，目前尚未申請數位簽章，第一次執行時 Windows SmartScreen 可能會跳出警告——點「其他資訊」→「仍要執行」即可繼續安裝。
+前往 [Releases](https://github.com/lx-kvn/FileLocker/releases) 頁面下載最新安裝檔。安裝程式由作者自己開發的另一個專案 [mac-style-windows-installer](https://github.com/lx-kvn/mac-style-windows-installer) 打包產生，目前尚未申請數位簽章，第一次執行時 Windows SmartScreen 可能會跳出警告——點「其他資訊」→「仍要執行」即可繼續安裝。
 
 - **Argon2id + AES-256-GCM**：密碼經 Argon2id 衍生金鑰，內容用 AES-256-GCM 串流分塊加密，加密大型資料夾也不需要把整份明文塞進記憶體。
 - **三種互相獨立的解鎖方式**：密碼（必要）、Passkey（Windows Hello，裝置綁定）、恢復金鑰（一次性顯示的備援代碼）。
@@ -115,7 +115,7 @@ Select files or folders in File Explorer, right-click to encrypt: contents move 
 
 ### Download & install
 
-Grab the latest installer from the [Releases](https://github.com/Lai-xuan/FileLocker/releases) page. It's built with [mac-style-windows-installer](https://github.com/Lai-xuan/mac-style-windows-installer), another project by the same author. It isn't code-signed yet, so Windows SmartScreen may warn on first run — click "More info" → "Run anyway" to continue.
+Grab the latest installer from the [Releases](https://github.com/lx-kvn/FileLocker/releases) page. It's built with [mac-style-windows-installer](https://github.com/lx-kvn/mac-style-windows-installer), another project by the same author. It isn't code-signed yet, so Windows SmartScreen may warn on first run — click "More info" → "Run anyway" to continue.
 
 - **Argon2id + AES-256-GCM**: passwords are stretched with Argon2id; content is encrypted with chunked, streaming AES-256-GCM, so even large folders never need to sit fully in memory.
 - **Three independent unlock methods**: password (required), passkey (Windows Hello, device-bound), and a one-time-shown recovery key.

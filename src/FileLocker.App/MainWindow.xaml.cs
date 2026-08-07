@@ -416,7 +416,7 @@ public partial class MainWindow : Window
                     break;
 
                 case "openReleasesPage":
-                    Process.Start(new ProcessStartInfo { FileName = "https://github.com/Lai-xuan/FileLocker/releases", UseShellExecute = true });
+                    Process.Start(new ProcessStartInfo { FileName = "https://github.com/lx-kvn/FileLocker/releases", UseShellExecute = true });
                     break;
 
                 case "unlockFoldersForEncryption":
@@ -1070,7 +1070,7 @@ public partial class MainWindow : Window
     private async Task<(string? Tag, string? ReleaseNotes, string? DownloadUrl)> FetchLatestGitHubReleaseAsync()
     {
         s_updateCheckHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd("FileLocker-UpdateCheck");
-        var response = await s_updateCheckHttpClient.GetAsync("https://api.github.com/repos/Lai-xuan/FileLocker/releases/latest");
+        var response = await s_updateCheckHttpClient.GetAsync("https://api.github.com/repos/lx-kvn/FileLocker/releases/latest");
         if (!response.IsSuccessStatusCode)
         {
             return (null, null, null);

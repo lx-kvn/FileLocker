@@ -641,7 +641,7 @@ C++（`dllmain.cpp`），CLSID `{A1B2C3D4-E5F6-4789-9ABC-DEF012345678}`。實作
 
 ## 19. 安裝程式打包
 
-**已完成並可用**。最終編譯完成的 `FileLocker.App.exe`（含 C# 主程式 + Shell Extension DLL）打包成安裝檔，沿用既有的 **[mac-style-windows-installer](https://github.com/Lai-xuan/mac-style-windows-installer)** 專案，透過 `installer_config.json` 宣告安裝內容（`app_name`／`main_exe`／`file_associations`／`doc_icon`／`dependencies`／EULA 文字等，見第 16.4 節），不需要另外寫安裝腳本邏輯。
+**已完成並可用**。最終編譯完成的 `FileLocker.App.exe`（含 C# 主程式 + Shell Extension DLL）打包成安裝檔，沿用既有的 **[mac-style-windows-installer](https://github.com/lx-kvn/mac-style-windows-installer)** 專案，透過 `installer_config.json` 宣告安裝內容（`app_name`／`main_exe`／`file_associations`／`doc_icon`／`dependencies`／EULA 文字等，見第 16.4 節），不需要另外寫安裝腳本邏輯。
 
 安裝流程已對接的項目：主程式與 Shell Extension DLL（放同一資料夾，見第 16.3 節，安裝程式不需要處理任何 COM 登錄邏輯，App 啟動時自我註冊）、`.locked` 副檔名關聯與圖示（見第 16.4 節，`installer_config.json` 的 `file_associations`／`doc_icon`）、`.NET Desktop Runtime` 相依套件偵測安裝（`dependencies: ["dotnet_desktop"]`）、解除安裝程式（`uninstall.exe`）、安裝清單（`install_manifest.json`，供解除安裝時精確比對要移除哪些檔案）。安裝完成後的資料夾內容即為第 22 節「軟體更新檢查」下載回來的更新包會覆蓋的同一份結構。
 
@@ -750,7 +750,7 @@ ACL 拒絕規則掛在目前登入帳號的 SID 上，FileLocker App 自己的�
 
 設定頁一鍵檢查是否有新版本（`MainWindow.xaml.cs` 的 `HandleCheckForUpdatesRequestAsync`）：
 
-- **版本比對來源**：只讀取安裝內容資料夾裡的 `installer_config.json`（`FetchLatestGitHubReleaseAsync` 呼叫 `https://api.github.com/repos/Lai-xuan/FileLocker/releases/latest` 取得最新 Tag／說明／下載連結，跟本機 `installer_config.json` 裡的版本號比較）——這個檔案是 mac-style-windows-installer 安裝時才會放進安裝資料夾的（見第 19 節），直接以原始碼執行（`dotnet run`）的開發環境找不到這個檔案，不會顯示版本資訊，也不算錯誤情境。
+- **版本比對來源**：只讀取安裝內容資料夾裡的 `installer_config.json`（`FetchLatestGitHubReleaseAsync` 呼叫 `https://api.github.com/repos/lx-kvn/FileLocker/releases/latest` 取得最新 Tag／說明／下載連結，跟本機 `installer_config.json` 裡的版本號比較）——這個檔案是 mac-style-windows-installer 安裝時才會放進安裝資料夾的（見第 19 節），直接以原始碼執行（`dotnet run`）的開發環境找不到這個檔案，不會顯示版本資訊，也不算錯誤情境。
 - 發現新版本會自動跳出彈窗，內容是 GitHub Release 說明的 Markdown 渲染結果（獨立可捲動框框，避免長篇說明撐爆版面）。
 - 確認更新後直接下載安裝檔並啟動安裝程式；**安裝程式確認成功啟動後才關閉 FileLocker 本體**，避免「先關自己、安裝程式卻沒真的啟動」導致使用者以為在更新、實際上什麼都沒發生，也避免安裝時本體檔案還被鎖住導致覆蓋失敗。
 - 需要能連上 `api.github.com`；沒有網路或請求失敗只當作「這次沒查到更新」，不當成錯誤彈窗打斷使用者。

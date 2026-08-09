@@ -1,6 +1,6 @@
 # FileLocker「密碼庫」功能規劃
 
-**狀態：規劃完成，尚未實作**（本文件是設計訪談紀錄，記錄定案理由；動工前如果規劃有調整，先改這份文件與訪談紀錄本身，不要邊做邊讓實作偷偷偏離這裡的定義）
+**狀態：核心功能（Core 資料層、UI 第一輪、可選配部件架構第一/二階段、CSV 匯入匯出、加密流程串接、密碼強度/重複使用提示、部件卸載機制、瀏覽器擴充功能＋Native Messaging Host MVP）皆已實作**——瀏覽器擴充功能尚未上架 Chrome 線上應用程式商店，第一輪只做到開發人員模式側載可以完整跑通端對端流程（本文件是設計訪談紀錄，記錄定案理由；動工前如果規劃有調整，先改這份文件與訪談紀錄本身，不要邊做邊讓實作偷偷偏離這裡的定義）
 
 配套文件：[`CONTEXT.md`](CONTEXT.md)（術語）、[`docs/adr/0002-password-locker-native-messaging-over-userscript-bridge.md`](docs/adr/0002-password-locker-native-messaging-over-userscript-bridge.md)（瀏覽器整合技術路線的取捨紀錄）
 
@@ -12,13 +12,43 @@
 
 跟「加密」「資料夾防護」刻意保持語彙區隔：進入可存取狀態的動作稱「驗證」，不借用「加密／解密」或「上鎖／解鎖」（見 `CONTEXT.md`）。
 
-## 2. 定位與發布形式
+## 2. 定位與發布形式（整個密碼庫都是可選配部件）
 
-密碼庫的常駐程式（Native Messaging Host）與瀏覽器擴充功能，**不隨 FileLocker 主體安裝程式一起裝上**，是使用者在 FileLocker 設定頁另外啟用的可選元件：
+**整個密碼庫功能——App 內的分頁、Core 邏輯，加上常駐程式（Native Messaging Host）與瀏覽器擴充功能——都不隨 FileLocker 主體安裝程式一起裝上**，是使用者在 FileLocker 內另外安裝的可選配部件。沒有裝這個部件，瀏覽器擴充功能自然沒有依附的對象，不會起作用，不需要另外處理「App 內沒裝、瀏覽器端卻裝了」這種組合。
 
-- Release 檔案列表裡獨立一個 `.zip`（常駐程式執行檔＋自我註冊邏輯），不是安裝檔——這個元件不需要提權、不需要放進 `Program Files`（Native Messaging Host 登記在 `HKEY_CURRENT_USER`），也沒有任何使用者要看到的安裝精靈畫面，套用完整的 `mswi-cli` 安裝機制反而是為了不存在的需求增加架構複雜度。
-- 使用者在設定頁按下「啟用密碼庫」，FileLocker 主體自己完成下載（複用現有更新檢查機制連 `api.github.com`）、解壓縮到 `%LocalAppData%\FileLocker\` 底下自己的子資料夾、呼叫自我註冊邏輯——全程使用者不會直接接觸到那個 `.zip` 檔案本身，比照 `ShellExtensionRegistrar` 的自我修復註冊模式。
-- 瀏覽器擴充功能走正式擴充功能＋ Native Messaging，上架 Chrome 線上應用程式商店（涵蓋 Chrome／Edge／Brave，因為三者都直接相容 Chrome 商店），技術路線取捨見 ADR-0002。Firefox 需要另一套審核與 Manifest 格式，第一版不做，有需求再評估。
+### 2.1 技術形式
+
+- PasswordLocker 的 Service／Protocol／Data 整套邏輯獨立成一個類別庫專案（`FileLocker.PasswordLocker`），編譯輸出獨立的 dll，不再是 `FileLocker.Core` 的一部分。
+- 另外新增一個極簡的介面契約專案（`FileLocker.PluginContracts`），`FileLocker.App` 在編譯期只依賴這個契約專案，完全不編譯期依賴 `FileLocker.PasswordLocker.dll`。
+- 介面採**通用轉發式**，不是把現有十幾個 PasswordLocker IPC 方法逐一定義成介面方法：
+  - `Initialize(...)`：執行期呼叫一次，傳入部件需要的初始化資訊（資料存放路徑、查詢 Vault 項目是否存在的委派等）。
+  - `HandleRequestAsync(messageType, jsonBody)`：把整包 IPC 訊息（type 與 JSON 內容）原樣轉發進部件，回傳回應物件。
+  - 採用這種寬鬆介面是因為部件版本跟 FileLocker 主體版本脫鉤（見第 8 節）——如果介面定義得跟內部 IPC 方法一樣細，部件每次新增/修改內部 IPC 方法都要同步改契約專案跟主體，違背「脫鉤」的初衷；轉發式介面永遠不用因為部件內部邏輯變動而跟著改。
+- 執行期偵測：檢查固定子資料夾 `plugins/PasswordLocker/` 底下有沒有 dll 檔案。有，就用 `AssemblyLoadContext` 動態載入、呼叫 `Initialize`；沒有，就是「未安裝」狀態。
+
+### 2.2 Release、下載與安裝
+
+- PasswordLocker 的 `.zip` **不開獨立 tag**，而是當作附加資產，掛在 FileLocker 本體每一次正常的 GitHub Release（例如 `v1.5.0`）裡一起上傳。即使這次 PasswordLocker 完全沒有改動，也要把（版本號不變的）同一份 zip 重新附加上去，確保每個 FileLocker release 都找得到對應資產——理由與比對邏輯見第 8 節。
+- 檔名慣例：`PasswordLocker_vX.Y.Z_x.y.z-x.y.z.zip`（`X.Y.Z` 是 PasswordLocker 自己的版本，`x.y.z-x.y.z` 是這個版本相容的 FileLocker 版本區間）。
+- FileLocker 主體內建「安裝 PasswordLocker」入口，複用現有更新檢查機制（`HandleCheckForUpdatesRequestAsync`／`FetchLatestGitHubReleaseAsync` 那套查 `api.github.com` 的模式）掃過 release 列表找相容資產、下載、解壓縮到 `plugins/PasswordLocker/`，全程使用者不會直接接觸到那個 `.zip` 檔案本身，比照 `ShellExtensionRegistrar` 的自我修復註冊模式。
+- **不做熱重載**：dll 正在被 `AssemblyLoadContext` 載入中，Windows 不允許原地覆寫；下載/安裝完成後提示使用者重啟 App 才真正生效。
+- **更新**：新版本先解壓到暫存資料夾（例如 `plugins/PasswordLocker.pending/`），下次啟動時、在載入部件之前，把舊資料夾換成新的，同一套機制也用在卸載（見第 9 節）。
+- **相容性檢查時機**：只在「搜尋可以安裝哪個新版本」時當篩選條件；已經安裝好的部件，即使之後 FileLocker 本體升級超出該部件宣告的相容範圍，**仍然正常載入使用，不主動偵測/阻擋**。
+
+### 2.3 前端三種狀態
+
+密碼庫分頁依偵測結果顯示三種畫面之一：
+
+1. **未安裝**：顯示「要不要安裝這個功能」的引導畫面，不是直接顯示密碼庫的清單/管理介面。
+2. **已安裝且正常運作**：現有的清單/管理介面（見第 11 節）。
+3. **已安裝但載入或初始化失敗**（例如檔案損毀、缺依賴）：獨立的錯誤狀態，跟「未安裝」分開顯示——使用者需要知道自己「曾經裝過但現在壞了」，不能被誤導成「從沒裝過」。
+
+### 2.4 實作分兩階段（皆已完成）
+
+- **第一階段**：專案拆分（`FileLocker.PasswordLocker`／`FileLocker.PluginContracts`）＋執行期動態載入＋上述三種前端狀態。這個階段先手動把 dll 放進 `plugins/PasswordLocker/` 測試，不接 GitHub 自動下載。
+- **第二階段**：接上 GitHub Releases 自動搜尋相容版本／下載／重啟換檔流程（見 2.2）。相容版本比對邏輯獨立成 `FileLocker.Core.UpdateCheck.PasswordLockerAssetSelector`（純函式、有測試，見第 8 節檔名規則），下載/解壓縮／啟動時換檔（`plugins/PasswordLocker.pending/` → `plugins/PasswordLocker/`）在 `FileLocker.App/PasswordLockerModuleInstaller.cs`。前端「安裝密碼庫」按鈕會先自動查詢，只有在找不到相容版本或查詢/下載失敗時才退回原本手動開發布頁面的做法，不會把使用者晾在原地。安裝/更新完成後跳出「立即重新啟動」的確認，同意的話呼叫新增的 `restartApp` 訊息（`Process.Start` 重新啟動自己＋`Shutdown`），不強迫使用者自己手動關開。第 9 節卸載用的標記＋重啟時刪除機制目前**尚未實作**，跟這裡的下載/換檔機制共用同一套「重啟才生效」的原理，之後要做時直接沿用 `PasswordLockerModuleInstaller.SwapPendingInstallIfPresent` 呼叫點即可。
+
+瀏覽器擴充功能走正式擴充功能＋ Native Messaging，上架 Chrome 線上應用程式商店（涵蓋 Chrome／Edge／Brave，因為三者都直接相容 Chrome 商店），技術路線取捨見 ADR-0002。Firefox 需要另一套審核與 Manifest 格式，第一版不做，有需求再評估。這個上架/送審流程獨立於本節描述的 GitHub Release 資產機制之外——瀏覽器擴充功能本身不包在 `PasswordLocker_vX.Y.Z...zip` 裡。
 
 ## 3. 驗證模型
 
@@ -33,32 +63,78 @@
 - 儲存路徑可自訂；使用者指到雲端同步資料夾時，比照現有加密 Vault 集中資料夾的既有同步/衝突處理邏輯。
 - **憑證（Credential）**：一筆紀錄＝帳號、密碼、關聯網站（可以手動關聯多個網站，不是綁死一對一）、備註。第一版**不支援** TOTP 動態驗證碼、自訂欄位、到期提醒——這些都是可以之後獨立疊加、不影響現有欄位的擴充，核心「存/填」體驗先做扎實。
 - **分類**：至少「網站」「已加密檔案」兩種，設計成可擴充（之後可能加應用程式密碼、Wi-Fi 密碼等）。
-  - 「已加密檔案」類的憑證，在加密流程結束時詢問要不要把這次用的密碼存進密碼庫（比照瀏覽器插件的「稍後／永不儲存」選項），存的話會關聯到對應的 Vault 項目。該項目後續被刪除或解密後，憑證**不會被連帶刪除**——標題文字加刪除線，並標示「原始檔案已刪除或已解密」，密碼本身的資訊仍保留給使用者參考。
+  - 「已加密檔案」類的憑證，在加密流程結束時詢問要不要把這次用的密碼存進密碼庫（**已實作**：`App.vue` 的 `encryptBatchDone` 完成後呼叫 `maybeOfferSaveEncryptedFilesToLocker`，只在密碼庫已安裝且已設定的前提下才問，問法是單一 `askConfirm` 是／否，沒有做瀏覽器插件那種「稍後」的第三選項——App 內的加密是一次性動作、不像瀏覽器每次登入都可能重複跳出，「稍後」在這個情境沒有對應的重新觸發時機，只留「儲存／不用了」兩個選項），存的話會關聯到對應的 Vault 項目（批次加密全部共用同一組密碼，逐一以 `LinkedVaultItemUuid` 各自建立一筆憑證，標題預設用檔名，不開放這輪順手改標題）。該項目後續被刪除或解密後，憑證**不會被連帶刪除**——標題文字加刪除線，並標示「原始檔案已刪除或已解密」，密碼本身的資訊仍保留給使用者參考。
 
-## 5. 自動偵測與填入
+## 5. 自動偵測與填入（已實作，MVP）
 
 - **核心機制（比照主流密碼管理器）**：瀏覽器分頁載入網站時，比對目前網域是否有已存的憑證，比對到才在頁面上跳出小彈窗詢問要不要自動填入；比對不到不主動打擾。這是密碼庫的核心互動，第一版就要做。
 - **選擇密碼（Choose Password）**：比對不到既有憑證時（例如註冊頁），改為提供一個清單，讓使用者從已存的憑證裡挑一筆重複使用。使用後跳確認詢問「要不要把這個網站加進這筆密碼的關聯」——不靜默自動關聯，也不完全不問。
 - **第一版延後的只有「密碼產生器主動介入註冊頁」這一件事**：瀏覽器偵測到「這是一個要設新密碼的註冊欄位」、主動跳出建議一組強密碼並直接填入——判斷「這是註冊頁面」的可靠度天生比判斷「這是登入頁面」低很多，沒有標準化信號，第一版連登入頁的偵測準確度都還沒驗證過，這個更難判斷的情境先不做。密碼產生器第一版只在密碼庫自己的管理介面提供，使用者自己複製貼上。上面兩點（比對已存憑證跳彈窗、選擇密碼）都不受這條影響，第一版就要做。
+
+### 5.1 技術架構
+
+Chrome 的 Native Messaging 是「每次連線就啟動一個新的 host 進程」，不是常駐服務——關鍵決策是這個 host 進程**轉接給已經在跑的 FileLocker.App**，不自己重新實作一整套驗證/加解密/Windows Hello UI（FileLocker 本來就有做常駐系統匣，這個限制符合現有的使用模式；幾乎不用重新造安全機制）。
+
+```
+Chrome 分頁 (content script) ──chrome.runtime.sendMessage──▶ 擴充功能背景 (service worker)
+                                                                      │ chrome.runtime.sendNativeMessage
+                                            FileLocker.PasswordLockerNativeHost.exe（純轉接層，新專案）
+                                                                      │ Named Pipe（FileLocker-PasswordLocker-Pipe）
+                                    FileLocker.App（PasswordLockerNativePipeServer）
+                                                                      │ 直接呼叫既有的 _passwordLockerPlugin.HandleRequestAsync
+                                    PasswordLockerPlugin 新增網站專用訊息 → PasswordLockerService（每網站
+                                    獨立計時的滑動視窗 session、網域比對——Phase 1 就寫好、這輪才真正接上）
+```
+
+- Named Pipe 與 Native Messaging 的 framing 刻意用同一套格式（4-byte little-endian 長度前綴 + UTF-8 JSON），Native Host 因此幾乎是原封不動轉發位元組，不需要另外設計、另外測試一套轉譯邏輯。
+- **App 沒開時自動背景啟動**：Native Host 連不上 Named Pipe 就代表 FileLocker.App 沒在跑，改用既有的 `--startup` 旗標（跟隨 Windows 開機那條路徑本來就有的靜默啟動模式，不開視窗、只留系統匣圖示）背景啟動它，重試連線幾次等 WebView2／Named Pipe 就緒。使用者不需要自己記得先開 FileLocker，自動填入體驗接近 1Password/Bitwarden。
+- **雙重 session 都要通過才給密碼**：`RevealCredentialForSiteAsync` 同時檢查「這個網站的獨立 session（`IsSiteSessionValid`）」跟「App 分頁的 session（`TryGetAppSessionMasterKey`）」——前者代表「這個網站最近驗證過，UX 上不用再煩使用者」，後者才是真的拿得到主金鑰的那一份，兩者是分開的兩份執行期狀態（見第 3 節），任一個過期都要重新走一次驗證。
+- **驗證流程完全不叫出 FileLocker 主視窗**：第一版曾經走「叫出 FileLocker 主視窗→切到密碼庫分頁→跳 WebView2 前端既有的驗證彈窗」，實測後改掉——主視窗要等 WebView2 非同步初始化，使用者反映「點瀏覽器裡的帳號，FileLocker 視窗被叫出來卻沒反應」（根因是 `SendToFrontend` 在 `CoreWebView2`還沒初始化完成前被呼叫，直接 `NullReferenceException` 讓整個行程崩潰，見下方「已知的坑」），而且體感上也比 1Password/Bitwarden 這類「直接跳系統驗證，不用開主程式」的慣例重得多。改成 `PasswordLockerNativePipeServer` 收到「尚未驗證」的錯誤時，`App.xaml.cs.RequestBrowserVerificationAsync` 直接呼叫密碼庫部件本身（繞過 WebView2／MainWindow）：先靜默試一次 Passkey，沒成功才跳一個獨立、輕量的原生 WPF 密碼輸入視窗（`PasswordLockerBrowserVerifyWindow`，技術結構跟視覺樣式直接比照雙擊 `.locked` 檔案跳出的 `PasswordPromptWindow`，兩者都刻意不透過 WebView2、讓視窗盡快跳出來）。兩者都需要一個真正有效的視窗控制代碼才能讓 Windows Hello 的前景固定手法（`WindowFocusHelper`）生效，但又不想讓使用者看到／點到任何 FileLocker 視窗，所以另外準備了一個移到螢幕外、1×1、完全透明的隱形視窗（`App.GetOrCreateHiddenPasswordLockerOwnerWindowHandle`）當 owner，三重保險（座標、大小、透明度）確保使用者不可能實際看到它。驗證通過後直接呼叫 `recordPasswordLockerSiteVerified` 標記這個網站已驗證，再讓 `PasswordLockerNativePipeServer` 重打一次原本被擋下來的請求——對瀏覽器那端來說，這整個過程一樣只是「同一次請求多花了幾秒才有回應」。
+- **Native Messaging Host 註冊**：`PasswordLockerNativeHostRegistrar` 比照 `ShellExtensionRegistrar` 的自我修復模式，每次啟動檢查 `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.filelocker.passwordlocker` 跟對應的 host manifest json（存在 `%LocalAppData%\FileLocker\NativeMessagingHost\`）是否跟現況一致，不一致才重寫。Host exe 跟 `extension-id.txt` 一起放進 `plugins/PasswordLocker/`，是部件 zip 的一部分（見 2.2 節），找不到 `extension-id.txt` 就安靜不註冊，不當成錯誤。
+- **固定簽署金鑰，`extension-id.txt` 免手動複製**：實際側測時發現「開發階段每次載入未封裝項目都要去 `chrome://extensions` 複製 ID 貼回 `extension-id.txt`」這個手動步驟很容易漏掉——漏掉的症狀是 Native Messaging Host 完全連不上，但擴充功能本身不會報任何看得見的錯誤（`popup.js`／`content-script.js` 原本把連線失敗跟「查無資料」都渲染成同一種空清單，二者無法區分，一併修正，見下方 5.2）。改成在 `manifest.json` 加 `"key"` 欄位（開發用簽署金鑰的公鑰，DER＋base64），讓 Chrome 不管用哪個路徑載入、重新載入幾次都指派同一個固定 ID；`extension-id.txt` 因此可以預先填好這個固定值，隨 `FileLocker.PasswordLockerNativeHost.csproj` 的建置一起複製到輸出目錄，開發階段不再需要手動步驟。對應私鑰**刻意不放進這個公開 repo**，存在 `D:\Github\FileLocker_專案\FileLocker_extension_signing_key.pem`（repo 外層），因為即使這把金鑰的實際危害有限（只影響擴充功能 ID 計算與本機 `.crx` 打包簽章，不是傳輸或儲存加密用的金鑰），也不需要公開曝露；上架 Chrome 線上應用程式商店時商店會另外指派/管理正式 ID，屆時再決定要不要沿用。
+
+### 5.2 擴充功能（`src/FileLocker.Extension/`，Manifest V3）
+
+純 JS + 靜態 `manifest.json`，不接進現有 Vite 專案（`FileLocker.Web` 是 WebView2 內嵌頁面，執行環境、CSP、打包方式都不同）。`background.js`（service worker，持有到 Native Host 的連線，連線失敗時把 `chrome.runtime.lastError` 轉成 `{ type: 'error', message }` 往上傳，不吞掉）、`content-script.js`（偵測 `input[type="password"]` 判斷「可能是登入頁」——MVP 判斷式，跟本節前段「第一版連登入頁偵測準確度都還沒驗證過」的既定認知一致；查詢失敗時在該分頁 DevTools 主控台留一行 `console.warn`，跟「真的查無已存憑證」的安靜略過區分開來，方便排查連線問題）、`popup.html`／`popup.js`（「選擇密碼」清單，選定後用該筆紀錄自己既有的網域觸發驗證、把目前網域併入 `AssociatedDomains`，跟 App 內「關聯到現有帳號」是同一個底層機制；連線失敗時顯示「連線失敗：...」而不是誤導成「密碼庫裡還沒有網站帳密」的空清單）。圖示（`icons/16.png`／`48.png`／`128.png`）已從 `PasswordLocker_icon_2.png`（第 10 節）產生並登記在 `manifest.json`。
+
+**自動填入提示的呈現方式**：第一版做成「頁面載入就在畫面角落跳一張固定位置的卡片」，實測後改掉——那種做法跟使用者正在操作的欄位沒有空間關聯，容易被忽略、也讀不出「這是在講哪個欄位」。改成比照瀏覽器原生密碼建議（例如 Safari／iCloud 密碼）的慣例：帳號／密碼欄位個別掛 `focus` 監聽，聚焦時才緊貼著那個欄位（`getBoundingClientRect` 定位，捲動/縮放時同步跟著移動）彈出一個下拉選單，列出比對到的憑證；選單一樣掛在 closed shadow DOM 裡，避免頁面腳本讀取或操縱。選單項目的 `mousedown` 先 `preventDefault()` 保住欄位焦點，`click` 才觸發驗證＋填入，避免點擊選單時欄位 `blur` 把選單搶先關掉；離開欄位（`blur`）或按 `Escape` 或點擊選單以外的地方才收起選單。
+
+**尚未完成、留給之後**：Chrome 線上應用程式商店上架（需要人工完成的開發者帳號／付款／審核，見 ADR-0002）。第一輪只做到「開發人員模式側載可以完整跑通端對端流程」。
 
 ## 6. 密碼強度與重複使用提示
 
 - 主密碼（第 3 節）不限制強度。
 - 密碼庫裡存的**網站密碼本身**，顯示強度指示（弱/中/強）＋「這組密碼在密碼庫裡其他幾筆紀錄也重複使用」的提示——純資訊性，不阻擋儲存。重複使用比對只針對使用者自己密碼庫裡的資料，不涉及任何連網查詢或外部外洩資料庫比對。
 
-## 7. 匯入與匯出
+## 7. 匯入與匯出（已實作）
 
-- **匯入**：支援讀取 Chrome／Edge 匯出的密碼 CSV 格式（網址、使用者名稱、密碼欄位）批次建立憑證，降低「一開始要手動輸入幾十組密碼才能享受到自動填入好處」的採用門檻。匯入完成後提醒使用者刪除那份明文 CSV 檔案。
-- **匯出**：作為密碼忘記＋Passkey／恢復金鑰都用不了時的最後一道自救手段——讓使用者隨時能把密碼庫內容匯出成明文 CSV 自行保管。這不是取代恢復金鑰，是另一種互補的救援手段：恢復金鑰保護的是「密碼庫這個容器」本身還能不能打開，CSV 匯出則是使用者自己選擇在容器還打得開的時候，主動留一份容器外的備份。匯出前跳明確提示告知這是明文內容，需要先完成驗證（密碼／Passkey／恢復金鑰任一）才能執行，工程上直接複用匯入解析邏輯的反向操作。
+- **匯入**：支援讀取自己的匯出格式（`title,domains,username,password,notes`）以及 Chrome／Edge 匯出的密碼 CSV 格式（`name,url,username,password`，網址自動取出網域），批次建立憑證，降低「一開始要手動輸入幾十組密碼才能享受到自動填入好處」的採用門檻。解析邏輯是 `PasswordLockerService.ImportFromCsvAsync`（純函式、有測試，支援雙引號跳脫），一律建成「網站」分類，缺密碼欄位的資料列略過不匯入、回報略過筆數。原生開檔對話框（`pickAndImportPasswordLockerCsv`）由 `MainWindow.xaml.cs` 處理，CSV 解析與加密寫入留在部件裡。匯入成功後會另外跳一則獨立的提醒 toast（不併進匯入筆數那句，保留視覺份量），提醒使用者剛剛選的那份 CSV 是明文內容、建議手動刪除——不知道確切檔案路徑（原生對話框選完只把內容讀進來，路徑沒有回傳給前端），提醒文字只講「剛剛匯入的那份」，不點名路徑。
+- **匯出**：作為密碼忘記＋Passkey／恢復金鑰都用不了時的最後一道自救手段——讓使用者隨時能把密碼庫內容匯出成明文 CSV 自行保管。這不是取代恢復金鑰，是另一種互補的救援手段：恢復金鑰保護的是「密碼庫這個容器」本身還能不能打開，CSV 匯出則是使用者自己選擇在容器還打得開的時候，主動留一份容器外的備份。匯出前跳明確提示告知這是明文內容（`passwordLocker.exportCsvWarning`），需要先完成驗證（密碼／Passkey／恢復金鑰任一，沿用分頁內既有的驗證 session）才能執行；`ExportToCsvAsync` 本來就是 Phase 1 就寫好的方法，這輪只是把它接上 IPC（`exportPasswordLockerCsv`）與原生存檔對話框（`savePasswordLockerCsvToFile`）。
 
 ## 8. 版本管理
 
-- 密碼庫元件的發版節奏跟 FileLocker 主體鎖在一起（元件只在 FileLocker 發新版時才可能跟著發，不會出現「元件要相容好幾個不同 FileLocker 版本」的情況），但**版號各自獨立**，從 `0.1.0` 起算（尚未穩定到能承諾不大改，保留 `1.0.0` 給功能穩定之後）。
-- 不採用「版號完全比照 FileLocker 主體」，是因為瀏覽器擴充功能每次更新都要重新送審（見 ADR-0002）——如果版號被迫跟著主體同步，會出現「主體這次更新根本沒動到密碼庫，卻要為了湊版號重新包一份送審」的無謂成本。每次元件發布改用標記「相容 FileLocker 最低版本」，FileLocker 主體的更新檢查邏輯只需要做單向的最低版本比對，不需要維護完整相容性矩陣。
+- 密碼庫部件的發版節奏跟 FileLocker 主體鎖在一起——這個 repo 不會單獨為了 PasswordLocker 開一次 release，而是每次 FileLocker 本體發新版時，把當下最新的 PasswordLocker `.zip`（不管版本號有沒有變）一併附加上去，確保每個 FileLocker release 都能找到對應的部件資產。
+- 但**版號各自獨立**，從 `0.1.0` 起算（尚未穩定到能承諾不大改，保留 `1.0.0` 給功能穩定之後）：FileLocker 本體發新版，不代表 PasswordLocker 也要跟著出新版——這次沒改動，版本號就維持不變，只是重新附加同一份 zip。
+- 不採用「版號完全比照 FileLocker 主體」，除了避免「明明沒改也要湊版號重包」的無謂成本，也顧及瀏覽器擴充功能每次更新都要重新送審（見 ADR-0002）——擴充功能本身版本獨立於這裡討論的 GitHub Release 資產機制，但兩者共用「不隨主體版號被迫連動」這個理由。
+- **相容性標示與比對**：檔名 `PasswordLocker_vX.Y.Z_x.y.z-x.y.z.zip` 裡的 `x.y.z-x.y.z` 是這個 PasswordLocker 版本相容的 FileLocker 版本區間（含頭尾）。比對邏輯是「目前執行中的 FileLocker 版本落在區間內就算相容」，掃過 release 列表如果有多筆資產都符合，挑其中 PasswordLocker 版本最新的一筆。改用區間（不是舊版設計裡「相容最低版本」的單向標記）是因為部件程式碼本身可能依賴 FileLocker 某個版本才新增的介面/型別，同時又可能在更新的 FileLocker 版本上因為架構調整而失效——只標最低版本沒辦法表達「上限」，區間才能同時表達「太舊不相容」與「太新也不相容」兩種情況。
 
-## 9. 停用與解除安裝
+## 9. 停用與解除安裝（已實作）
 
-密碼庫資料檔案（憑證、驗證雜湊）在「使用者於設定頁停用密碼庫」與「使用者解除安裝 FileLocker 主體」兩種情境下都**不會被刪除**，只清掉 Native Messaging 的登錄機碼與常駐程式本身——這是延續 FileLocker 現有的既定慣例：`installer_config.json` 從未處理過 `%LocalAppData%\FileLocker` 底下的任何內容，加密 Vault、資料夾防護的資料一直都是解除安裝後原地保留，密碼庫沒有理由自訂一套不一樣的行為。
+密碼庫資料檔案（憑證、驗證雜湊，存在 `%LocalAppData%\FileLocker\PasswordLocker\`）在「使用者卸載 PasswordLocker 部件」與「使用者解除安裝 FileLocker 主體」兩種情境下都**不會被刪除**，只移除部件本身（`plugins/PasswordLocker/` 底下的 dll）——這是延續 FileLocker 現有的既定慣例：安裝程式從未處理過 `%LocalAppData%\FileLocker` 底下的任何內容，加密 Vault、資料夾防護的資料一直都是解除安裝後原地保留，密碼庫沒有理由自訂一套不一樣的行為。Native Messaging 的登錄機碼／常駐程式清理留給第 5 節瀏覽器擴充功能實作時一併處理，這節只處理 App 內的部件本身。
+
+### 9.1 App 內主動卸載
+
+卸載部件走跟更新（見 2.2）同一套「重啟才真正生效」機制：dll 正在被 `AssemblyLoadContext` 載入中無法原地刪除，`PasswordLockerModuleInstaller.MarkForUninstall()` 先寫一個標記檔（`plugins/PasswordLocker.uninstall-marker`），下次啟動時、在嘗試載入部件之前，`ApplyPendingUninstallIfMarked()` 檢查標記，有標記就刪除整個 `plugins/PasswordLocker/` 資料夾、清掉標記，再繼續正常啟動流程。設定頁的「解除安裝密碼庫部件」按鈕（`uninstallPasswordLockerModule` 訊息，MainWindow 直接處理、不轉發給部件）觸發後跳確認「下次重啟才會生效，現在要重啟嗎」，可以直接呼叫既有的 `restartApp`。
+
+### 9.2 跟 mac-style-windows-installer（mswi）的解除安裝互動——這是這輪新發現、需要特別處理的坑
+
+研究過 mswi 的 `uninstall.py`（`d:\Github\mac-style-windows-installer_專案\mac-style-windows-installer\uninstall.py`）之後發現一個關鍵行為：**mswi 的解除安裝只照 `install_manifest.json`（安裝目錄底下、由 mswi 在安裝完成時寫入）的 `"files"` 陣列刪東西**，這個清單之外的任何項目都被當成「使用者自行產生的資料」，`_perform_uninstall_steps()` 遇到清單清完後資料夾裡還有剩（`remaining`）的情況，會直接放棄整個刪除安裝目錄，只刪解除安裝程式本身，並在 log 留一行警告——**不會拋出任何使用者看得到的錯誤或提示**。
+
+密碼庫部件是安裝完成「之後」才透過 App 內建的下載機制放進 `plugins/PasswordLocker/` 的（見 2.2），mswi 打包當下產生的 `install_manifest.json` 不可能知道這些檔案存在。如果不處理，使用者透過「設定 → 應用程式 → 解除安裝」（Windows 原生解除安裝路徑，不是本節 9.1 講的 App 內卸載）移除 FileLocker 時，`plugins/PasswordLocker/` 會被判定成清單之外的殘留資料，**導致整個安裝目錄（`C:\Program Files\FileLocker\` 或 `no_admin_install` 情境下的 `%LocalAppData%\Programs\FileLocker\`）解除安裝後完全沒被清掉，只留下一個裡面只剩 `plugins\PasswordLocker\` 的空殼資料夾**，這既不符合使用者對「解除安裝」的預期，也偏離了本節開頭「只保留 AppData 底下的憑證資料，其餘都清掉」的既定原則。
+
+**解法**：`install_manifest.json` 本身是純 JSON，沒有任何簽章／雜湊驗證（讀取端就是單純 `json.load()`），是 mswi 明確容許外部工具事後追加內容的擴充點。`PasswordLockerModuleInstaller.SyncInstallManifest()` 在每次啟動、確認 `plugins/PasswordLocker/` 存在之後，把裡面目前的檔案清單（相對於安裝目錄的路徑）合併進 `install_manifest.json` 的 `"files"` 陣列（去重、保留其他既有欄位不動）；反過來，9.1 的 `ApplyPendingUninstallIfMarked()` 在 App 內卸載部件時，也會把這些路徑從 `"files"` 陣列移除，維持雙向同步。這樣不管使用者是透過 App 內建卸載、還是直接用 Windows 原生解除安裝，`plugins/PasswordLocker/` 底下的檔案都會被正確清掉，安裝目錄清空後也能被 mswi 正常整個移除。找不到 `install_manifest.json`（開發環境用 `dotnet run`、或不是透過 mswi 安裝的情境）就安靜跳過同步，不視為錯誤——這個機制本來就是錦上添花，不是密碼庫部件能不能運作的必要條件。
+
+沒有反過來要求 mswi 那邊新增「解除安裝前執行外掛清單腳本」這類正式擴充點（`pre_install_script`／`post_install_script` 目前只在安裝時觸發，沒有對應的解除安裝版本）——直接同步 `install_manifest.json` 是成本最低、不需要跨專案協調改動 mswi 本身的做法，缺點是耦合在一份沒有正式文件保證穩定性的資料格式上，如果 mswi 之後改變 `install_manifest.json` 的結構（例如 `files` 改成物件陣列而不是純字串陣列），這裡要跟著更新——`SyncInstallManifest()` 的讀寫都包在 try/catch 裡，格式對不上時安靜放棄同步、不會讓 FileLocker 自己的啟動流程失敗，只是退回「解除安裝時這個資料夾不會被自動清空」這個較保守的舊行為。
 
 ## 10. 圖示素材
 
@@ -72,6 +148,8 @@
 ## 11. UI／管理介面（第一輪：設定＋清單＋新增/編輯/刪除）
 
 Core 資料層完成後的第一個 UI 階段，範圍分兩輪：這輪先做「設定精靈＋清單＋新增/編輯/刪除」，CSV 匯入/匯出、跟加密流程的串接（加密完成後問要不要存進密碼庫）留到下一輪，理由跟 Phase 1 當初的切分邏輯一致——核心的存取/管理體驗先做出來、能實際用，周邊功能晚一點做不影響核心可用性，也讓每一輪的變更範圍維持在可以完整測試、審查的大小。
+
+本節描述的畫面對應第 2.3 節「已安裝且正常運作」這個狀態；部件未安裝或載入失敗時，分頁顯示的是第 2.3 節描述的另外兩種畫面，不是本節內容。
 
 ### 11.1 分頁與瀏覽權限
 
@@ -91,10 +169,18 @@ Core 資料層完成後的第一個 UI 階段，範圍分兩輪：這輪先做�
 - **依分類分組**（網站／已加密檔案），組內排序各自可切換：已加密檔案預設依時間排序，網站憑證預設依字母/筆畫排序，使用者可以自己改排序方式。兩種分類的操作情境差異蠻大（網站憑證會被瀏覽器插件用、已加密檔案憑證主要是被動保存），分組能讓使用者一眼分辨自己在找的是哪一種。
 - **搜尋框**：即時篩選標題／網域／帳號，純前端字串比對現有清單，不需要新的 Core API。實作成本低、對「存了幾十筆密碼之後要找特定一筆」這個核心情境的體驗影響大，這輪就做。
 
-### 11.5 新增/編輯表單
+### 11.5 新增/編輯表單，以及「關聯到現有帳號」
 
 - **這輪兩種類別都支援**（網站／已加密檔案）。「已加密檔案」類別手動新增時 `LinkedVaultItemUuid` 留空，不連結真實 Vault 項目——這個連結要等下一輪串接加密流程才會自動產生。Core 層的 `CheckLinkedVaultItemsAsync` 本來就只處理 `LinkedVaultItemUuid` 不是 null 的項目，手動新增、留空的這種不會被判定成「來源已消失」，不需要額外處理。
-- **「使用現有密碼」**：新增表單裡的按鈕，觸發跟瀏覽器擴充功能「選擇密碼」同一個底層機制（見 `CONTEXT.md`），讓使用者從清單裡挑一筆既有密碼帶入。選了之後密碼欄位帶入、同時詢問要不要把這筆新紀錄加進被選中那筆的關聯清單。
+- **「關聯到現有帳號」（取代最初設計的「使用現有密碼」）**：實作階段發現最初的設計有問題——原本規劃是新增表單裡按一個按鈕，用被選中那筆的密碼「帶入」新表單、事後再問要不要把新紀錄的網站併入被選中那筆的關聯清單，結果同一組帳密會產生兩筆各自獨立的紀錄，畫面上看不出兩者的關聯，也因為「兩筆各自獨立」這個前提衍生出好幾個 bug（確認彈窗被其他彈窗蓋住、關聯後沒有立刻重新整理清單、輸入關聯網站沒按 Enter 就遺失等）。
+
+  資料模型本來就支援「一筆紀錄關聯多個網站」（`AssociatedDomains` 是陣列），改成不建立新紀錄，直接把新網站併入既有紀錄：
+  - 獨立的工具列按鈕「關聯到現有帳號」（需要先通過分頁內驗證），不是新增/編輯表單裡的按鈕——這個動作跟「新增一筆全新的帳密」是兩件事，值得有自己的入口，而不是藏在新增表單裡。
+  - 第一步：挑選清單（只列「網站」分類，「已加密檔案」不適用這個機制），顯示標題（沿用清單頁同一套「A、B，以及C」自動組字邏輯）。
+  - 第二步：輸入要新增的網站網域（必填）＋一個選填的「新增顯示名稱」欄位。
+  - 送出時：把選填欄位的文字**接在目前顯示的標題後面**（不是整個覆蓋掉），例如既有紀錄顯示標題是「Gmail」，這裡輸入「Discord」，結果變成「Gmail、Discord」；沒填就維持原標題不變。網域併入 `AssociatedDomains`（去重）。全程只更新既有那筆紀錄（呼叫 `addOrUpdatePasswordLockerCredential` 帶原本的 `id`），不建立新紀錄。
+  - 清單標題的顯示邏輯（`Title` 欄位空白時）：前端每次渲染時即時從 `AssociatedDomains` 組字，不落地存成固定字串——存成固定字串會在網站改名或紀錄被刪除時需要額外同步邏輯，即時組字則永遠反映當下資料。超過顯示空間預算（約 20 字元）時省略成「A、B 等 N 個網站」，找不到的部分交給搜尋框（已經會比對 `AssociatedDomains`）。
+  - 這個機制不對「已加密檔案」分類開放，也不在「編輯現有紀錄」的情境下提供（編輯是改自己的欄位，關聯是把新網站併入*另一筆*紀錄，兩者操作對象不同）。
 
 ### 11.6 刪除
 
@@ -104,6 +190,7 @@ Core 資料層完成後的第一個 UI 階段，範圍分兩輪：這輪先做�
 
 ## 12. 已知會延後或不做的事
 
+- **獨立單機介面版本**：使用者提過的構想——核心部件另外寫一份「可以單獨只用 PasswordLocker」的獨立介面，直接複製現有分頁內容、砍掉跟 FileLocker（例如 Vault 連結的「已加密檔案」分類）有依賴關係的選項。這次 grilling 明確擱置，範圍與現有 `App.vue` 分頁共用元件的比例還沒定案，留待第 2 節的可選配部件架構真的落地之後再開一輪獨立的 grilling。可選配部件架構（含第二階段自動安裝）現在已經落地，這輪獨立 grilling 可以視需要排入下一輪規劃。
 - **TOTP 動態驗證碼**：第一版不做，之後可以純新增、不影響現有欄位。
 - **自訂欄位／到期提醒**：第一版不做。
 - **瀏覽器插件主動偵測註冊頁、建議強密碼**：第一版不做（見第 5 節），只在密碼庫自己的介面提供密碼產生器。

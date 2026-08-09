@@ -84,3 +84,7 @@ Commit 前一律先跑過完整測試套件（目前 189 個測試都要過）�
 
 ## 已知的坑
 單一執行個體的 Mutex 處理路徑是右鍵/上鎖這類進入點過去真的出過當機事故的地方——新增任何啟動路徑時，要處理「Mutex 已經被別的執行個體持有」的情況，並呼叫 `SetForegroundWindow`（或等效的前景焦點搶奪機制）把既有視窗搶到最前面，而不是直接結束或讓例外把行程弄崩潰。
+
+**改了密碼庫部件（`FileLocker.PasswordLocker`）之後，一定要手動把新的 `FileLocker.PasswordLocker.dll` 複製到 `src/FileLocker.App/bin/<組態>/<TFM>/plugins/PasswordLocker/`。** 密碼庫是可選配部件，`FileLocker.App` 對它沒有編譯期參考（這是刻意的架構決定，見密碼庫功能規劃第 2.1 節），所以 `dotnet build` 不會自動更新那個資料夾裡的副本——App 載入的永遠是那份手動放進去的舊 DLL。忘記複製的症狀是：新加的 IPC 訊息在舊部件的 switch 撞到 `_ => null`，前端 `requestMessage()` 等不到回應，畫面完全沒反應、DevTools 也沒有任何錯誤。這個坑實際發生過（CSV 匯出功能），耗掉很久才定位到。目前 `HandlePasswordLockerModuleRequestAsync` 已經會在部件回傳 null 時送出明確的錯誤訊息，但**根本原因還是要靠記得複製 DLL**。刻意不加自動複製的 MSBuild 步驟，因為那會讓「部件未安裝」這個狀態沒辦法用刪除資料夾的方式測試。
+
+**前端 `requestMessage()` 的每一種回應類型，都必須在 `App.vue` 的 `messageHandlers` 裡有一個對應項目呼叫 `resolvePending()`。** 漏掉的話那個 Promise 永遠不會被解開，一樣是「按了完全沒反應、沒有任何錯誤訊息」。新增 IPC 往返時，後端送回應、前端註冊處理常式這兩件事要一起做完。

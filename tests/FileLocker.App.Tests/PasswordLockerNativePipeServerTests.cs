@@ -189,8 +189,10 @@ public sealed class PasswordLockerNativePipeServerTests
     [Fact]
     public async Task NotVerifiedResponse_ForRetryEligibleType_TriggersVerificationThenRetries()
     {
-        // revealPasswordLockerCredentialForSite 是唯二真的需要「先驗證、通過再重試」的訊息之一
-        // ——這裡驗證正常路徑（合法使用情境）在白名單收緊之後仍然可以運作。
+        // revealPasswordLockerCredentialForSite 是少數幾個真的需要「先驗證、通過再重試」的
+        // 訊息之一（另外兩個是 addOrUpdatePasswordLockerCredential／
+        // revealPasswordLockerTotpForSite，見下面 TOTP 專用的測試）——這裡驗證正常路徑
+        // （合法使用情境）在白名單收緊之後仍然可以運作。
         var verificationCalled = false;
         string? verificationDomain = null;
         var callCount = 0;
@@ -219,6 +221,48 @@ public sealed class PasswordLockerNativePipeServerTests
             Assert.NotNull(response);
             Assert.True(verificationCalled);
             Assert.Equal("github.com", verificationDomain);
+            Assert.Equal(2, callCount);
+            Assert.True(response.Value.GetProperty("success").GetBoolean());
+        }
+        finally
+        {
+            server.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task RevealTotpForSite_IsWhitelistedAndTriggersVerificationThenRetries()
+    {
+        // TOTP 的揭露比密碼更嚴格（見 PasswordLockerService 的新鮮度視窗），但那道限制是在
+        // ProtocolHandlers／Service 那一層擋，不是這條管線的事——這裡只需要確認
+        // revealPasswordLockerTotpForSite 有進白名單、而且沿用跟 revealPasswordLockerCredentialForSite
+        // 同一套「先驗證再重試」機制，不會被誤擋。
+        var verificationCalled = false;
+        var callCount = 0;
+        var plugin = new FakePlugin
+        {
+            OnHandleRequest = (type, _) =>
+            {
+                callCount++;
+                return callCount == 1
+                    ? new { type = $"{type}Result", success = false, errorCode = "PASSWORD_LOCKER_NOT_VERIFIED" }
+                    : new { type = $"{type}Result", success = true, secret = "JBSWY3DPEHPK3PXP" };
+            }
+        };
+        var pipeName = UniquePipeName();
+        var server = new PasswordLockerNativePipeServer(
+            () => plugin,
+            (_, _) => { verificationCalled = true; return Task.FromResult(true); },
+            () => Task.CompletedTask, OwnExePath, pipeName);
+        server.Start();
+        try
+        {
+            using var client = await ConnectAsync(pipeName);
+            await WriteMessageAsync(client, new { type = "revealPasswordLockerTotpForSite", id = "abc", domain = "github.com" });
+            var response = await TryReadMessageAsync(client, TimeSpan.FromSeconds(5));
+
+            Assert.NotNull(response);
+            Assert.True(verificationCalled);
             Assert.Equal(2, callCount);
             Assert.True(response.Value.GetProperty("success").GetBoolean());
         }

@@ -46,7 +46,7 @@
 ### 2.4 實作分兩階段（皆已完成）
 
 - **第一階段**：專案拆分（`FileLocker.PasswordLocker`／`FileLocker.PluginContracts`）＋執行期動態載入＋上述三種前端狀態。這個階段先手動把 dll 放進 `plugins/PasswordLocker/` 測試，不接 GitHub 自動下載。
-- **第二階段**：接上 GitHub Releases 自動搜尋相容版本／下載／重啟換檔流程（見 2.2）。相容版本比對邏輯獨立成 `FileLocker.Core.UpdateCheck.PasswordLockerAssetSelector`（純函式、有測試，見第 8 節檔名規則），下載/解壓縮／啟動時換檔（`plugins/PasswordLocker.pending/` → `plugins/PasswordLocker/`）在 `FileLocker.App/PasswordLockerModuleInstaller.cs`。前端「安裝密碼庫」按鈕會先自動查詢，只有在找不到相容版本或查詢/下載失敗時才退回原本手動開發布頁面的做法，不會把使用者晾在原地。安裝/更新完成後跳出「立即重新啟動」的確認，同意的話呼叫新增的 `restartApp` 訊息（`Process.Start` 重新啟動自己＋`Shutdown`），不強迫使用者自己手動關開。第 9 節卸載用的標記＋重啟時刪除機制目前**尚未實作**，跟這裡的下載/換檔機制共用同一套「重啟才生效」的原理，之後要做時直接沿用 `PasswordLockerModuleInstaller.SwapPendingInstallIfPresent` 呼叫點即可。
+- **第二階段**：接上 GitHub Releases 自動搜尋相容版本／下載／重啟換檔流程（見 2.2）。相容版本比對邏輯獨立成 `FileLocker.Core.UpdateCheck.PasswordLockerAssetSelector`（純函式、有測試，見第 8 節檔名規則），下載/解壓縮／啟動時換檔（`plugins/PasswordLocker.pending/` → `plugins/PasswordLocker/`）在 `FileLocker.App/PasswordLockerModuleInstaller.cs`。前端「安裝密碼庫」按鈕會先自動查詢，只有在找不到相容版本或查詢/下載失敗時才退回原本手動開發布頁面的做法，不會把使用者晾在原地。安裝/更新完成後跳出「立即重新啟動」的確認，同意的話呼叫新增的 `restartApp` 訊息（`Process.Start` 重新啟動自己＋`Shutdown`），不強迫使用者自己手動關開。第 9 節卸載用的標記＋重啟時刪除機制（`PasswordLockerModuleInstaller.MarkForUninstall`／`ApplyPendingUninstallIfMarked`）跟這裡的下載/換檔機制共用同一套「重啟才生效」的原理，**已實作完成**：設定頁「解除安裝密碼庫部件」按鈕（`uninstallPasswordLockerModule` 訊息，`MainWindow.xaml.cs` 直接處理）觸發 `MarkForUninstall` 寫標記，下次啟動時 `App.xaml.cs`（在載入部件之前）呼叫 `ApplyPendingUninstallIfMarked` 真正刪除，解除安裝後一樣跳出「立即重新啟動」的確認。
 
 瀏覽器擴充功能走正式擴充功能＋ Native Messaging，上架 Chrome 線上應用程式商店（涵蓋 Chrome／Edge／Brave，因為三者都直接相容 Chrome 商店），技術路線取捨見 ADR-0002。Firefox 需要另一套審核與 Manifest 格式，第一版不做，有需求再評估。這個上架/送審流程獨立於本節描述的 GitHub Release 資產機制之外——瀏覽器擴充功能本身不包在 `PasswordLocker_vX.Y.Z...zip` 裡。
 

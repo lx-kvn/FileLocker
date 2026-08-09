@@ -69,7 +69,8 @@ public sealed class PasswordLockerNativePipeServer
         "findPasswordLockerCredentialsForDomain",
         "revealPasswordLockerCredentialForSite",
         "addOrUpdatePasswordLockerCredential",
-        "generatePasswordLockerPassword"
+        "generatePasswordLockerPassword",
+        "revealPasswordLockerTotpForSite"
     };
 
     /// <summary>「缺驗證就自動跳視窗重試」這個機制只對這兩種訊息開放——見 HandleMessageAsync
@@ -80,7 +81,12 @@ public sealed class PasswordLockerNativePipeServer
     private static readonly HashSet<string> RetryAfterVerificationMessageTypes = new(StringComparer.Ordinal)
     {
         "revealPasswordLockerCredentialForSite",
-        "addOrUpdatePasswordLockerCredential"
+        "addOrUpdatePasswordLockerCredential",
+        // TOTP 揭露比密碼更嚴格（見 PasswordLockerService 的新鮮度視窗說明）——但這條重試機制
+        // 本身天生就是「先驗證、通過再重打一次」，瀏覽器每次要看 TOTP 都會因為新鮮度視窗過期
+        // 而重新觸發整段流程，不需要另外設計一個「強制略過既有 session」的機制，這裡只要跟
+        // 其他兩個訊息一樣加進白名單即可。
+        "revealPasswordLockerTotpForSite"
     };
 
     private static readonly JsonSerializerOptions JsonOptions = new()

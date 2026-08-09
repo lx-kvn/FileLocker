@@ -2,6 +2,8 @@
 import { ref, watch, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import jsQR from 'jsqr'
+import { computeTotpCode, parseTotpInput, isTotpInputComplete, totpRingOffset, totpSecondsRemaining, TOTP_RING_CIRCUMFERENCE } from './totp.js'
 import '@fontsource/ibm-plex-sans/400.css'
 import '@fontsource/ibm-plex-sans/500.css'
 import '@fontsource/ibm-plex-sans/600.css'
@@ -221,6 +223,12 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('keydown', handleGlobalKeydown)
+  if (passwordLockerTotpRefreshTimer) {
+    clearInterval(passwordLockerTotpRefreshTimer)
+  }
+  if (passwordLockerTotpPreviewTimer) {
+    clearInterval(passwordLockerTotpPreviewTimer)
+  }
 })
 
 // ---- 自訂標題列：視窗是不是最大化狀態（由 C# 那邊在視窗狀態改變時通知）----
@@ -337,6 +345,27 @@ const isPasswordLockerAuthBusy = ref(false)
 // 新增/編輯表單
 const passwordLockerFormState = ref(null) // { id, category, title, domains, domainInput, username, password, notes }
 const showPasswordLockerFormPassword = ref(false)
+
+// 表單裡的 TOTP 區塊：totpDraft 是「這次存檔要不要動 TOTP、動成什麼」的暫存——null 代表
+// 這次存檔完全不碰 TOTP（既有紀錄的設定維持原樣），{secret:'', ...} 空字串代表使用者按了
+// 「移除」，非空字串是設定新密鑰。跟 passwordLockerFormState 分開存放，因為表單開啟當下
+// 不會預先解密既有的 TOTP 密鑰（沒有這個必要，也不想讓明文密鑰在使用者還沒主動要求的情況下
+// 就被解出來放進表單狀態）——existingHasTotp 只記「有沒有」，不記內容。
+const passwordLockerTotpDraft = ref(null) // null | { secret, algorithm, digits, period }
+const passwordLockerTotpExistingHasTotp = ref(false)
+const passwordLockerTotpQrError = ref('')
+const passwordLockerTotpPreviewCode = ref('')
+let passwordLockerTotpPreviewTimer = null
+// 純粹讓圓形倒數（totpRingOffset）在模板裡每秒重新算一次的觸發器——Vue 沒辦法自動偵測
+// 「時間流逝」本身是個依賴，用一個每秒遞增的 ref 逼模板重新求值，見 startPasswordLockerTotpPreview／
+// startPasswordLockerTotpRefreshTimer 裡對它的更新。
+const passwordLockerTotpNowTick = ref(Date.now())
+
+// 清單頁「顯示 TOTP」：跟密碼/帳號的顯示/隱藏是同一種互動模式（passwordLockerVisibleIds），
+// 但額外存一份 { secret, algorithm, digits, period } 而不是單純字串，因為要在前端本地持續
+// 算出輪替的碼。收合時整個刪掉這個 entry（見 hidePasswordLockerTotp），不留在記憶體裡。
+const passwordLockerRevealedTotps = ref({}) // id -> { secret, algorithm, digits, period, code }
+let passwordLockerTotpRefreshTimer = null
 
 // 「使用現有密碼」選擇器
 const passwordLockerPickerVisible = ref(false)
@@ -1162,6 +1191,10 @@ const messageHandlers = {
     resolvePending('revealPasswordLockerNotesResult', data)
   },
 
+  revealPasswordLockerTotpResult(data) {
+    resolvePending('revealPasswordLockerTotpResult', data)
+  },
+
   deletePasswordLockerCredentialsResult(data) {
     resolvePending('deletePasswordLockerCredentialsResult', data)
   },
@@ -1706,6 +1739,25 @@ async function runPasswordLockerAction(action) {
     } else {
       showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.verifyFailed')))
     }
+  } else if (action.type === 'revealTotp') {
+    const result = await requestMessage('revealPasswordLockerTotp', 'revealPasswordLockerTotpResult', { id: action.id })
+    if (result.success) {
+      const code = await computeTotpCode(result.secret, result.algorithm, result.digits, result.periodSeconds)
+      passwordLockerRevealedTotps.value = {
+        ...passwordLockerRevealedTotps.value,
+        [action.id]: { secret: result.secret, algorithm: result.algorithm, digits: result.digits, period: result.periodSeconds, code }
+      }
+      startPasswordLockerTotpRefreshTimer()
+    } else if (result.errorCode === 'PASSWORD_LOCKER_NOT_VERIFIED') {
+      // 沒有經過 ensurePasswordLockerVerified 的 session 檢查（見 togglePasswordLockerTotpVisibility
+      // 上的說明，TOTP 要求每次都重新驗證），這裡收到 NOT_VERIFIED 一律重跳驗證彈窗，不會有
+      // 「其實剛剛才驗證過」這種誤判。
+      openPasswordLockerVerify(action)
+    } else if (result.errorCode === 'PASSWORD_LOCKER_TOTP_NOT_CONFIGURED') {
+      showToast(t('passwordLocker.totpNotConfigured'))
+    } else {
+      showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.totpRevealFailed')))
+    }
   } else if (action.type === 'delete') {
     await finishPasswordLockerDelete(action.ids)
   } else if (action.type === 'save') {
@@ -2181,6 +2233,57 @@ async function togglePasswordLockerUsernameVisibility(item) {
   await ensurePasswordLockerVerified({ type: 'revealUsername', id: item.id })
 }
 
+// TOTP 比密碼／帳號嚴格：不透過 ensurePasswordLockerVerified（那個函式會沿用還沒過期的
+// 既有 session），直接呼叫 openPasswordLockerVerify 強制跳一次驗證彈窗——見規劃討論「比密碼
+// 更嚴格：每次都要重新驗證」的決策，後端 RevealTotpAsync 也有獨立的新鮮度視窗雙重把關，
+// 不是只靠前端這裡配合。
+function togglePasswordLockerTotpVisibility(item) {
+  if (passwordLockerRevealedTotps.value[item.id]) {
+    hidePasswordLockerTotp(item.id)
+    return
+  }
+  openPasswordLockerVerify({ type: 'revealTotp', id: item.id })
+}
+
+function hidePasswordLockerTotp(id) {
+  const next = { ...passwordLockerRevealedTotps.value }
+  delete next[id]
+  passwordLockerRevealedTotps.value = next
+  if (Object.keys(next).length === 0) {
+    stopPasswordLockerTotpRefreshTimer()
+  }
+}
+
+function startPasswordLockerTotpRefreshTimer() {
+  if (passwordLockerTotpRefreshTimer) {
+    return
+  }
+  passwordLockerTotpRefreshTimer = setInterval(async () => {
+    passwordLockerTotpNowTick.value = Date.now()
+    const entries = Object.entries(passwordLockerRevealedTotps.value)
+    if (entries.length === 0) {
+      return
+    }
+    const updated = { ...passwordLockerRevealedTotps.value }
+    for (const [id, totp] of entries) {
+      try {
+        updated[id] = { ...totp, code: await computeTotpCode(totp.secret, totp.algorithm, totp.digits, totp.period) }
+      } catch {
+        // 單筆算碼失敗（理論上不該發生，密鑰在揭露當下就已經驗證過格式）不影響其他已展開
+        // 的項目，維持該筆的舊值即可。
+      }
+    }
+    passwordLockerRevealedTotps.value = updated
+  }, 1000)
+}
+
+function stopPasswordLockerTotpRefreshTimer() {
+  if (passwordLockerTotpRefreshTimer) {
+    clearInterval(passwordLockerTotpRefreshTimer)
+    passwordLockerTotpRefreshTimer = null
+  }
+}
+
 function togglePasswordLockerSelected(id) {
   const next = new Set(passwordLockerSelectedIds.value)
   if (next.has(id)) {
@@ -2233,8 +2336,120 @@ function openPasswordLockerAddForm() {
     notes: '',
     linkedVaultItemUuid: null
   }
+  passwordLockerTotpExistingHasTotp.value = false
+  passwordLockerTotpDraft.value = null
+  passwordLockerTotpQrError.value = ''
   if (vaultItems.value.length === 0) {
     refreshList()
+  }
+}
+
+// ---- 表單裡的 TOTP 區塊 ----
+
+function setPasswordLockerTotpDraft(parsed) {
+  passwordLockerTotpDraft.value = { secret: parsed.secret, algorithm: parsed.algorithm, digits: parsed.digits, period: parsed.period }
+  startPasswordLockerTotpPreview()
+}
+
+// 使用者按「移除 TOTP」——空字串是 AddOrUpdateCredentialAsync 認得的清空信號（見後端
+// PasswordLockerService.AddOrUpdateCredentialAsync 上的說明），跟「這次存檔不動 TOTP」
+// （totpDraft 是 null）語意不同，不能混用。
+function removePasswordLockerTotpDraft() {
+  passwordLockerTotpDraft.value = { secret: '', algorithm: 'SHA1', digits: 6, period: 30 }
+  passwordLockerTotpExistingHasTotp.value = false
+  stopPasswordLockerTotpPreview()
+  passwordLockerTotpPreviewCode.value = ''
+}
+
+async function handlePasswordLockerTotpQrFile(event) {
+  const file = event.target.files?.[0]
+  event.target.value = '' // 允許使用者選同一個檔案兩次都能觸發 change
+  if (!file) {
+    return
+  }
+  passwordLockerTotpQrError.value = ''
+  try {
+    const bitmap = await createImageBitmap(file)
+    const canvas = document.createElement('canvas')
+    canvas.width = bitmap.width
+    canvas.height = bitmap.height
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(bitmap, 0, 0)
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const decoded = jsQR(imageData.data, imageData.width, imageData.height)
+    const parsed = decoded ? parseTotpInput(decoded.data) : null
+    if (!parsed) {
+      passwordLockerTotpQrError.value = t('passwordLocker.totpQrDecodeFailed')
+      return
+    }
+    setPasswordLockerTotpDraft(parsed)
+  } catch {
+    passwordLockerTotpQrError.value = t('passwordLocker.totpQrDecodeFailed')
+  }
+}
+
+// 'input'（不是 'change'）——見模板呼叫端的說明：使用者貼上或打完密鑰後不用再多按 Enter
+// 或點到外面，只要看起來「打完了」（isTotpInputComplete，避免打到一半就被強制跳走）
+// 就直接切到預覽畫面。
+function handlePasswordLockerTotpManualInput(text) {
+  passwordLockerTotpQrError.value = ''
+  if (!text.trim()) {
+    passwordLockerTotpDraft.value = null
+    stopPasswordLockerTotpPreview()
+    return
+  }
+  if (!isTotpInputComplete(text)) {
+    return
+  }
+  const parsed = parseTotpInput(text)
+  if (!parsed) {
+    passwordLockerTotpDraft.value = null
+    stopPasswordLockerTotpPreview()
+    return
+  }
+  setPasswordLockerTotpDraft(parsed)
+}
+
+async function startPasswordLockerTotpPreview() {
+  stopPasswordLockerTotpPreview()
+  const tick = async () => {
+    passwordLockerTotpNowTick.value = Date.now()
+    const draft = passwordLockerTotpDraft.value
+    if (!draft || !draft.secret) {
+      return
+    }
+    try {
+      passwordLockerTotpPreviewCode.value = await computeTotpCode(draft.secret, draft.algorithm, draft.digits, draft.period)
+    } catch {
+      // 密鑰格式有問題（例如手動輸入貼了非 Base32 字元）——預覽區塊留空，不噴錯誤打斷輸入，
+      // 使用者還在打字的過程本來就會經過不完整/不合法的中間狀態。
+      passwordLockerTotpPreviewCode.value = ''
+    }
+  }
+  await tick()
+  passwordLockerTotpPreviewTimer = setInterval(tick, 1000)
+}
+
+function stopPasswordLockerTotpPreview() {
+  if (passwordLockerTotpPreviewTimer) {
+    clearInterval(passwordLockerTotpPreviewTimer)
+    passwordLockerTotpPreviewTimer = null
+  }
+}
+
+// 圓形倒數的 SVG style——讀取 passwordLockerTotpNowTick.value 讓這個函式在模板裡被當成
+// reactive 求值：tick 每秒更新一次，Vue 會偵測到這裡讀取了它，畫面就跟著每秒重繪一次圓環。
+// 剩餘時間 ≤ 5 秒時圓環變色提醒使用者碼快輪替，跟 content-script.js／popup.js 的自動填入
+// 判斷共用同一個 5 秒門檻常數，不要各自訂一個數字。
+const TOTP_RING_WARNING_THRESHOLD_SECONDS = 5
+
+function totpRingStyle(period) {
+  const now = passwordLockerTotpNowTick.value
+  const remaining = totpSecondsRemaining(period, now)
+  return {
+    strokeDasharray: TOTP_RING_CIRCUMFERENCE,
+    strokeDashoffset: totpRingOffset(period, now),
+    stroke: remaining <= TOTP_RING_WARNING_THRESHOLD_SECONDS ? 'var(--color-danger)' : 'var(--color-accent)'
   }
 }
 
@@ -2270,6 +2485,9 @@ function openPasswordLockerFormWithItem(item, decryptedPassword, decryptedUserna
     notes: decryptedNotes,
     linkedVaultItemUuid: item.linkedVaultItemUuid || null
   }
+  passwordLockerTotpExistingHasTotp.value = !!item.hasTotp
+  passwordLockerTotpDraft.value = null
+  passwordLockerTotpQrError.value = ''
   if (item.category === 'EncryptedFile' && vaultItems.value.length === 0) {
     refreshList()
   }
@@ -2277,6 +2495,8 @@ function openPasswordLockerFormWithItem(item, decryptedPassword, decryptedUserna
 
 function closePasswordLockerForm() {
   passwordLockerFormState.value = null
+  stopPasswordLockerTotpPreview()
+  passwordLockerTotpPreviewCode.value = ''
 }
 
 // 切成「已加密檔案」時關聯網站欄位會整個收起來（見表單模板），順手清掉已輸入的內容——
@@ -2485,6 +2705,7 @@ async function submitPasswordLockerForm() {
 
 async function finishPasswordLockerSave() {
   const state = passwordLockerFormState.value
+  const draft = passwordLockerTotpDraft.value
   const result = await requestMessage('addOrUpdatePasswordLockerCredential', 'addOrUpdatePasswordLockerCredentialResult', {
     id: state.id,
     category: state.category,
@@ -2494,11 +2715,18 @@ async function finishPasswordLockerSave() {
     usernameHidden: state.usernameHidden,
     password: state.password,
     notes: state.notes || null,
-    linkedVaultItemUuid: state.category === 'EncryptedFile' ? state.linkedVaultItemUuid : null
+    linkedVaultItemUuid: state.category === 'EncryptedFile' ? state.linkedVaultItemUuid : null,
+    // draft 是 null 代表這次存檔不動 TOTP（不帶 totp 屬性，後端 updateTotp 保持 false，
+    // 維持既有紀錄原樣）；draft 不是 null 時，不管是新密鑰還是「移除」（secret 空字串）都要
+    // 明確帶上，見 finishPasswordLockerSave 呼叫端（handlePasswordLockerTotp* 系列函式）
+    // 上的說明。
+    ...(draft !== null ? { totp: draft } : {})
   })
   if (result.success) {
     showToast(t('passwordLocker.saveSuccess'), 'success')
     passwordLockerFormState.value = null
+    stopPasswordLockerTotpPreview()
+    passwordLockerTotpPreviewCode.value = ''
     refreshPasswordLockerList()
   } else {
     showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.saveFailed')))
@@ -3832,9 +4060,10 @@ function historyDetailText(entry) {
                   <colgroup>
                     <col style="width: 5%;" />
                     <col style="width: 10%;" />
+                    <col style="width: 18%;" />
                     <col style="width: 22%;" />
-                    <col style="width: 33%;" />
-                    <col style="width: 30%;" />
+                    <col style="width: 18%;" />
+                    <col style="width: 27%;" />
                   </colgroup>
                   <thead>
                     <tr>
@@ -3842,6 +4071,7 @@ function historyDetailText(entry) {
                       <th>{{ t('passwordLocker.colTitle') }}</th>
                       <th>{{ t('passwordLocker.colUsername') }}</th>
                       <th>{{ t('passwordLocker.colPassword') }}</th>
+                      <th>{{ t('passwordLocker.colTotp') }}</th>
                       <th></th>
                     </tr>
                   </thead>
@@ -3889,6 +4119,34 @@ function historyDetailText(entry) {
                           :title="passwordLockerRevealedPasswords[item.id]"
                         >{{ passwordLockerRevealedPasswords[item.id] }}</div>
                         <span v-else>••••••••</span>
+                      </td>
+                      <td>
+                        <div v-if="item.hasTotp" class="totp-cell">
+                          <template v-if="passwordLockerRevealedTotps[item.id]">
+                            <svg viewBox="0 0 36 36" class="totp-ring totp-ring--small">
+                              <circle class="totp-ring__track" cx="18" cy="18" r="16" />
+                              <circle class="totp-ring__progress" cx="18" cy="18" r="16" :style="totpRingStyle(passwordLockerRevealedTotps[item.id].period)" />
+                            </svg>
+                            <span
+                              class="totp-cell__code text-input--mono"
+                              role="button"
+                              tabindex="0"
+                              :title="t('passwordLocker.totpCopyHint')"
+                              @click="copyToClipboardWithAutoClear(passwordLockerRevealedTotps[item.id].code)"
+                              @keydown.enter="copyToClipboardWithAutoClear(passwordLockerRevealedTotps[item.id].code)"
+                            >{{ passwordLockerRevealedTotps[item.id].code }}</span>
+                          </template>
+                          <button
+                            type="button"
+                            class="password-field__toggle password-field__toggle--inline"
+                            :aria-label="t(passwordLockerRevealedTotps[item.id] ? 'passwordLocker.hide' : 'passwordLocker.totpShowButton')"
+                            @click="togglePasswordLockerTotpVisibility(item)"
+                          >
+                            <svg v-if="passwordLockerRevealedTotps[item.id]" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
+                            <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                          </button>
+                        </div>
+                        <span v-else class="cell-empty">—</span>
                       </td>
                       <td>
                         <div class="table__actions">
@@ -4651,6 +4909,48 @@ function historyDetailText(entry) {
             <textarea v-model="passwordLockerFormState.notes" rows="2" class="text-input"></textarea>
           </div>
 
+          <!-- TOTP 只有「網站」分類支援——已加密檔案沒有登入頁面這回事，動態驗證碼沒有意義。 -->
+          <div v-if="passwordLockerFormState.category === 'Website'" class="field">
+            <label class="field__label">{{ t('passwordLocker.totpLabel') }}</label>
+
+            <!-- 狀態 1：既有紀錄本來就有設定、這次還沒動它 -->
+            <div v-if="passwordLockerTotpExistingHasTotp && passwordLockerTotpDraft === null" class="totp-configured">
+              <span class="hint-text">{{ t('passwordLocker.totpConfiguredHint') }}</span>
+              <button class="button button--secondary button--tiny" @click="removePasswordLockerTotpDraft" type="button">{{ t('passwordLocker.totpRemoveButton') }}</button>
+            </div>
+
+            <!-- 狀態 2：使用者按了「移除」，還沒真的存檔——給一個反悔的機會 -->
+            <div v-else-if="passwordLockerTotpDraft && !passwordLockerTotpDraft.secret" class="totp-configured">
+              <span class="hint-text hint-text--danger">{{ t('passwordLocker.totpWillBeRemovedHint') }}</span>
+              <button class="button button--secondary button--tiny" @click="passwordLockerTotpDraft = null" type="button">{{ t('passwordLocker.cancel') }}</button>
+            </div>
+
+            <!-- 狀態 3：已經解析出一組（新的或掃描出來的）密鑰，存檔前先讓使用者肉眼確認 -->
+            <div v-else-if="passwordLockerTotpDraft && passwordLockerTotpDraft.secret" class="totp-preview">
+              <svg viewBox="0 0 36 36" class="totp-ring">
+                <circle class="totp-ring__track" cx="18" cy="18" r="16" />
+                <circle class="totp-ring__progress" cx="18" cy="18" r="16" :style="totpRingStyle(passwordLockerTotpDraft.period)" />
+              </svg>
+              <span class="totp-preview__code">{{ passwordLockerTotpPreviewCode || '------' }}</span>
+              <button class="button button--secondary button--tiny" @click="removePasswordLockerTotpDraft" type="button">{{ t('passwordLocker.totpRemoveButton') }}</button>
+            </div>
+
+            <!-- 狀態 4：還沒設定過——兩種輸入路徑並列 -->
+            <div v-else class="totp-setup">
+              <label class="button button--secondary button--tiny totp-setup__upload">
+                {{ t('passwordLocker.totpUploadQrButton') }}
+                <input type="file" accept="image/*" @change="handlePasswordLockerTotpQrFile" hidden />
+              </label>
+              <input
+                type="text"
+                :placeholder="t('passwordLocker.totpManualPlaceholder')"
+                class="text-input"
+                @input="handlePasswordLockerTotpManualInput($event.target.value)"
+              />
+              <p v-if="passwordLockerTotpQrError" class="hint-text hint-text--danger">{{ passwordLockerTotpQrError }}</p>
+            </div>
+          </div>
+
           <div class="modal__footer">
             <button class="button button--secondary" @click="closePasswordLockerForm" type="button">{{ t('passwordLocker.cancel') }}</button>
             <button class="button button--primary" @click="submitPasswordLockerForm" type="button">{{ t('passwordLocker.saveButton') }}</button>
@@ -5295,6 +5595,10 @@ textarea.text-input {
 
 .hint-text--indented {
   margin-left: 1.65rem;
+}
+
+.hint-text--danger {
+  color: var(--color-danger);
 }
 
 /* 資料夾防護頁的「並非加密資料夾」警語：比 danger 淡一階，用來標示「請注意」而不是
@@ -6043,6 +6347,82 @@ textarea.text-input {
 .text-strikethrough {
   text-decoration: line-through;
   opacity: 0.7;
+}
+
+.cell-empty {
+  color: var(--color-text-tertiary);
+}
+
+/* ---- TOTP 動態驗證碼：Google Authenticator 風格的圓形倒數，SVG stroke-dasharray／
+   stroke-dashoffset 畫圓環，見 totpRingStyle() 的計算邏輯（src/FileLocker.Web/src/totp.js
+   的 totpRingOffset）。track 是底色的完整圓、progress 疊在上面隨時間縮短，兩者共用同一個
+   stroke-dasharray（周長），只有 progress 的 dashoffset 會變。 ---- */
+.totp-ring {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  transform: rotate(-90deg); /* 讓圓環從正上方開始縮短，而不是從三點鐘方向 */
+}
+
+.totp-ring__track {
+  fill: none;
+  stroke: var(--color-border-strong);
+  stroke-width: 3;
+}
+
+.totp-ring__progress {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 1s linear, stroke 200ms ease-out;
+}
+
+.totp-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.totp-cell__code {
+  font-size: 0.95rem;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+
+.totp-configured {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.totp-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.totp-preview .totp-ring {
+  width: 28px;
+  height: 28px;
+}
+
+.totp-preview__code {
+  font-family: var(--font-mono);
+  font-size: 1.1rem;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+
+.totp-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.totp-setup__upload {
+  align-self: flex-start;
+  cursor: pointer;
 }
 
 /* 密碼庫新增/編輯表單的關聯網域標籤，跟 .badge 用途類似但需要一個內建的移除按鈕。 */

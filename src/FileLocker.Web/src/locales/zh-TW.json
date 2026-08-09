@@ -367,6 +367,7 @@
   "passwordLocker.noItems": "密碼庫目前是空的",
   "passwordLocker.noSearchResults": "找不到符合搜尋條件的紀錄",
   "passwordLocker.colTitle": "標題",
+  "passwordLocker.colFileName": "檔案名稱",
   "passwordLocker.colUsername": "帳號",
   "passwordLocker.colPassword": "密碼",
   "passwordLocker.colTotp": "驗證碼",

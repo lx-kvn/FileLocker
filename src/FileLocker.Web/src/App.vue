@@ -2233,16 +2233,35 @@ async function togglePasswordLockerUsernameVisibility(item) {
   await ensurePasswordLockerVerified({ type: 'revealUsername', id: item.id })
 }
 
-// TOTP 比密碼／帳號嚴格：不透過 ensurePasswordLockerVerified（那個函式會沿用還沒過期的
-// 既有 session），直接呼叫 openPasswordLockerVerify 強制跳一次驗證彈窗——見規劃討論「比密碼
-// 更嚴格：每次都要重新驗證」的決策，後端 RevealTotpAsync 也有獨立的新鮮度視窗雙重把關，
-// 不是只靠前端這裡配合。
-function togglePasswordLockerTotpVisibility(item) {
+// TOTP 比密碼／帳號嚴格：不透過 ensurePasswordLockerVerified 的 session 檢查那段（那個函式
+// 會沿用還沒過期的既有 session），一律強制走一次完整驗證——見規劃討論「比密碼更嚴格：每次
+// 都要重新驗證」的決策，後端 RevealTotpAsync 也有獨立的新鮮度視窗雙重把關，不是只靠前端這裡
+// 配合。但「強制重新驗證」不等於「一定要跳密碼輸入框」——比照 ensurePasswordLockerVerified
+// 的既有模式，設定過 Passkey 就先靜默試一次 Windows Hello，失敗/取消才退回密碼彈窗。
+async function togglePasswordLockerTotpVisibility(item) {
   if (passwordLockerRevealedTotps.value[item.id]) {
     hidePasswordLockerTotp(item.id)
     return
   }
-  openPasswordLockerVerify({ type: 'revealTotp', id: item.id })
+  const action = { type: 'revealTotp', id: item.id }
+  if (isPasswordLockerAuthBusy.value || passwordLockerVerifyState.value) {
+    return
+  }
+  if (passwordLockerPasskeyEnabled.value) {
+    isPasswordLockerAuthBusy.value = true
+    let result
+    try {
+      result = await requestMessage('verifyPasswordLocker', 'verifyPasswordLockerResult', {})
+    } finally {
+      isPasswordLockerAuthBusy.value = false
+    }
+    if (result.success) {
+      markPasswordLockerSessionVerified()
+      await runPasswordLockerAction(action)
+      return
+    }
+  }
+  openPasswordLockerVerify(action)
 }
 
 function hidePasswordLockerTotp(id) {
@@ -4057,24 +4076,45 @@ function historyDetailText(entry) {
                   </select>
                 </div>
                 <table class="table table--password-locker">
-                  <colgroup>
-                    <col style="width: 5%;" />
-                    <col style="width: 10%;" />
-                    <col style="width: 18%;" />
-                    <col style="width: 22%;" />
-                    <col style="width: 18%;" />
-                    <col style="width: 27%;" />
-                  </colgroup>
-                  <thead>
-                    <tr>
-                      <th></th>
-                      <th>{{ t('passwordLocker.colTitle') }}</th>
-                      <th>{{ t('passwordLocker.colUsername') }}</th>
-                      <th>{{ t('passwordLocker.colPassword') }}</th>
-                      <th>{{ t('passwordLocker.colTotp') }}</th>
-                      <th></th>
-                    </tr>
-                  </thead>
+                  <template v-if="group.key === 'website'">
+                    <colgroup>
+                      <col style="width: 5%;" />
+                      <col style="width: 10%;" />
+                      <col style="width: 18%;" />
+                      <col style="width: 22%;" />
+                      <col style="width: 18%;" />
+                      <col style="width: 27%;" />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th></th>
+                        <th>{{ t('passwordLocker.colTitle') }}</th>
+                        <th>{{ t('passwordLocker.colUsername') }}</th>
+                        <th>{{ t('passwordLocker.colPassword') }}</th>
+                        <th>{{ t('passwordLocker.colTotp') }}</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                  </template>
+                  <!-- 已加密檔案類別不像 Website 一樣有帳號／TOTP 這兩個概念（見規劃文件——
+                       這個類別純粹是幫已加密檔案存一組密碼，不連結真實登入帳號），欄位跟著砍掉，
+                       「標題」也改標成「檔案名」比較符合這個類別實際存的內容。 -->
+                  <template v-else>
+                    <colgroup>
+                      <col style="width: 5%;" />
+                      <col style="width: 43%;" />
+                      <col style="width: 22%;" />
+                      <col style="width: 30%;" />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th></th>
+                        <th>{{ t('passwordLocker.colFileName') }}</th>
+                        <th>{{ t('passwordLocker.colPassword') }}</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                  </template>
                   <tbody>
                     <tr v-for="item in group.items" :key="item.id">
                       <td>
@@ -4089,7 +4129,7 @@ function historyDetailText(entry) {
                           {{ passwordLockerDisplayTitle(item) }}
                         </div>
                       </td>
-                      <td>
+                      <td v-if="group.key === 'website'">
                         <div
                           v-if="item.usernameHidden && !passwordLockerUsernameVisibleIds.has(item.id)"
                           class="cell-name cell-clickable"
@@ -4112,15 +4152,26 @@ function historyDetailText(entry) {
                         >{{ item.usernameHidden ? passwordLockerRevealedUsernames[item.id] : item.username }}</div>
                       </td>
                       <td>
-                        <div
-                          v-if="passwordLockerVisibleIds.has(item.id) && passwordLockerRevealedPasswords[item.id]"
-                          class="cell-name text-input--mono"
-                          style="max-width: calc(100% - 2ch);"
-                          :title="passwordLockerRevealedPasswords[item.id]"
-                        >{{ passwordLockerRevealedPasswords[item.id] }}</div>
-                        <span v-else>••••••••</span>
+                        <div class="totp-cell">
+                          <div
+                            v-if="passwordLockerVisibleIds.has(item.id) && passwordLockerRevealedPasswords[item.id]"
+                            class="cell-name text-input--mono"
+                            style="max-width: calc(100% - 2ch);"
+                            :title="passwordLockerRevealedPasswords[item.id]"
+                          >{{ passwordLockerRevealedPasswords[item.id] }}</div>
+                          <span v-else>••••••••</span>
+                          <button
+                            type="button"
+                            class="password-field__toggle password-field__toggle--inline"
+                            :aria-label="t(passwordLockerVisibleIds.has(item.id) ? 'passwordLocker.hide' : 'passwordLocker.show')"
+                            @click="togglePasswordLockerVisibility(item)"
+                          >
+                            <svg v-if="passwordLockerVisibleIds.has(item.id)" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
+                            <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                          </button>
+                        </div>
                       </td>
-                      <td>
+                      <td v-if="group.key === 'website'">
                         <div v-if="item.hasTotp" class="totp-cell">
                           <template v-if="passwordLockerRevealedTotps[item.id]">
                             <svg viewBox="0 0 36 36" class="totp-ring totp-ring--small">
@@ -4150,15 +4201,6 @@ function historyDetailText(entry) {
                       </td>
                       <td>
                         <div class="table__actions">
-                          <button
-                            type="button"
-                            class="password-field__toggle password-field__toggle--inline"
-                            :aria-label="t(passwordLockerVisibleIds.has(item.id) ? 'passwordLocker.hide' : 'passwordLocker.show')"
-                            @click="togglePasswordLockerVisibility(item)"
-                          >
-                            <svg v-if="passwordLockerVisibleIds.has(item.id)" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
-                            <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                          </button>
                           <button class="button button--tiny" @click="ensurePasswordLockerVerified({ type: 'copy', id: item.id })" type="button">
                             {{ t('passwordLocker.copy') }}
                           </button>
@@ -4179,7 +4221,7 @@ function historyDetailText(entry) {
           </template>
         </div>
 
-        <div v-else-if="activeTab === 'settings'" key="settings">
+        <div v-else-if="activeTab === 'settings'" key="settings" class="settings-tab">
           <h1 class="page-title">
             <svg class="page-title__icon" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
             {{ t('settings.title') }}
@@ -6383,6 +6425,13 @@ textarea.text-input {
   gap: 8px;
 }
 
+/* 密碼／驗證碼欄位固定寬度（table--password-locker 用 colgroup 百分比），眼睛按鈕常常是
+   欄位裡最後一個元素，貼著欄位右邊界，跟下一欄的「複製密碼」等按鈕視覺上擠在一起——補一點
+   右邊距，不影響欄位內其他項目（ring／code）之間原本的 gap。 */
+.totp-cell .password-field__toggle--inline {
+  margin-right: 6px;
+}
+
 .totp-cell__code {
   font-size: 0.95rem;
   letter-spacing: 0.05em;
@@ -6549,6 +6598,22 @@ textarea.text-input {
   line-height: 1.4;
   margin: 0 0 0.65rem;
   color: var(--color-text);
+}
+
+/* 「設定」分頁專用——這個 class 在密碼庫／資料夾防護分頁的設定精靈標題、密碼庫清單的分類標題
+   （網站／已加密檔案）也共用，那些地方不需要跟著調整，只限定 .settings-tab 底下這份規則。
+   先前直接把字級一路加到 1.55rem／1.3rem，跟正上方 1.375rem 的 .page-title（「設定」頁面
+   大標）幾乎一樣大，兩個大標疊在一起反而讓整頁看起來很「吵」，層級感沒有更清楚。改成 Apple
+   排版準則的作法：層級感靠字級＋字重＋字距一起做，不是單靠拉大字級——字級只從原本 1.15rem
+   微調到 1.08rem（跟下方 0.95rem 的 .settings-subsection__title 保持適度差距即可，不用拉開
+   到誇張），主要靠字重（700，本來就有）、更緊的字距（大字級字距要收緊，是 Apple 字體排版的
+   既有原則）、跟 .settings-subsection__title 的次要文字色（--color-text-secondary）對比
+   出來的顏色深淺，三者一起做出「一眼看出這是標題」的效果。 */
+.settings-tab .settings-section__title {
+  font-size: 1.08rem;
+  letter-spacing: -0.015em;
+  line-height: 1.3;
+  margin: 0 0 0.6rem;
 }
 
 /* 密碼庫設定區塊：密碼／Passkey／恢復金鑰是三條各自獨立的解鎖路徑，用分隔線隔成三塊，

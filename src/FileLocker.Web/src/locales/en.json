@@ -367,6 +367,7 @@
   "passwordLocker.noItems": "Password Locker is empty",
   "passwordLocker.noSearchResults": "No entries match your search",
   "passwordLocker.colTitle": "Title",
+  "passwordLocker.colFileName": "File Name",
   "passwordLocker.colUsername": "Username",
   "passwordLocker.colPassword": "Password",
   "passwordLocker.colTotp": "2FA code",

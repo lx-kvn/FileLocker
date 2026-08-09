@@ -21,14 +21,27 @@ namespace FileLocker.Core.Crypto;
 /// 這樣呼叫 SetForegroundWindow 才不會被上述限制擋下來——這是繞過該限制最常見、最可靠的做法，
 /// 三個原本直接呼叫 SetForegroundWindow 的地方（PrepareForegroundHandoff／ReclaimForeground／
 /// PromoteNewForeignWindowAsync）都改用這個版本。
+///
+/// SuspendPromotion／ResumePromotion（public，供 FileLocker.App 呼叫）：一個真正被設成
+/// HWND_TOPMOST 的視窗，不管另一個視窗再怎麼搶輸入焦點（SetForegroundWindow）都不可能被
+/// 疊到它上面——這是 Windows z-order 的硬規則，跟哪個視窗「目前作用中」無關。瀏覽器驗證
+/// 流程裡，密碼輸入視窗想在 Windows Hello 對話框還開著時暫時浮到最上面，單靠搶焦點做不到，
+/// 一定要先把 Hello 對話框臨時降回非置頂，密碼視窗才有機會真的疊上去，事後再把 Hello
+/// 對話框的置頂狀態還原。這裡把「目前正在維持置頂的視窗清單」存成類別層級的共享狀態，
+/// 才能讓 App 專案在 PromoteNewForeignWindowAsync 的輪詢迴圈之外，從別的地方暫停/恢復它。
 /// </summary>
-internal static class WindowFocusHelper
+public static class WindowFocusHelper
 {
     private const uint AsfwAny = 0xFFFFFFFF;
     private static readonly IntPtr HwndTopMost = new(-1);
+    private static readonly IntPtr HwndNoTopMost = new(-2);
     private const uint SwpNoMove = 0x0002;
     private const uint SwpNoSize = 0x0001;
     private const uint SwpShowWindow = 0x0040;
+
+    private static readonly object PromotionLock = new();
+    private static readonly HashSet<IntPtr> PromotedWindows = new();
+    private static bool _promotionSuspended;
 
     public static void PrepareForegroundHandoff(IntPtr ownerWindowHandle)
     {
@@ -91,8 +104,18 @@ internal static class WindowFocusHelper
     }
 
     /// <summary>
-    /// 背景輪詢最多 5 秒，找出「觸發驗證後新出現」的可見視窗，找到就強制釘到最上層＋搶前景。
-    /// 透過 CancellationToken 在驗證完成（不管成功失敗）時提前停止，不會一直空轉到 5 秒逾時。
+    /// 背景輪詢最多 60 秒，找出「觸發驗證後新出現」的可見視窗，找到就強制釘到最上層＋搶前景。
+    /// 透過 CancellationToken 在驗證完成（不管成功失敗）時提前停止，不會一直空轉到 60 秒逾時。
+    /// 原本這裡是 5 秒——瀏覽器擴充功能觸發的無視窗驗證流程（見 App.xaml.cs
+    /// RequestBrowserVerificationAsync）實測發現這個上限太短：使用者從指紋辨識器上抬起手指、
+    /// 重新對準，或 Windows Hello PIN 輸入慢一點，5 秒很容易就過了，一旦輪詢提前放棄，
+    /// 驗證視窗被系統或其他視窗擠到背景後就再也沒人幫它搶回來。60 秒對齊一般 Windows Hello
+    /// 逾時的量級，同時保留 CancellationToken 提前停止（驗證一結束就取消，不會真的空轉滿）。
+    ///
+    /// 技術本身（SetWindowPos + HWND_TOPMOST，見下方迴圈）跟 PowerToys「永遠置頂」模組是
+    /// 同一套 Win32 API，差別只在 PowerToys 是使用者主動選定視窗後就永久套用，這裡的差異是
+    /// 「多久後放棄」，不是換一套不同的技術——把逾時拉長到跟 PowerToys 一樣「持續套用直到
+    /// 使用者自己取消」的效果，而不是自己武斷設一個過短的時限。
     ///
     /// 刻意不排除「跟我們自己同一個行程」的視窗：未封裝的 Win32 應用程式呼叫 WinRT 的
     /// KeyCredentialManager API 時，驗證 UI 有可能是透過行程內（in-process）brokered
@@ -105,43 +128,99 @@ internal static class WindowFocusHelper
     public static async Task PromoteNewForeignWindowAsync(CancellationToken cancellationToken)
     {
         var before = EnumerateVisibleTopLevelWindows();
-        var deadline = DateTime.UtcNow.AddSeconds(5);
-        IntPtr? promotedWindow = null;
+        var deadline = DateTime.UtcNow.AddSeconds(60);
 
-        while (!cancellationToken.IsCancellationRequested && DateTime.UtcNow < deadline)
+        try
         {
-            var current = EnumerateVisibleTopLevelWindows();
-
-            if (promotedWindow is { } known && current.Contains(known))
+            while (!cancellationToken.IsCancellationRequested && DateTime.UtcNow < deadline)
             {
-                SetWindowPos(known, HwndTopMost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpShowWindow);
-                ForceSetForegroundWindow(known);
-            }
-            else
-            {
-                promotedWindow = null;
+                var current = EnumerateVisibleTopLevelWindows();
 
-                foreach (var hwnd in current)
+                lock (PromotionLock)
                 {
-                    if (before.Contains(hwnd))
+                    // 已經追蹤到、但已經關掉的視窗要從清單移除，不然這個集合只會越滾越大。
+                    PromotedWindows.RemoveWhere(hwnd => !current.Contains(hwnd));
+
+                    // Windows Hello 的驗證 UI 常常是分階段的多個視窗（例如先跳一個「選擇驗證
+                    // 方式」的過場視窗，才換成真正的指紋／PIN 輸入視窗）——之前這裡只追蹤
+                    // 「第一個找到的新視窗」，一旦鎖定就不再掃描其他候選，後面才出現的第二個
+                    // 視窗完全沒被置頂過，這正是「視窗有上來，但沒有長時間被固定住」的成因之一。
+                    // 改成持續掃描＋持續重新置頂「目前還存在的所有新視窗」，不限一個。
+                    foreach (var hwnd in current)
                     {
-                        continue;
+                        if (before.Contains(hwnd))
+                        {
+                            continue;
+                        }
+                        PromotedWindows.Add(hwnd);
                     }
 
-                    SetWindowPos(hwnd, HwndTopMost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpShowWindow);
-                    ForceSetForegroundWindow(hwnd);
-                    promotedWindow = hwnd;
-                    break;
+                    if (!_promotionSuspended)
+                    {
+                        foreach (var hwnd in PromotedWindows)
+                        {
+                            ApplyTopmost(hwnd);
+                        }
+                    }
+                }
+
+                try
+                {
+                    await Task.Delay(50, cancellationToken);
+                }
+                catch (TaskCanceledException)
+                {
+                    return;
                 }
             }
-
-            try
+        }
+        finally
+        {
+            lock (PromotionLock)
             {
-                await Task.Delay(50, cancellationToken);
+                PromotedWindows.Clear();
+                _promotionSuspended = false;
             }
-            catch (TaskCanceledException)
+        }
+    }
+
+    private static void ApplyTopmost(IntPtr hwnd)
+    {
+        // 先降回非置頂再重新升成置頂——單純重複呼叫「設成置頂」有時候會被 Windows
+        // 忽略（z-band 判定被快取住，尤其這種系統层級的 Windows Hello 對話框），
+        // 先降再升是強迫視窗管理員重新處理這個視窗所在 z-band 的已知技巧。
+        SetWindowPos(hwnd, HwndNoTopMost, 0, 0, 0, 0, SwpNoMove | SwpNoSize);
+        SetWindowPos(hwnd, HwndTopMost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpShowWindow);
+        ForceSetForegroundWindow(hwnd);
+    }
+
+    /// <summary>暫時把目前正在維持置頂的視窗（Windows Hello 對話框）降回非置頂——一個真正
+    /// 置頂的視窗，不管另一個視窗怎麼搶輸入焦點都不可能被疊到它上面，這是 Windows z-order
+    /// 的硬規則。呼叫端（例如密碼輸入視窗想暫時浮到最上面）要在做完想做的事之後呼叫
+    /// <see cref="ResumePromotion"/> 還原，不然 Windows Hello 對話框會一直卡在非置頂狀態。
+    /// 暫停期間 PromoteNewForeignWindowAsync 本身還是繼續在背景輪詢、繼續追蹤新出現的視窗，
+    /// 只是不會再重新套用置頂，避免跟呼叫端手上正在做的事互相打架。</summary>
+    public static void SuspendPromotion()
+    {
+        lock (PromotionLock)
+        {
+            _promotionSuspended = true;
+            foreach (var hwnd in PromotedWindows)
             {
-                return;
+                SetWindowPos(hwnd, HwndNoTopMost, 0, 0, 0, 0, SwpNoMove | SwpNoSize);
+            }
+        }
+    }
+
+    /// <summary>還原 <see cref="SuspendPromotion"/> 暫停之前的置頂狀態。</summary>
+    public static void ResumePromotion()
+    {
+        lock (PromotionLock)
+        {
+            _promotionSuspended = false;
+            foreach (var hwnd in PromotedWindows)
+            {
+                ApplyTopmost(hwnd);
             }
         }
     }

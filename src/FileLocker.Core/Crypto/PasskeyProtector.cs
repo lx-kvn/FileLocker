@@ -43,7 +43,13 @@ public static class PasskeyProtector
         WindowFocusHelper.PrepareForegroundHandoff(ownerWindowHandle);
 
         using var cts = new CancellationTokenSource();
-        var promoteTask = WindowFocusHelper.PromoteNewForeignWindowAsync(cts.Token);
+        // Task.Run 讓這條輪詢迴圈一開始就活在沒有 SynchronizationContext 的執行緒集區
+        // 執行緒上——這個方法常常是從 WPF 的 UI 執行緒事件處理常式（例如按鈕 Click）直接
+        // 呼叫的，如果不這樣包一層，PromoteNewForeignWindowAsync 內部 `await Task.Delay`
+        // 之後的延續就會透過 DispatcherSynchronizationContext 排回 UI 執行緒，跟 UI 執行緒
+        // 搶著處理排入佇列的工作，實測會讓驗證視窗關閉前後那一小段時間卡頓（跟
+        // PasswordLockerNativePipeServer.Start() 曾經踩過的是同一類坑，見該處說明）。
+        var promoteTask = Task.Run(() => WindowFocusHelper.PromoteNewForeignWindowAsync(cts.Token));
 
         var result = await KeyCredentialManager.RequestCreateAsync(credentialName, KeyCredentialCreationOption.ReplaceExisting);
 
@@ -70,7 +76,13 @@ public static class PasskeyProtector
         var challengeBuffer = CryptographicBuffer.CreateFromByteArray(challenge);
 
         using var cts = new CancellationTokenSource();
-        var promoteTask = WindowFocusHelper.PromoteNewForeignWindowAsync(cts.Token);
+        // Task.Run 讓這條輪詢迴圈一開始就活在沒有 SynchronizationContext 的執行緒集區
+        // 執行緒上——這個方法常常是從 WPF 的 UI 執行緒事件處理常式（例如按鈕 Click）直接
+        // 呼叫的，如果不這樣包一層，PromoteNewForeignWindowAsync 內部 `await Task.Delay`
+        // 之後的延續就會透過 DispatcherSynchronizationContext 排回 UI 執行緒，跟 UI 執行緒
+        // 搶著處理排入佇列的工作，實測會讓驗證視窗關閉前後那一小段時間卡頓（跟
+        // PasswordLockerNativePipeServer.Start() 曾經踩過的是同一類坑，見該處說明）。
+        var promoteTask = Task.Run(() => WindowFocusHelper.PromoteNewForeignWindowAsync(cts.Token));
 
         var signResult = await openResult.Credential.RequestSignAsync(challengeBuffer);
 

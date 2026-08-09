@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System.Collections.Generic;
+using System.IO;
 using System.IO.Pipes;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -13,6 +14,7 @@ using FileLocker.Core.History;
 using FileLocker.Core.Security;
 using FileLocker.Core.Settings;
 using FileLocker.Core.Vault;
+using FileLocker.PluginContracts;
 
 namespace FileLocker.App;
 
@@ -40,8 +42,11 @@ public partial class App : Application
     private VaultIndexCache? _vaultIndexCache;
     private VaultChangeWatcher? _vaultChangeWatcher;
     private FolderGuardService? _folderGuardService;
+    private IPasswordLockerPlugin? _passwordLockerPlugin;
+    private PasswordLockerModuleStatus _passwordLockerModuleStatus = PasswordLockerModuleStatus.NotInstalled;
     private DispatcherTimer? _folderGuardAutoRelockTimer;
     private TrayIconManager? _trayIconManager;
+    private PasswordLockerNativePipeServer? _passwordLockerPipeServer;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -109,6 +114,44 @@ public partial class App : Application
                 .Where(entry => entry.Status == FolderGuardStatus.Locked)
                 .Select(entry => entry.Path)
                 .ToList());
+        // 密碼庫（Password Locker）是可選配部件（見 FileLocker_密碼庫_功能規劃.md 第 2 節），
+        // 主體完全不編譯期依賴它——這裡只準備好資料目錄跟 vaultItemExists 委派，實際載入交給
+        // PasswordLockerPluginLoader。委派裡的 _vaultIndexCache 這時候還沒賦值（下面才建構），
+        // 但這個 lambda 只有真的被部件呼叫時才會執行，那時候一定已經賦值完成，是安全的延遲求值。
+        // 三步驟依序執行，順序不能換（見規劃文件第 9.1/9.2 節）：
+        // 1. 先處理「上次執行期間按過解除安裝」的標記——卸載比更新優先，兩者理論上不該同時
+        //    發生，但萬一真的同時發生，使用者最後一個動作是「卸載」的話直接照做，不用再去
+        //    處理暫存資料夾。
+        // 2. 再處理「上次執行期間下載過新版本待生效」的暫存資料夾，一定要在
+        //    PasswordLockerPluginLoader.Load 之前做，不然這次啟動還是會載入舊版本。
+        // 3. 部件（不管是剛換上新版、還是本來就在）的檔案清單同步進 mswi 的
+        //    install_manifest.json，讓 Windows 原生解除安裝也能正確清掉這個資料夾。
+        PasswordLockerModuleInstaller.ApplyPendingUninstallIfMarked();
+        PasswordLockerModuleInstaller.SwapPendingInstallIfPresent();
+        PasswordLockerModuleInstaller.SyncInstallManifest();
+
+        var passwordLockerDir = Path.Combine(appDataDir, "PasswordLocker");
+        (_passwordLockerModuleStatus, _passwordLockerPlugin) = PasswordLockerPluginLoader.Load(
+            passwordLockerDir, uuid => _vaultIndexCache!.GetItems().Any(entry => entry.Uuid == uuid));
+
+        // Native Messaging Host 註冊（見規劃文件第 5 節）——不管部件狀態，安靜嘗試就好：
+        // extension-id.txt／Native Host exe 沒帶著（開發階段還沒準備好、或這份部件版本較舊）
+        // 的話 EnsureRegistered 內部本來就會直接跳過，不用在這裡先判斷 _passwordLockerModuleStatus。
+        PasswordLockerNativeHostRegistrar.EnsureRegistered(Path.Combine(AppContext.BaseDirectory, "plugins", "PasswordLocker"));
+
+        // 瀏覽器擴充功能的本機端點——不管這次啟動是不是 --startup 靜默模式都要監聽，因為
+        // 自動填入／驗證完全不需要主視窗開著（見規劃文件第 5 節，RequestBrowserVerificationAsync
+        // 刻意不叫出主視窗）。_passwordLockerPlugin 可能是 null（部件未安裝），
+        // PasswordLockerNativePipeServer 內部會處理這種情況、回傳明確的錯誤，不是不啟動監聽。
+        // openPasswordLockerApp 是唯一「使用者明確要求叫出主視窗」的例外（擴充功能 popup 的
+        // 「管理密碼」按鈕），跟其他訊息刻意不叫視窗的設計不衝突，各自服務不同的使用情境。
+        _passwordLockerPipeServer = new PasswordLockerNativePipeServer(
+            () => _passwordLockerPlugin,
+            RequestBrowserVerificationAsync,
+            () => Dispatcher.InvokeAsync(() => ShowMainWindow("passwordLocker")).Task,
+            Path.Combine(AppContext.BaseDirectory, "plugins", "PasswordLocker", "FileLocker.PasswordLockerNativeHost.exe"));
+        _passwordLockerPipeServer.Start();
+
         _settingsManager = settingsManager;
         _settings = settings;
         _appDataDir = appDataDir;
@@ -179,8 +222,105 @@ public partial class App : Application
         }
     }
 
+    /// <summary>Native Host 轉來的請求缺驗證時呼叫。使用者明確要求「不要叫出 FileLocker 主視窗，
+    /// 直接跳 Passkey 或密碼輸入框就好」——跟原本「叫出主視窗→切分頁→跳 WebView2 驗證彈窗」
+    /// 的做法（沿用 App 分頁那套 UI）不同，這裡完全繞過 MainWindow／WebView2，直接叫出
+    /// PasswordLockerBrowserVerifyWindow（技術結構比照雙擊 .locked 檔案的 PasswordPromptWindow）
+    /// ——這個視窗一開啟就顯示，有 Passkey 就自動觸發驗證，沒完成才顯示密碼欄位，整個過程只有
+    /// 這一個視窗，它自己的 HWND 就是 Windows Hello 前景固定手法要用的 ownerWindowHandle。
+    /// 之前這裡另外準備一個隱形視窗當 owner，只是為了在「Passkey 直接成功」時完全不顯示任何
+    /// 視窗——但那個隱形視窗的生命週期跟真正的驗證流程脫節（沒有跟著這次驗證一起關閉、下次
+    /// 驗證還要重新判斷要不要建立），使用者實測也反映這個隱形視窗驗證完不會自己消失，乾脆
+    /// 拿掉，改成用「這個視窗本身」當 owner，設計跟生命週期都單純很多。
+    ///
+    /// targetDomain：「選擇密碼」情境下，domain 是這筆密碼自己歸屬、拿來驗證的網域，但密碼
+    /// 實際上會被填進使用者當下所在的另一個網域（見 content-script.js 的 pickExistingCredential
+    /// ——密碼「屬於」它自己既有的網域，不是憑空冒出一個跟這筆紀錄無關的網域）。2026-08-09
+    /// 這輪稽核發現視窗只顯示 domain，使用者完全看不出密碼即將被用在別的網站，容易被誘導在
+    /// 惡意網站上對著看起來眼熟的網域名稱按下驗證。targetDomain 跟 domain 不同時才需要多顯示
+    /// 一行，相同（多數情境：直接在密碼歸屬的那個網站上自動填入）就不用。</summary>
+    private async Task<bool> RequestBrowserVerificationAsync(string domain, string? targetDomain)
+    {
+        if (_passwordLockerPlugin is null)
+        {
+            return false;
+        }
+
+        var passkeyEnabled = await GetPasswordLockerPasskeyEnabledAsync();
+        var theme = _settings?.Theme ?? "light";
+
+        // Show()（非模態）＋ ResultTask，不是 ShowDialog()——WindowActivation.ForceToForeground
+        // 內部會呼叫一次 Show()，緊接著再呼叫 ShowDialog() 會被 WPF 直接丟
+        // InvalidOperationException（見 PasswordLockerBrowserVerifyWindow 開頭的說明），
+        // 這正是先前「按確定/取消卡住好幾秒才關掉」的根因——例外沒被接住，整條等待鏈路
+        // 從來沒有正常完成過。
+        var window = await Dispatcher.InvokeAsync(() =>
+        {
+            var window = new PasswordLockerBrowserVerifyWindow(domain, targetDomain, passkeyEnabled, theme, TryVerifyPasswordLockerAsync);
+            WindowActivation.ForceToForeground(window);
+            return window;
+        });
+        var verified = await window.ResultTask;
+
+        if (verified)
+        {
+            await MarkBrowserSiteVerifiedAsync(domain);
+        }
+        return verified;
+    }
+
+    /// <summary>叫出 PasswordLockerBrowserVerifyWindow 之前先查一次密碼庫有沒有設定 Passkey——
+    /// 沿用既有的 listPasswordLocker 訊息（回應本來就帶 passkeyEnabled 欄位，見
+    /// PasswordLockerPlugin.HandleListAsync），不需要為此另外新增一個查詢用的訊息類型。</summary>
+    private async Task<bool> GetPasswordLockerPasskeyEnabledAsync()
+    {
+        var response = await _passwordLockerPlugin!.HandleRequestAsync(
+            "listPasswordLocker", JsonSerializer.SerializeToElement(new { }), IntPtr.Zero);
+        if (response is null)
+        {
+            return false;
+        }
+        var responseElement = JsonSerializer.SerializeToElement(response);
+        return responseElement.TryGetProperty("passkeyEnabled", out var prop) && prop.GetBoolean();
+    }
+
+    /// <summary>呼叫密碼庫部件的 verifyPasswordLocker，繞過 WebView2 直接拿 <see cref="IPasswordLockerPlugin"/>
+    /// 用——回應是匿名型別（見 PasswordLockerPlugin.HandleVerifyAsync），序列化後用原始（非 camelCase）
+    /// 屬性名稱讀取，因為這裡不像 PasswordLockerNativePipeServer 那樣套用了 camelCase 命名策略。</summary>
+    private async Task<(bool Success, string? ErrorMessage, string? ErrorCode)> TryVerifyPasswordLockerAsync(
+        string? password, bool tryPasskeyFirst, IntPtr ownerWindowHandle)
+    {
+        var payload = new Dictionary<string, object?> { ["tryPasskeyFirst"] = tryPasskeyFirst };
+        if (password is not null)
+        {
+            payload["password"] = password;
+        }
+        var request = JsonSerializer.SerializeToElement(payload);
+        var response = await _passwordLockerPlugin!.HandleRequestAsync("verifyPasswordLocker", request, ownerWindowHandle);
+        if (response is null)
+        {
+            return (false, "密碼庫部件不認得驗證請求", null);
+        }
+
+        var responseElement = JsonSerializer.SerializeToElement(response);
+        var success = responseElement.TryGetProperty("Success", out var successProp) && successProp.GetBoolean();
+        var errorMessage = responseElement.TryGetProperty("ErrorMessage", out var msgProp) ? msgProp.GetString() : null;
+        var errorCode = responseElement.TryGetProperty("ErrorCode", out var codeProp) ? codeProp.GetString() : null;
+        return (success, errorMessage, errorCode);
+    }
+
+    /// <summary>驗證通過後，把「這個網站」記錄成已驗證（每網站獨立計時的滑動視窗 session，見規劃
+    /// 文件第 3 節，是跟上面 verifyPasswordLocker 設定的 App 分頁 session 分開的另一份執行期狀態）
+    /// ——RevealCredentialForSiteAsync 兩者都要通過才會真的把密碼交出去。</summary>
+    private async Task MarkBrowserSiteVerifiedAsync(string domain)
+    {
+        var request = JsonSerializer.SerializeToElement(new { domain });
+        await _passwordLockerPlugin!.HandleRequestAsync("recordPasswordLockerSiteVerified", request, IntPtr.Zero);
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
+        _passwordLockerPipeServer?.Stop();
         _folderGuardAutoRelockTimer?.Stop();
         _trayIconManager?.Dispose();
         _vaultChangeWatcher?.Dispose();
@@ -351,7 +491,7 @@ public partial class App : Application
     {
         var mainWindow = new MainWindow(
             _vaultManager!, _historyLogger!, _lockService!, _settingsManager!, _settings!, _appDataDir!,
-            _vaultIndexCache!, _vaultChangeWatcher!, _folderGuardService!,
+            _vaultIndexCache!, _vaultChangeWatcher!, _folderGuardService!, _passwordLockerPlugin, _passwordLockerModuleStatus,
             initialPaths, initialAction);
         mainWindow.Closed += (_, _) => ShutdownIfNoWindowsRemain();
         MainWindow = mainWindow;
@@ -367,7 +507,7 @@ public partial class App : Application
     // ShellExtensionRegistrar 內部也算了一份一模一樣的值——兩邊是各自獨立的登錄檔登記職責，
     // 不特地共用一個欄位，這裡額外包成方法只是因為現在有兩個呼叫點（啟動時、設定切換時）。
     private static string GetAppExePath()
-        => Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "FileLocker.App.exe");
+        => Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "FileLocker.exe");
 
     private void CreateTrayIcon()
     {
@@ -378,6 +518,7 @@ public partial class App : Application
             openEncrypt: () => ShowMainWindow("encrypt"),
             openList: () => ShowMainWindow("list"),
             openFolderGuard: () => ShowMainWindow("folderGuard"),
+            openPasswordLocker: () => ShowMainWindow("passwordLocker"),
             exitApplication: ExitApplicationFromTray);
     }
 

@@ -74,6 +74,7 @@ public static class ErrorCodes
     public const string PasswordLockerLockedOut = "PASSWORD_LOCKER_LOCKED_OUT";
     public const string PasswordLockerEntryNotFound = "PASSWORD_LOCKER_ENTRY_NOT_FOUND";
     public const string PasswordLockerNotVerified = "PASSWORD_LOCKER_NOT_VERIFIED";
+    public const string PasswordLockerCsvInvalidFormat = "PASSWORD_LOCKER_CSV_INVALID_FORMAT";
 
     // 對應軟體更新檢查（installer_config.json 版本比對 GitHub release）。
     public const string UpdateCheckNotInstalled = "UPDATE_CHECK_NOT_INSTALLED";

@@ -2,6 +2,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\FileLocker.Core\FileLocker.Core.csproj" />
+    <!-- 只依賴介面契約，不依賴 FileLocker.PasswordLocker 本體——密碼庫是可選配部件（見
+         FileLocker_密碼庫_功能規劃.md 第 2 節），編譯期完全不引用它，執行期才用
+         AssemblyLoadContext 動態載入（見 PasswordLockerPluginLoader）。 -->
+    <ProjectReference Include="..\FileLocker.PluginContracts\FileLocker.PluginContracts.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -24,6 +28,11 @@
   </ItemGroup>
 
   <PropertyGroup>
+    <!-- 專案名稱維持 FileLocker.App（跟其他 FileLocker.* 專案的命名慣例一致），但建置出來的
+         執行檔改叫 FileLocker.exe——工作列/工作管理員顯示的檔名更貼近產品名稱，不用讓使用者
+         看到內部的專案分層命名。ShellExtensionRegistrar／App.xaml.cs 裡對應的備援檔名字串、
+         installer/filelocker_installer.json 的 main_exe 都要跟著改，見這幾處的說明。 -->
+    <AssemblyName>FileLocker</AssemblyName>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>

@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 純介面定義，不用任何 Windows 專屬 API（WPF／WinForms／WinRT），刻意不跟其他專案一樣
+         用 net10.0-windows10.0.19041.0——這個專案是 FileLocker.App 跟可選配部件（例如
+         FileLocker.PasswordLocker）之間唯一共同依賴的最小公分母，兩邊分別編譯成不同 TFM
+         時，較通用的 net10.0 才能被雙方安全引用，不會綁死平台限定的假設。 -->
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

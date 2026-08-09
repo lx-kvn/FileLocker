@@ -1,4 +1,4 @@
-namespace FileLocker.Core.PasswordLocker;
+namespace FileLocker.PasswordLocker;
 
 /// <summary>
 /// 對應規劃文件（FileLocker_密碼庫_功能規劃.md）：獨立於加密 Vault、資料夾防護之外的第三套
@@ -7,14 +7,24 @@ namespace FileLocker.Core.PasswordLocker;
 /// </summary>
 public class PasswordLockerData
 {
-    /// <summary>密碼驗證用（Argon2id 分割金鑰模式，跟 Vault／資料夾防護同一套）。</summary>
+    /// <summary>密碼驗證用（Argon2id 分割金鑰模式，跟 Vault／資料夾防護同一套）。Locker 主金鑰
+    /// 本身是獨立產生的隨機值，不是直接從密碼衍生——這裡的 Argon2 輸出只是拿來「包住」主金鑰的
+    /// 包裝金鑰（PasswordWrappedMasterKeyBase64），跟 Passkey／恢復金鑰的 wrap/unwrap 模式對稱。
+    /// 這樣改密碼（見 PasswordLockerService.ChangePasswordAsync）只需要重新包一次主金鑰，不用
+    /// 重新加密每一筆憑證，Passkey／恢復金鑰包的也還是同一把主金鑰，不受影響。</summary>
     public string? PasswordSaltBase64 { get; set; }
     public string? PasswordVerificationHashBase64 { get; set; }
+    public string? PasswordWrappedMasterKeyBase64 { get; set; }
 
     /// <summary>Passkey（裝置綁定），重用 PasskeyProtector 的完整 wrap/unwrap 流程——
-    /// 密碼庫存的是真正要加密的內容，不是資料夾防護那種純驗證用法，需要真的把 Locker 主金鑰包起來。</summary>
+    /// 密碼庫存的是真正要加密的內容，不是資料夾防護那種純驗證用法，需要真的把 Locker 主金鑰包起來。
+    /// PasskeyChallengeBase64 是設定當下用來簽章、進而衍生包裝金鑰的那份挑戰資料，驗證時必須
+    /// 重複使用同一份（不能每次都重新產生亂數），否則簽章結果不同、衍生出來的包裝金鑰跟著不同，
+    /// UnwrapContentKey 一定會失敗——跟 Vault 的 LockService／VaultMetadata.PasskeyChallenge
+    /// 是同一個道理，見 LockService.DecryptByPasskeyAsync。</summary>
     public bool PasskeyEnabled { get; set; }
     public string? PasskeyCredentialName { get; set; }
+    public string? PasskeyChallengeBase64 { get; set; }
     public string? PasskeyWrappedMasterKeyBase64 { get; set; }
 
     /// <summary>恢復金鑰，重用 RecoveryKeyProtector 的 wrap/unwrap 模式，第三條獨立解鎖路徑。</summary>
@@ -23,7 +33,7 @@ public class PasswordLockerData
 
     /// <summary>自動填入的驗證有效期：每個網站獨立計時、滑動視窗，這裡只存逾時分鐘數，
     /// 實際的「網站→上次驗證時間」對應表是執行期記憶體狀態，不持久化（見 PasswordLockerService）。</summary>
-    public int SessionTimeoutMinutes { get; set; } = 5;
+    public int SessionTimeoutMinutes { get; set; } = 1;
 
     public List<PasswordCredentialEntry> Entries { get; set; } = new();
 }
@@ -35,10 +45,12 @@ public enum CredentialCategory
 }
 
 /// <summary>
-/// 密碼庫裡的一筆憑證。AssociatedDomains／Username／Title 刻意不加密——瀏覽器分頁載入網站時
-/// 要能在使用者驗證身份之前就比對「有沒有存過這個網站的憑證」，否則每個網站都得先驗證才知道
-/// 有沒有存過，變相強迫每次都要驗證，違背「不打擾」的設計（見規劃文件第 5 節）。
-/// EncryptedPasswordBase64／EncryptedNotesBase64 才是需要保護的機密內容。
+/// 密碼庫裡的一筆憑證。AssociatedDomains／Title 刻意不加密——瀏覽器分頁載入網站時要能在使用者
+/// 驗證身份之前就比對「有沒有存過這個網站的憑證」，否則每個網站都得先驗證才知道有沒有存過，
+/// 變相強迫每次都要驗證，違背「不打擾」的設計（見規劃文件第 5 節）。這個比對只依賴
+/// AssociatedDomains，不依賴 Username，所以 Username 可以額外提供「隱藏」選項（見
+/// UsernameHidden）而不影響這個既有設計。EncryptedPasswordBase64／EncryptedNotesBase64
+/// 一律是需要保護的機密內容。
 /// </summary>
 public class PasswordCredentialEntry
 {
@@ -50,7 +62,14 @@ public class PasswordCredentialEntry
     public string Title { get; set; } = "";
 
     public List<string> AssociatedDomains { get; set; } = new();
+
+    /// <summary>UsernameHidden 為 true 時，這裡固定是空字串——真正的帳號值只存在
+    /// EncryptedUsernameBase64 裡，跟密碼欄位一樣用 Locker 主金鑰加密。這是使用者自願放棄
+    /// 「不驗證就能瀏覽帳號」這個好處、換取「檔案本身也看不到帳號」的個別選項，預設關閉
+    /// （見規劃討論：多數帳號不需要，只有少數敏感帳號才會特地勾選）。</summary>
+    public bool UsernameHidden { get; set; }
     public string Username { get; set; } = "";
+    public string? EncryptedUsernameBase64 { get; set; }
 
     public string EncryptedPasswordBase64 { get; set; } = "";
     public string? EncryptedNotesBase64 { get; set; }

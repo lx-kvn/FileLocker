@@ -1,7 +1,6 @@
-using FileLocker.Core.PasswordLocker;
-using Xunit;
+using FileLocker.PasswordLocker;
 
-namespace FileLocker.Core.Tests.PasswordLocker;
+namespace FileLocker.PasswordLocker.Tests;
 
 public class PasswordLockerStoreTests : IDisposable
 {
@@ -28,7 +27,7 @@ public class PasswordLockerStoreTests : IDisposable
         Assert.Null(data.PasswordVerificationHashBase64);
         Assert.False(data.PasskeyEnabled);
         Assert.False(data.RecoveryKeyEnabled);
-        Assert.Equal(5, data.SessionTimeoutMinutes);
+        Assert.Equal(1, data.SessionTimeoutMinutes);
         Assert.Empty(data.Entries);
     }
 
@@ -73,11 +72,11 @@ public class PasswordLockerStoreTests : IDisposable
     }
 
     [Fact]
-    public void PasswordLockerData_DefaultValues_SessionTimeoutMinutes5()
+    public void PasswordLockerData_DefaultValues_SessionTimeoutMinutes1()
     {
         var data = new PasswordLockerData();
 
-        Assert.Equal(5, data.SessionTimeoutMinutes);
+        Assert.Equal(1, data.SessionTimeoutMinutes);
         Assert.False(data.PasskeyEnabled);
         Assert.False(data.RecoveryKeyEnabled);
     }
@@ -101,6 +100,6 @@ public class PasswordLockerStoreTests : IDisposable
 
         var data = oldFormatStore.Load();
 
-        Assert.Equal(5, data.SessionTimeoutMinutes);
+        Assert.Equal(1, data.SessionTimeoutMinutes);
     }
 }

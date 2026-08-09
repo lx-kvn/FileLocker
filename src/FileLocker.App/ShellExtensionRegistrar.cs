@@ -7,7 +7,7 @@ namespace FileLocker.App;
 
 /// <summary>
 /// 讓 FileLocker.App 自己在啟動時檢查／註冊 Shell Extension，不需要安裝程式知道任何 COM／
-/// regsvr32 相關的事——安裝程式只要把 FileLockerShellExtension.dll 跟 FileLocker.App.exe
+/// regsvr32 相關的事——安裝程式只要把 FileLockerShellExtension.dll 跟 FileLocker.exe
 /// 放在同一個資料夾裡就好（一般的「應用程式內容資料夾」功能就夠了，見規格文件第 13 節）。
 ///
 /// 全部寫在 HKEY_CURRENT_USER\Software\Classes 底下，不是 HKEY_CLASSES_ROOT——這是
@@ -59,7 +59,7 @@ internal static class ShellExtensionRegistrar
         }
 
         var fileHash = ComputeFileHash(dllPath);
-        var appExePath = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "FileLocker.App.exe");
+        var appExePath = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "FileLocker.exe");
 
         // 只比對路徑不夠——DLL 有可能原地被重新編譯覆蓋（路徑沒變、內容變了），這種情況也要
         // 判定成「需要重新註冊」，才能正確觸發呼叫端「請重啟 Explorer」的提示（見 App.xaml.cs）。
@@ -134,7 +134,7 @@ internal static class ShellExtensionRegistrar
 
     /// <summary>
     /// `.lockfolder` 副檔名關聯：純標準的「這個副檔名要用哪個程式打開」登記，不涉及任何 COM
-    /// 命名空間物件——`ProgId\shell\open\command` 指到 `FileLocker.App.exe`，帶
+    /// 命名空間物件——`ProgId\shell\open\command` 指到 `FileLocker.exe`，帶
     /// <see cref="LockFolderMarkerUnlockArgFlag"/> 旗標＋標記檔路徑（`%1`）當參數，
     /// App.xaml.cs 收到後讀出標記檔內容拿到真正資料夾路徑，走既有的解鎖流程。圖示用專屬的
     /// `LockFolderMarker.ico`（見專案檔內 Content 項目，會跟著建置/發佈輸出一起帶走）——找不到

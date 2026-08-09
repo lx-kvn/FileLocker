@@ -12,6 +12,7 @@ using FileLocker.Core.Protocol;
 using FileLocker.Core.Settings;
 using FileLocker.Core.UpdateCheck;
 using FileLocker.Core.Vault;
+using FileLocker.PluginContracts;
 using Microsoft.Web.WebView2.Core;
 
 namespace FileLocker.App;
@@ -36,8 +37,22 @@ public partial class MainWindow : Window
     private readonly VaultChangeWatcher _vaultChangeWatcher;
     private readonly VaultProtocolHandlers _protocolHandlers;
     private readonly FolderGuardService _folderGuardService;
+    private readonly IPasswordLockerPlugin? _passwordLockerPlugin;
+    private readonly PasswordLockerModuleStatus _passwordLockerModuleStatus;
     private readonly List<string>? _initialPaths;
     private readonly string? _initialAction;
+
+    // WebView2 的 CoreWebView2 是非同步初始化（見建構子最後的 Loaded 事件），但建構子裡
+    // 就已經訂閱了 _vaultChangeWatcher.Changed／_folderGuardService.EntriesAutoRelocked，
+    // 這兩個背景事件隨時可能在 CoreWebView2 準備好之前就先觸發（尤其是視窗剛被重新建立、
+    // 或加密才剛完成、Vault watcher 幾乎同時觸發的情境）——SendToFrontend 底下如果直接呼叫
+    // 還是 null 的 CoreWebView2，會丟出 NullReferenceException，而且是在 Dispatcher 排入的
+    // 委派裡發生、沒有任何地方接住，整個行程會直接崩潰（實際發生過：加密完成後跳出「存進
+    // 密碼庫？」詢問，使用者按確定的當下 vaultChanged 事件剛好也在跑）。改成：CoreWebView2
+    // 還沒準備好之前，訊息先進這個佇列，NavigationCompleted 那一刻再依序补送出去，不遺失、
+    // 也不崩潰。
+    private readonly List<object> _pendingFrontendMessages = new();
+    private bool _frontendReady;
 
     /// <summary>
     /// VaultManager／LockService 現在由 App.xaml.cs 統一建立、傳進來——這樣主視窗跟密碼小視窗
@@ -46,12 +61,16 @@ public partial class MainWindow : Window
     /// 等 WebView2 頁面真的載入完成才送給前端，避免前端還沒掛上訊息監聽器就漏接。
     /// folderGuardService 是平行、獨立於 Vault/加密的子系統（見規劃文件），刻意不塞進
     /// VaultProtocolHandlers——那一層現在專責 Vault/加密，資料夾防護走自己獨立的 Handle* 方法。
+    /// passwordLockerPlugin 可能是 null（部件未安裝或載入失敗），由 App.xaml.cs 的
+    /// PasswordLockerPluginLoader 決定，MainWindow 不自己判斷載入與否，只依 passwordLockerModuleStatus
+    /// 決定怎麼回應前端（見 HandlePasswordLockerModuleRequestAsync）。
     /// </summary>
     public MainWindow(
         VaultManager vaultManager, HistoryLogger historyLogger, LockService lockService,
         AppSettingsManager settingsManager, AppSettings settings, string appDataDir,
         VaultIndexCache vaultIndexCache, VaultChangeWatcher vaultChangeWatcher,
-        FolderGuardService folderGuardService,
+        FolderGuardService folderGuardService, IPasswordLockerPlugin? passwordLockerPlugin,
+        PasswordLockerModuleStatus passwordLockerModuleStatus,
         List<string>? initialPaths = null, string? initialAction = null)
     {
         InitializeComponent();
@@ -59,6 +78,8 @@ public partial class MainWindow : Window
         _settings = settings;
         _vaultChangeWatcher = vaultChangeWatcher;
         _folderGuardService = folderGuardService;
+        _passwordLockerPlugin = passwordLockerPlugin;
+        _passwordLockerModuleStatus = passwordLockerModuleStatus;
         _initialPaths = initialPaths;
         _initialAction = initialAction;
 
@@ -159,6 +180,17 @@ public partial class MainWindow : Window
                 newWindowArgs.Handled = true;
             };
 
+            // 剪貼簿權限（密碼庫「複製」按鈕用的 navigator.clipboard.writeText）自動核准，
+            // 不要跳出「localhost:5173 想要...」這種看起來像網頁的權限詢問視窗——這裡載入的
+            // 內容全部是我們自己的前端，不是外部網站，跟瀏覽器分頁請求任意網站權限是不同情境。
+            MainWebView.CoreWebView2.PermissionRequested += (_, permArgs) =>
+            {
+                if (permArgs.PermissionKind == CoreWebView2PermissionKind.ClipboardRead)
+                {
+                    permArgs.State = CoreWebView2PermissionState.Allow;
+                }
+            };
+
 #if DEBUG
             // Debug 建置：連到 Vite 開發伺服器，需要另外開一個終端機跑 npm run dev。
             MainWebView.CoreWebView2.Navigate("http://localhost:5173/");
@@ -194,6 +226,20 @@ public partial class MainWindow : Window
                 if (!args.IsSuccess)
                 {
                     return;
+                }
+
+                // 補送 CoreWebView2 準備好之前排隊的訊息（見 _pendingFrontendMessages 上的
+                // 說明）——要在 SendWindowStateToFrontend／initialPaths 這些「這次導覽本來就
+                // 要送」的訊息之前送出去，維持事件實際發生的先後順序。
+                _frontendReady = true;
+                if (_pendingFrontendMessages.Count > 0)
+                {
+                    var pending = _pendingFrontendMessages.ToArray();
+                    _pendingFrontendMessages.Clear();
+                    foreach (var message in pending)
+                    {
+                        SendToFrontend(message);
+                    }
                 }
 
                 // 頁面載入完成先同步一次目前的視窗狀態，前端的最大化按鈕才知道該顯示哪個圖示
@@ -245,6 +291,53 @@ public partial class MainWindow : Window
             var root = doc.RootElement;
             var type = root.TryGetProperty("type", out var typeProp) ? typeProp.GetString() : null;
 
+            // 密碼庫是可選配部件（見 FileLocker_密碼庫_功能規劃.md 第 2 節）：MainWindow 完全不
+            // 知道部件內部有哪些 IPC 訊息，靠訊息名稱裡有沒有 "PasswordLocker" 這個子字串判斷
+            // 要不要轉發，部件以後新增/修改任何內部訊息都不需要回頭改這裡。
+            // getPasswordLockerModuleStatus 是唯一的例外——這個訊息問的正是「部件本身有沒有裝、
+            // 狀態正不正常」，本來就得由主體自己回答，不能轉發給（可能根本不存在的）部件。
+            if (type == "getPasswordLockerModuleStatus")
+            {
+                HandleGetPasswordLockerModuleStatusRequest();
+                return;
+            }
+            // 這兩個訊息名稱也含 "PasswordLocker"，但要在轉發判斷之前攔截——原生存檔/開檔對話框
+            // 是 WPF 平台能力，部件本身（見規劃文件第 2.1 節）刻意不依賴 WPF，不該由部件自己跳
+            // 對話框。CSV 內容的加解密/解析邏輯還是在部件裡，這裡只負責「跟磁碟打交道」那一段。
+            if (type == "savePasswordLockerCsvToFile")
+            {
+                HandleSavePasswordLockerCsvToFileRequest(root);
+                return;
+            }
+            if (type == "pickAndImportPasswordLockerCsv")
+            {
+                await HandlePickAndImportPasswordLockerCsvRequestAsync();
+                return;
+            }
+            // 部件本身的自動搜尋/下載也是主體的事——查詢／下載對象是 FileLocker 本體自己的
+            // GitHub Release 資產列表（見 PasswordLockerModuleInstaller），跟部件內部邏輯無關，
+            // 部件甚至可能還沒安裝、根本沒有 _passwordLockerPlugin 可以轉發。
+            if (type == "checkForPasswordLockerModuleUpdate")
+            {
+                await HandleCheckForPasswordLockerModuleUpdateRequestAsync();
+                return;
+            }
+            if (type == "installPasswordLockerModuleUpdate")
+            {
+                await HandleInstallPasswordLockerModuleUpdateRequestAsync();
+                return;
+            }
+            if (type == "uninstallPasswordLockerModule")
+            {
+                HandleUninstallPasswordLockerModuleRequest();
+                return;
+            }
+            if (type is not null && type.Contains("PasswordLocker", StringComparison.Ordinal))
+            {
+                await HandlePasswordLockerModuleRequestAsync(type, root);
+                return;
+            }
+
             switch (type)
             {
                 case "encrypt":
@@ -281,6 +374,13 @@ public partial class MainWindow : Window
 
                 case "windowClose":
                     Close();
+                    break;
+
+                case "restartApp":
+                    // 密碼庫部件安裝/更新完成後請使用者重啟才會生效（見規劃文件第 2.2 節「不做熱重載」）
+                    // ——這裡直接重啟，不是關掉後要求使用者自己重新打開，降低「裝完卻沒生效」的困惑。
+                    Process.Start(Environment.ProcessPath!);
+                    Application.Current.Shutdown();
                     break;
 
                 case "filesDroppedFromWebView":
@@ -1043,7 +1143,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>installer_config.json 是 mac-style-windows-installer 安裝時放進安裝資料夾的，
-    /// 跟 FileLocker.App.exe 同一層——開發環境用 dotnet run 執行時不會有這個檔案，屬於正常情況，
+    /// 跟 FileLocker.exe 同一層——開發環境用 dotnet run 執行時不會有這個檔案，屬於正常情況，
     /// 不是錯誤。</summary>
     private static string? ReadInstalledVersion()
     {
@@ -1135,7 +1235,7 @@ public partial class MainWindow : Window
     /// <summary>下載安裝檔到暫存資料夾、啟動它（UseShellExecute=true，安裝程式自己的 manifest
     /// 會觸發 UAC 提權，這裡不用特別做什麼），確認安裝程式真的啟動成功才關閉本體——先關本體
     /// 再嘗試啟動安裝程式的話，萬一啟動失敗（例如被防毒攔截）使用者就完全沒有退路了；反過來，
-    /// 啟動成功後不關閉本體，安裝程式清空/覆蓋目標資料夾會因為 FileLocker.App.exe 還在跑、
+    /// 啟動成功後不關閉本體，安裝程式清空/覆蓋目標資料夾會因為 FileLocker.exe 還在跑、
     /// 檔案被鎖住而失敗，所以順序很重要。</summary>
     private async Task HandleDownloadAndInstallUpdateRequestAsync()
     {
@@ -1228,6 +1328,219 @@ public partial class MainWindow : Window
         });
     }
 
+    // ---- 密碼庫（Password Locker）：可選配部件，見 FileLocker_密碼庫_功能規劃.md 第 2 節。
+    // MainWindow 不知道部件內部的 IPC 方法長什麼樣，只負責「轉發訊息」跟「回答部件裝了沒」
+    // 這兩件事，實際的解析/呼叫/組裝回應全部搬進 FileLocker.PasswordLocker 專案的
+    // PasswordLockerPlugin 裡了（見 OnWebMessageReceived 開頭的攔截判斷）。----
+
+    private void HandleGetPasswordLockerModuleStatusRequest()
+    {
+        SendToFrontend(new
+        {
+            type = "passwordLockerModuleStatusResult",
+            status = _passwordLockerModuleStatus switch
+            {
+                PasswordLockerModuleStatus.Ok => "ok",
+                PasswordLockerModuleStatus.Broken => "broken",
+                _ => "notInstalled"
+            }
+        });
+    }
+
+    /// <summary>第二階段（規劃文件第 2.4 節）：查 FileLocker 本體 GitHub Release 的資產列表，
+    /// 找有沒有相容的 PasswordLocker zip 可以裝——跟 ReadInstalledVersion／s_updateCheckHttpClient
+    /// 共用同一套「目前安裝版本」讀法，跟軟體本身的更新檢查是平行、互不影響的兩條查詢。</summary>
+    private async Task HandleCheckForPasswordLockerModuleUpdateRequestAsync()
+    {
+        var currentVersion = ReadInstalledVersion();
+        if (currentVersion is null)
+        {
+            SendToFrontend(new { type = "checkForPasswordLockerModuleUpdateResult", success = false, errorCode = ErrorCodes.UpdateCheckNotInstalled });
+            return;
+        }
+
+        try
+        {
+            var (assetName, downloadUrl) = await PasswordLockerModuleInstaller.FindCompatibleReleaseAsync(s_updateCheckHttpClient, currentVersion);
+            SendToFrontend(new
+            {
+                type = "checkForPasswordLockerModuleUpdateResult",
+                success = true,
+                available = downloadUrl is not null,
+                assetName
+            });
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
+        {
+            SendToFrontend(new { type = "checkForPasswordLockerModuleUpdateResult", success = false, errorCode = ErrorCodes.UpdateCheckFailed });
+        }
+    }
+
+    /// <summary>下載相容的 zip、解壓到暫存資料夾——不會立刻生效，前端要提示使用者重新啟動
+    /// FileLocker（見 PasswordLockerModuleInstaller.SwapPendingInstallIfPresent 在下次啟動時
+    /// 才真正切換）。這裡重新查一次相容資產而不是信任前端傳回來的網址，理由跟軟體本身更新
+    /// 的 HandleDownloadAndInstallUpdateRequestAsync 一致：下載目標由後端自己決定。</summary>
+    private async Task HandleInstallPasswordLockerModuleUpdateRequestAsync()
+    {
+        var currentVersion = ReadInstalledVersion();
+        if (currentVersion is null)
+        {
+            SendToFrontend(new { type = "installPasswordLockerModuleUpdateResult", success = false, errorCode = ErrorCodes.UpdateCheckNotInstalled });
+            return;
+        }
+
+        try
+        {
+            var (_, downloadUrl) = await PasswordLockerModuleInstaller.FindCompatibleReleaseAsync(s_updateCheckHttpClient, currentVersion);
+            if (downloadUrl is null)
+            {
+                SendToFrontend(new { type = "installPasswordLockerModuleUpdateResult", success = false, errorCode = ErrorCodes.UpdateDownloadFailed });
+                return;
+            }
+
+            await PasswordLockerModuleInstaller.DownloadAndStageAsync(s_updateCheckHttpClient, downloadUrl);
+            SendToFrontend(new { type = "installPasswordLockerModuleUpdateResult", success = true });
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
+        {
+            SendToFrontend(new { type = "installPasswordLockerModuleUpdateResult", success = false, errorCode = ErrorCodes.UpdateDownloadFailed });
+        }
+    }
+
+    /// <summary>設定頁「解除安裝密碼庫部件」按鈕——只寫標記，這個 session 裡部件繼續照常運作，
+    /// 下次啟動才真正刪除（見規劃文件第 9.1 節、PasswordLockerModuleInstaller.MarkForUninstall）。</summary>
+    private void HandleUninstallPasswordLockerModuleRequest()
+    {
+        PasswordLockerModuleInstaller.MarkForUninstall();
+        SendToFrontend(new { type = "uninstallPasswordLockerModuleResult", success = true });
+    }
+
+    private async Task HandlePasswordLockerModuleRequestAsync(string messageType, JsonElement request)
+    {
+        if (_passwordLockerPlugin is null)
+        {
+            // 部件未安裝或載入失敗：前端理論上會先呼叫 getPasswordLockerModuleStatus 判斷該顯示
+            // 哪個畫面、不該再送其他密碼庫訊息過來。這裡不強行猜測每種訊息對應的回應 "type"
+            // 該叫什麼名字，改送通用的 error 訊息——理由見下面 response is null 那段。
+            SendToFrontend(new { type = "error", message = $"密碼庫部件未安裝或載入失敗，無法處理：{messageType}" });
+            return;
+        }
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        var response = await _passwordLockerPlugin.HandleRequestAsync(messageType, request, hwnd);
+        if (response is not null)
+        {
+            SendToFrontend(response);
+            return;
+        }
+
+        // 部件收到自己不認得的訊息名稱（HandleRequestAsync 的 _ => null 分支）——實務上這代表
+        // plugins/PasswordLocker/ 裡的部件版本比主體舊，主體已經會送新訊息、部件還不認得。
+        // 這裡絕對不能安靜地什麼都不送：前端的 requestMessage() 是「送出去、等一個特定回應
+        // 類型」的手刻 Promise（見 useIpc.js），等不到就永遠卡住，畫面上不會有任何反應，
+        // 連 console 都不會有錯誤——這正是實作 CSV 匯出時真的踩到的坑，花了很久才定位到
+        // 「原來是部件 DLL 沒更新」。改送通用 error 訊息，前端的 error handler 會把所有
+        // 等待中的請求解開並顯示訊息（見 App.vue 的 rejectAllPending），讓版本不同步這件事
+        // 立刻看得見，而不是變成一個查不出原因的「按了沒反應」。
+        SendToFrontend(new { type = "error", message = $"密碼庫部件不認得這個操作：{messageType}（部件版本可能過舊，請重新安裝密碼庫部件）" });
+    }
+
+    /// <summary>密碼庫 CSV 匯出（規劃文件第 7 節）的最後一段：部件只負責把明文 CSV 內容組好、
+    /// 送回來，實際寫進磁碟的原生存檔對話框由 MainWindow 處理，比照
+    /// <see cref="HandleSaveRecoveryKeyToFileRequest"/> 既有的分工慣例。</summary>
+    private void HandleSavePasswordLockerCsvToFileRequest(JsonElement request)
+    {
+        // 這裡整個包一層 try/catch，不只是包 File.WriteAllText 那一段——GetProperty／
+        // SaveFileDialog 建構／ShowDialog 任何一步萬一丟出未預期的例外，都要送回一個
+        // savePasswordLockerCsvToFileResult，不能讓例外掉到最外層的通用 catch。通用 catch
+        // 送回的是完全不同的 "error" 訊息類型，前端等的是 savePasswordLockerCsvToFileResult，
+        // 對不到就會一直卡住、畫面沒有任何反應（見 rejectAllPending 在 useIpc.js 的說明，
+        // 那是最後一道防線，這裡先盡量把錯誤原因精準送回去）。
+        try
+        {
+            var content = request.GetProperty("content").GetString() ?? "";
+
+            var dialog = new Microsoft.Win32.SaveFileDialog
+            {
+                Title = "匯出密碼庫",
+                FileName = "FileLocker-密碼庫.csv",
+                Filter = "CSV 檔 (*.csv)|*.csv|所有檔案 (*.*)|*.*",
+                DefaultExt = ".csv"
+            };
+
+            // 這個對話框通常緊接在密碼庫驗證（可能是 Passkey／Windows Hello）之後彈出——Windows Hello
+            // 是獨立的系統 UI，關閉後前景焦點不一定會自動還給 MainWindow（跟已知的 Mutex 搶焦點問題
+            // 是同一類成因，見 CLAUDE.md「已知的坑」），沒搶到前景的話 ShowDialog 開出來的視窗會被
+            // 擋在背後，使用者會覺得「按了完全沒反應」。開對話框前先強制搶一次前景。
+            WindowActivation.ForceToForeground(this);
+            if (dialog.ShowDialog(this) == true)
+            {
+                File.WriteAllText(dialog.FileName, content);
+                SendToFrontend(new { type = "savePasswordLockerCsvToFileResult", success = true, path = dialog.FileName });
+            }
+            else
+            {
+                SendToFrontend(new { type = "savePasswordLockerCsvToFileResult", success = false, cancelled = true });
+            }
+        }
+        catch (Exception ex)
+        {
+            SendToFrontend(new { type = "savePasswordLockerCsvToFileResult", success = false, errorMessage = ex.Message, errorCode = ErrorCodes.RecoveryKeySaveError, errorDetail = ex.Message });
+        }
+    }
+
+    /// <summary>密碼庫 CSV 匯入的第一段：原生開檔對話框選 CSV 檔案、讀取內容，再轉發給部件的
+    /// importPasswordLockerCsv 做實際解析／加密／寫入——跟匯出對稱，檔案系統操作留在
+    /// MainWindow，CSV 解析與資料寫入邏輯留在部件裡。使用者取消選檔時安靜回傳 cancelled，
+    /// 不當成錯誤。</summary>
+    private async Task HandlePickAndImportPasswordLockerCsvRequestAsync()
+    {
+        // 整段包 try/catch 的理由跟 HandleSavePasswordLockerCsvToFileRequest 一致——任何一步
+        // 未預期的例外都要送回 importPasswordLockerCsvResult，不能讓前端等的回應類型對不上，
+        // 卡住不動。
+        try
+        {
+            await HandlePickAndImportPasswordLockerCsvCoreAsync();
+        }
+        catch (Exception ex)
+        {
+            SendToFrontend(new { type = "importPasswordLockerCsvResult", success = false, errorMessage = ex.Message, errorCode = ErrorCodes.RecoveryKeySaveError, errorDetail = ex.Message });
+        }
+    }
+
+    private async Task HandlePickAndImportPasswordLockerCsvCoreAsync()
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "匯入密碼庫 CSV",
+            CheckFileExists = true,
+            Filter = "CSV 檔 (*.csv)|*.csv|所有檔案 (*.*)|*.*"
+        };
+
+        // 理由同 HandleSavePasswordLockerCsvToFileRequest：這個對話框常緊接在密碼庫驗證之後彈出。
+        WindowActivation.ForceToForeground(this);
+        if (dialog.ShowDialog(this) != true)
+        {
+            SendToFrontend(new { type = "importPasswordLockerCsvResult", success = false, cancelled = true });
+            return;
+        }
+
+        if (_passwordLockerPlugin is null)
+        {
+            return;
+        }
+
+        var csv = File.ReadAllText(dialog.FileName);
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        var request = JsonDocument.Parse(JsonSerializer.Serialize(new { csv })).RootElement;
+        var response = await _passwordLockerPlugin.HandleRequestAsync("importPasswordLockerCsv", request, hwnd);
+        if (response is not null)
+        {
+            SendToFrontend(response);
+        }
+    }
+
     private void HandlePickFile(JsonElement request)
     {
         var purpose = request.TryGetProperty("purpose", out var purposeProp) ? purposeProp.GetString() : null;
@@ -1290,6 +1603,13 @@ public partial class MainWindow : Window
 
     private void SendToFrontend(object message)
     {
+        // CoreWebView2 還沒初始化完成，或頁面還沒跑到能處理 postMessage 的程度（見
+        // _pendingFrontendMessages 上的說明）——先排隊，NavigationCompleted 時再補送。
+        if (!_frontendReady || MainWebView.CoreWebView2 is null)
+        {
+            _pendingFrontendMessages.Add(message);
+            return;
+        }
         MainWebView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(message, SendToFrontendJsonOptions));
     }
 }

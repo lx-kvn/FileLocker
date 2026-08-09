@@ -75,6 +75,7 @@
             <Button x:Name="EncryptButton" Content="加密" Style="{StaticResource TrayMenuItemStyle}" Click="EncryptButton_Click" />
             <Button x:Name="ListButton" Content="已加密清單" Style="{StaticResource TrayMenuItemStyle}" Click="ListButton_Click" />
             <Button x:Name="FolderGuardButton" Content="資料夾防護" Style="{StaticResource TrayMenuItemStyle}" Click="FolderGuardButton_Click" />
+            <Button x:Name="PasswordLockerButton" Content="密碼庫" Style="{StaticResource TrayMenuItemStyle}" Click="PasswordLockerButton_Click" />
             <Separator Style="{StaticResource TrayMenuSeparatorStyle}" />
             <Button x:Name="ExitButton" Content="結束 FileLocker" Style="{StaticResource TrayMenuDangerItemStyle}" Click="ExitButton_Click" />
         </StackPanel>

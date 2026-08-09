@@ -23,6 +23,7 @@ internal sealed class TrayIconManager : IDisposable
     private readonly Action _openEncrypt;
     private readonly Action _openList;
     private readonly Action _openFolderGuard;
+    private readonly Action _openPasswordLocker;
     private readonly Action _exitApplication;
     private TrayMenuWindow? _menuWindow;
 
@@ -33,6 +34,7 @@ internal sealed class TrayIconManager : IDisposable
         Action openEncrypt,
         Action openList,
         Action openFolderGuard,
+        Action openPasswordLocker,
         Action exitApplication)
     {
         _theme = theme;
@@ -40,6 +42,7 @@ internal sealed class TrayIconManager : IDisposable
         _openEncrypt = openEncrypt;
         _openList = openList;
         _openFolderGuard = openFolderGuard;
+        _openPasswordLocker = openPasswordLocker;
         _exitApplication = exitApplication;
 
         // 直接從執行檔本身抽出已經內嵌的圖示（ApplicationIcon 編譯時期就打包進 exe 資源），
@@ -81,6 +84,7 @@ internal sealed class TrayIconManager : IDisposable
             _openEncrypt,
             _openList,
             _openFolderGuard,
+            _openPasswordLocker,
             _exitApplication);
         _menuWindow.Closed += (_, _) => _menuWindow = null;
         _menuWindow.Show();

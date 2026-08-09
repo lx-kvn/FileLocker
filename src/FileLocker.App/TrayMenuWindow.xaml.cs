@@ -26,11 +26,11 @@ public partial class TrayMenuWindow : Window
     private const uint SwpNoZOrder = 0x0004;
     private const uint SwpNoActivate = 0x0010;
 
-    // 內容固定（5 個按鈕＋2 條分隔線），高度可以預先估算，不用等版面量測完成才能定位——
+    // 內容固定（6 個按鈕＋2 條分隔線），高度可以預先估算，不用等版面量測完成才能定位——
     // 拿這個常數在視窗顯示「之前」就算出大概要放在螢幕的哪裡，避免 Loaded 之後才重新定位
     // 導致選單先閃一下在錯的地方。實際渲染高度由 SizeToContent="Height" 決定，這個常數
     // 只影響定位的準確度（差個幾像素，不影響能不能用）。
-    private const double EstimatedHeightDip = 240;
+    private const double EstimatedHeightDip = 280;
     private const double WidthDip = 200;
 
     private readonly System.Drawing.Point _cursorPhysicalPosition;
@@ -38,6 +38,7 @@ public partial class TrayMenuWindow : Window
     private readonly Action _openEncrypt;
     private readonly Action _openList;
     private readonly Action _openFolderGuard;
+    private readonly Action _openPasswordLocker;
     private readonly Action _exitApplication;
 
     // 按選單項目時 Close() 會讓視窗失去作用中狀態，同步觸發 Window_Deactivated，裡面也呼叫
@@ -55,6 +56,7 @@ public partial class TrayMenuWindow : Window
         Action openEncrypt,
         Action openList,
         Action openFolderGuard,
+        Action openPasswordLocker,
         Action exitApplication)
     {
         InitializeComponent();
@@ -65,6 +67,7 @@ public partial class TrayMenuWindow : Window
         _openEncrypt = openEncrypt;
         _openList = openList;
         _openFolderGuard = openFolderGuard;
+        _openPasswordLocker = openPasswordLocker;
         _exitApplication = exitApplication;
     }
 
@@ -193,6 +196,8 @@ public partial class TrayMenuWindow : Window
     private void ListButton_Click(object sender, RoutedEventArgs e) => InvokeAndClose(_openList);
 
     private void FolderGuardButton_Click(object sender, RoutedEventArgs e) => InvokeAndClose(_openFolderGuard);
+
+    private void PasswordLockerButton_Click(object sender, RoutedEventArgs e) => InvokeAndClose(_openPasswordLocker);
 
     private void ExitButton_Click(object sender, RoutedEventArgs e) => InvokeAndClose(_exitApplication);
 }

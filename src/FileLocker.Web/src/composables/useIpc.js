@@ -22,3 +22,16 @@ export function resolvePending(responseType, data) {
   pendingResolvers[responseType]?.(data)
   delete pendingResolvers[responseType]
 }
+
+// C# 端如果在處理某個訊息時丟出未預期的例外，會統一送回 { type: 'error', message } 這個通用
+// 訊息（見 MainWindow.OnWebMessageReceived 最外層的 catch），不是那個訊息原本該回的 xxxResult
+// 類型——resolvePending 對不到 key，原本在 await 的 requestMessage 呼叫端會永遠卡住，畫面上
+// 什麼反應都沒有，使用者只會覺得「按了完全沒用」，比顯示一個錯誤訊息更難排查。這裡在收到
+// 通用錯誤時，把所有還在等待中的請求都解開，讓呼叫端至少能拿到一個 success:false 的結果、
+// 走原本就有的錯誤處理路徑（大多會顯示 toast）。
+export function rejectAllPending(errorMessage) {
+  for (const responseType of Object.keys(pendingResolvers)) {
+    pendingResolvers[responseType]({ success: false, errorMessage })
+    delete pendingResolvers[responseType]
+  }
+}

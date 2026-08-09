@@ -22,7 +22,7 @@ import lockLightUrl from './assets/Lock_Light.svg'
 import lockDarkUrl from './assets/Lock_Dark.svg'
 import warningLightUrl from './assets/Warning_Light.svg'
 import warningDarkUrl from './assets/Warning_Dark.svg'
-import { sendMessage, requestMessage, resolvePending } from './composables/useIpc.js'
+import { sendMessage, requestMessage, resolvePending, rejectAllPending } from './composables/useIpc.js'
 import {
   groupVaultItems,
   batchPreviewText as batchPreviewTextPure,
@@ -85,6 +85,17 @@ function showToast(message, kind = 'error') {
 function dismissToast(id) {
   toasts.value = toasts.value.filter((toast) => toast.id !== id)
 }
+
+// 沒有這兩個監聽器的話，@click 綁定的 async 函式裡任何一個未預期的 JS 例外（或沒接
+// .catch 的 rejected Promise）就是純粹靜默失敗——沒有任何畫面反應，連 console 都不一定
+// 會顯眼地印出來，使用者只會覺得「按了完全沒用」，跟後端例外沒接住是同一類問題（見
+// rejectAllPending 的說明），這裡是前端這一側對稱的最後一道防線。
+window.addEventListener('error', (event) => {
+  showToast(`發生未預期的錯誤：${event.error?.message || event.message}`)
+})
+window.addEventListener('unhandledrejection', (event) => {
+  showToast(`發生未預期的錯誤：${event.reason?.message || event.reason}`)
+})
 
 // ---- 自訂確認對話框（取代原生 confirm()）：同樣的理由，換成跟其他彈窗一致的樣式。
 // askConfirm 回傳一個 Promise，呼叫端用 await 取得使用者按了「確定」還是「取消」。
@@ -184,9 +195,21 @@ function handleGlobalKeydown(event) {
     cancelPasswordPrompt()
   } else if (recoveryKeyPromptItem.value) {
     cancelRecoveryKeyPrompt()
+  } else if (passwordLockerVerifyState.value) {
+    cancelPasswordLockerVerify()
+  } else if (passwordLockerAssociateState.value) {
+    passwordLockerAssociateState.value = null
+  } else if (passwordLockerPickerVisible.value) {
+    passwordLockerPickerVisible.value = false
+  } else if (passwordLockerFormState.value) {
+    closePasswordLockerForm()
+  } else if (passwordLockerChangePasswordState.value) {
+    closePasswordLockerChangePasswordForm()
   } else if (isHelpOpen.value) {
     isHelpOpen.value = false
   }
+  // passwordLockerRecoveryKeyDisplay 刻意不放進來：跟 Vault 的恢復金鑰顯示彈窗一樣，
+  // 要強制使用者先勾選「已經抄下」才能關閉，Esc 不該是繞過這個安全機制的後門。
 }
 
 onMounted(() => {
@@ -258,6 +281,71 @@ const folderGuardPendingLockPaths = ref([])
 // 錯誤碼）、使用者確認解鎖後，要重新送出的原始加密請求——只在單一項目加密時提供這個「解鎖並
 // 重試」的引導，批次多筆的重試協調複雜度不成比例，直接照一般錯誤訊息處理即可。
 const pendingNestedGuardedRetry = ref(null)
+
+// ---- 密碼庫（Password Locker）頁籤：獨立於加密／資料夾防護的第三套保護機制，見
+// FileLocker_密碼庫_功能規劃.md 第 11 節。清單頁不需要驗證，顯示/複製/刪除/新增編輯才需要
+// ——驗證成功後主金鑰只留在後端記憶體（PasswordLockerService 的 app session），這裡的計時器
+// 只是「盡量不要每次都問」的體驗優化，不是安全邊界，真正判斷在後端。 ----
+// 密碼庫是可選配部件（見 FileLocker_密碼庫_功能規劃.md 第 2.3 節）：'unknown' 是還沒查詢過的
+// 初始值，畫面在這個狀態下先不顯示任何一種畫面，避免先閃一下「未安裝」才又跳成清單。
+const passwordLockerModuleStatus = ref('unknown') // 'unknown' | 'notInstalled' | 'broken' | 'ok'
+const passwordLockerConfigured = ref(false)
+const isInstallingPasswordLockerModule = ref(false)
+const passwordLockerItems = ref([])
+const isLoadingPasswordLocker = ref(false)
+const passwordLockerSetupPassword = ref('')
+const passwordLockerSetupPasswordConfirm = ref('')
+const showPasswordLockerSetupPassword = ref(false)
+const passwordLockerPasskeyEnabled = ref(false)
+const passwordLockerRecoveryKeyEnabled = ref(false)
+const passwordLockerSessionTimeoutMinutes = ref(1)
+const passwordLockerSessionExpiresAt = ref(0)
+const passwordLockerSearchQuery = ref('')
+// 備註是加密欄位，前端沒辦法直接比對——已驗證時（有 app session）才問後端解密比對，這裡存
+// 上一次查詢比對到的 id，跟明文欄位的比對結果在 computed 裡合併。沒驗證過就一直是空集合，
+// 搜尋只退回比對明文欄位，不會整個壞掉或跳錯誤。
+const passwordLockerNotesMatchIds = ref(new Set())
+let passwordLockerSearchDebounceTimer = null
+const passwordLockerWebsiteSort = ref('alphabetical') // 'alphabetical' | 'time'
+const passwordLockerFileSort = ref('time') // 'alphabetical' | 'time'
+const passwordLockerViewFilter = ref('all') // 'all' | 'website' | 'file'
+// id -> 明文密碼，只存在這個分頁的記憶體裡，不落地；跟後端 session 一樣沒有做「切分頁就清除」，
+// 見規劃文件第 11.2 節的說明。
+const passwordLockerRevealedPasswords = ref({})
+// 哪幾筆目前是「明文顯示」狀態——跟 passwordLockerRevealedPasswords 分開：後者是「有沒有解密過」，
+// 這個才是「現在是不是遮住」，切換顯示/隱藏不用重新驗證或重新解密，純粹前端狀態。
+const passwordLockerVisibleIds = ref(new Set())
+// 帳號欄位的顯示/隱藏是獨立於密碼那顆眼睛圖示的另一組互動（點帳號文字本身），
+// 形狀比照上面兩個 ref，只是分開管理，兩邊誰顯示誰隱藏互不影響。
+const passwordLockerRevealedUsernames = ref({})
+const passwordLockerUsernameVisibleIds = ref(new Set())
+const passwordLockerSelectedIds = ref(new Set())
+const passwordLockerRecoveryKeyDisplay = ref('') // 非空字串時顯示恢復金鑰彈窗（比照 recoveryKeyDisplay）
+const passwordLockerRecoveryKeySaveState = ref('') // '' | 'saved'
+
+// 驗證彈窗（跟既有 passwordPromptContext 分開——這裡多了「改用恢復金鑰」的切換，共用同一個
+// 通用彈窗會讓那個元件多長出一堆密碼庫專屬分支，風險大於重用帶來的好處）。
+// pendingAction 是驗證通過後要接著做的事：{ type: 'reveal'|'copy'|'delete'|'save', ... }
+const passwordLockerVerifyState = ref(null) // { usingRecoveryKey, pendingAction }
+const passwordLockerVerifyValue = ref('')
+const showPasswordLockerVerifyValue = ref(false)
+// 擋連續點擊：Passkey 驗證期間（Windows Hello 對話框開著）或驗證彈窗已經開著時，
+// 再點一次「設定 Passkey」之類的按鈕不該疊出第二個 Windows Hello 提示——沒有這道防線，
+// 連點會讓每次點擊各自觸發一次獨立的 Passkey 嘗試，越點越多個提示疊在一起。
+const isPasswordLockerAuthBusy = ref(false)
+
+// 新增/編輯表單
+const passwordLockerFormState = ref(null) // { id, category, title, domains, domainInput, username, password, notes }
+const showPasswordLockerFormPassword = ref(false)
+
+// 「使用現有密碼」選擇器
+const passwordLockerPickerVisible = ref(false)
+// 「關聯到現有帳號」第二步：null 表示沒開；有值時是 { item, domainInput, titleInput }。
+const passwordLockerAssociateState = ref(null)
+
+// 重設密碼庫密碼
+const passwordLockerChangePasswordState = ref(null) // { newPassword, confirm }
+const showPasswordLockerChangePassword = ref(false)
 
 // ---- 加密頁籤：分兩步驟，第一步只選檔案/資料夾，第二步才是密碼跟進階選項——
 // 兩者視覺權重差很多（一個是必經流程，一個是偶爾用得到的進階功能），分開後主線操作
@@ -406,6 +494,7 @@ function finishFakeProgress() {
 }
 const encryptBatchTotal = ref(0)
 const encryptItemResults = ref([]) // 批次加密逐項回報的結果
+const encryptSuccessItemsForLocker = ref([]) // 這次批次成功的項目 { uuid, path }，加密完成後用來詢問要不要存進密碼庫（規劃文件第 4 節）
 
 // ---- 解密頁籤 ----
 const decryptPath = ref('')
@@ -556,6 +645,7 @@ const messageHandlers = {
   encryptBatchStarted(data) {
     encryptBatchTotal.value = data.totalCount
     encryptItemResults.value = []
+    encryptSuccessItemsForLocker.value = []
   },
 
   encryptPasskeyVerifying(data) {
@@ -588,6 +678,9 @@ const messageHandlers = {
       errorMessage: translateError(data.errorCode, data.errorDetail, data.errorMessage),
       note
     })
+    if (data.success) {
+      encryptSuccessItemsForLocker.value.push({ uuid: data.uuid, path: data.path })
+    }
     if (data.recoveryKey) {
       recoveryKeyDisplay.value = data.recoveryKey
       recoveryKeySaveState.value = ''
@@ -598,6 +691,10 @@ const messageHandlers = {
     isEncrypting.value = false
     finishFakeProgress()
     encryptPaths.value = []
+    // 存密碼庫的詢問要用到這次的密碼，得在下面清空欄位之前先留一份——密碼庫的密碼跟
+    // 加密表單欄位是兩個獨立的變數，這裡不是共用同一份記憶體，只是把值複製過去用。
+    const passwordUsed = encryptPassword.value
+    const successItems = encryptSuccessItemsForLocker.value
     // 密碼是敏感資料，不管這次成功還是失敗，都不該一直留在欄位裡——失敗的話重新輸入
     // 一次不是很大的負擔，但讓密碼長時間留在畫面上是不必要的風險。提示文字不算敏感資料，
     // 但同一批既然結束了，一起清掉、準備接下一批比較乾淨。這些欄位在完成頁用不到，
@@ -609,6 +706,9 @@ const messageHandlers = {
     // 彈窗會疊在完成頁上面，關掉彈窗後畫面還是完成頁，不會像以前一樣底下先跳回步驟一。
     encryptStepDirection.value = 'forward'
     encryptStep.value = 3
+    // 不 await：這是加密完成後「順便問一下」的附加流程，不該卡住完成頁本身的顯示——
+    // 使用者已經看得到加密結果，詢問存密碼庫的彈窗晚個幾百毫秒才跳出來沒有關係。
+    maybeOfferSaveEncryptedFilesToLocker(passwordUsed, successItems)
   },
 
   decryptResult(data) {
@@ -728,6 +828,10 @@ const messageHandlers = {
   },
 
   error(data) {
+    // 後端未預期的例外統一走這裡（見 MainWindow.OnWebMessageReceived 最外層 catch），不是
+    // 那個訊息原本該回的 xxxResult 類型——任何一個 requestMessage() 呼叫如果剛好撞上，
+    // 沒有這行會永遠卡住、畫面完全沒反應，見 rejectAllPending 的說明。
+    rejectAllPending(data.message)
     const wasEncrypting = isEncrypting.value
     isEncrypting.value = false
     cancelFakeProgress()
@@ -735,12 +839,17 @@ const messageHandlers = {
     isDecrypting.value = false
     isLoadingList.value = false
     isLoadingHistory.value = false
-    encryptItemResults.value.push({ path: '', success: false, errorMessage: t('alert.genericError', { message: data.message }), note: '' })
-    // 加密進行中途發生嚴重錯誤也要能看到結果——完成頁是結果清單現在唯一會顯示的地方，
-    // 不切過去的話使用者會卡在步驟二，看不到任何錯誤訊息。
     if (wasEncrypting) {
+      // 加密進行中途發生嚴重錯誤也要能看到結果——完成頁是結果清單現在唯一會顯示的地方，
+      // 不切過去的話使用者會卡在步驟二，看不到任何錯誤訊息。
+      encryptItemResults.value.push({ path: '', success: false, errorMessage: t('alert.genericError', { message: data.message }), note: '' })
       encryptStepDirection.value = 'forward'
       encryptStep.value = 3
+    } else {
+      // 不在加密流程中時，加密結果清單根本不會顯示在畫面上（它只出現在加密完成頁），
+      // 錯誤推進去等於還是沒人看得到——密碼庫、資料夾防護那些分頁發生的後端例外都屬於
+      // 這種情況，改用 toast 才真的看得見。
+      showToast(t('alert.genericError', { message: data.message }))
     }
   },
 
@@ -910,14 +1019,14 @@ const messageHandlers = {
   initialPaths(data) {
     // action 由後端決定要切去哪個分頁：'folderGuardSetup' 是右鍵「上鎖」但整個資料夾防護功能
     // 還沒設定過共用密碼時的引導路徑（見 App.xaml.cs HandleFolderGuardLockLaunch）；'list'／
-    // 'folderGuard' 是系統匣選單的分頁捷徑（見 App.xaml.cs ShowMainWindow），純粹切分頁、
-    // 不帶路徑；其餘（包含沒有 action 欄位的既有情境）維持原本行為，切到加密頁籤。
+    // 'folderGuard'／'passwordLocker' 是系統匣選單的分頁捷徑（見 App.xaml.cs ShowMainWindow），
+    // 純粹切分頁、不帶路徑；其餘（包含沒有 action 欄位的既有情境）維持原本行為，切到加密頁籤。
     if (data.action === 'folderGuardSetup') {
       activeTab.value = 'folderGuard'
       folderGuardPendingLockPaths.value = data.paths ? [...data.paths] : []
       return
     }
-    if (data.action === 'list' || data.action === 'folderGuard') {
+    if (data.action === 'list' || data.action === 'folderGuard' || data.action === 'passwordLocker') {
       activeTab.value = data.action
       return
     }
@@ -999,6 +1108,102 @@ const messageHandlers = {
     if (activeTab.value === 'folderGuard') {
       refreshFolderGuardList()
     }
+  },
+
+  passwordLockerListResult(data) {
+    resolvePending('passwordLockerListResult', data)
+  },
+
+  passwordLockerModuleStatusResult(data) {
+    resolvePending('passwordLockerModuleStatusResult', data)
+  },
+
+  setupPasswordLockerCredentialResult(data) {
+    resolvePending('setupPasswordLockerCredentialResult', data)
+  },
+
+  verifyPasswordLockerResult(data) {
+    resolvePending('verifyPasswordLockerResult', data)
+  },
+
+  verifyPasswordLockerByRecoveryKeyResult(data) {
+    resolvePending('verifyPasswordLockerByRecoveryKeyResult', data)
+  },
+
+  setupPasswordLockerPasskeyResult(data) {
+    resolvePending('setupPasswordLockerPasskeyResult', data)
+  },
+
+  disablePasswordLockerPasskeyResult(data) {
+    resolvePending('disablePasswordLockerPasskeyResult', data)
+  },
+
+  setupPasswordLockerRecoveryKeyResult(data) {
+    resolvePending('setupPasswordLockerRecoveryKeyResult', data)
+  },
+
+  disablePasswordLockerRecoveryKeyResult(data) {
+    resolvePending('disablePasswordLockerRecoveryKeyResult', data)
+  },
+
+  addOrUpdatePasswordLockerCredentialResult(data) {
+    resolvePending('addOrUpdatePasswordLockerCredentialResult', data)
+  },
+
+  revealPasswordLockerPasswordResult(data) {
+    resolvePending('revealPasswordLockerPasswordResult', data)
+  },
+
+  revealPasswordLockerUsernameResult(data) {
+    resolvePending('revealPasswordLockerUsernameResult', data)
+  },
+
+  revealPasswordLockerNotesResult(data) {
+    resolvePending('revealPasswordLockerNotesResult', data)
+  },
+
+  deletePasswordLockerCredentialsResult(data) {
+    resolvePending('deletePasswordLockerCredentialsResult', data)
+  },
+
+  generatePasswordLockerPasswordResult(data) {
+    resolvePending('generatePasswordLockerPasswordResult', data)
+  },
+
+  searchPasswordLockerNotesResult(data) {
+    resolvePending('searchPasswordLockerNotesResult', data)
+  },
+
+  changePasswordLockerPasswordResult(data) {
+    resolvePending('changePasswordLockerPasswordResult', data)
+  },
+
+  exportPasswordLockerCsvResult(data) {
+    resolvePending('exportPasswordLockerCsvResult', data)
+  },
+
+  savePasswordLockerCsvToFileResult(data) {
+    resolvePending('savePasswordLockerCsvToFileResult', data)
+  },
+
+  importPasswordLockerCsvResult(data) {
+    resolvePending('importPasswordLockerCsvResult', data)
+  },
+
+  checkForPasswordLockerModuleUpdateResult(data) {
+    resolvePending('checkForPasswordLockerModuleUpdateResult', data)
+  },
+
+  installPasswordLockerModuleUpdateResult(data) {
+    resolvePending('installPasswordLockerModuleUpdateResult', data)
+  },
+
+  uninstallPasswordLockerModuleResult(data) {
+    resolvePending('uninstallPasswordLockerModuleResult', data)
+  },
+
+  checkPasswordLockerPasswordReuseResult(data) {
+    resolvePending('checkPasswordLockerPasswordReuseResult', data)
   }
 }
 
@@ -1011,6 +1216,14 @@ if (isRunningInWebView2) {
   // 監聽器掛好之後才要一次設定值（尤其是語言），不要等到使用者自己點進「設定」頁籤才套用——
   // 不然使用者明明上次選了英文，重開 App 卻會先看到繁體中文，要點進設定頁才切回來，體驗很怪。
   sendMessage('getSettings')
+
+  // 密碼庫模組狀態（未安裝／正常／損毀）也要在這裡先查一次，不能只靠 watch(activeTab) 切換
+  // 分頁時才查——系統匣選單／右鍵選單可以直接把 activeTab 從一開始就設成 'passwordLocker'
+  // （見 initialPaths 訊息的 action 處理），這種情境下 watch 可能根本不會觸發「值改變」，
+  // passwordLockerModuleStatus 會一直停在初始值 'unknown'，畫面上三種狀態一個都不符合、
+  // 整個分頁內容看起來就像空白消失了。提前在這裡查一次，不管使用者從哪個路徑進到這個分頁，
+  // 狀態都已經是確定值。
+  refreshPasswordLockerModuleStatus()
 }
 
 watch(activeTab, (tab) => {
@@ -1018,12 +1231,16 @@ watch(activeTab, (tab) => {
     refreshList()
   } else if (tab === 'settings') {
     sendMessage('getSettings')
-    // 設定頁裡的「資料夾防護密碼／Passkey」區塊需要 folderGuardConfigured／folderGuardPasskeyEnabled
-    // 這兩個狀態——使用者可能直接切到設定頁、根本沒去過「資料夾防護」分頁，這兩個值會是預設的
-    // false，錯誤顯示成「尚未設定」，所以這裡也要主動刷新一次。
+    // 設定頁裡的「資料夾防護密碼／Passkey」「密碼庫密碼／Passkey／恢復金鑰」區塊分別需要
+    // folderGuardConfigured／passwordLockerConfigured 等狀態——使用者可能直接切到設定頁、
+    // 根本沒去過那兩個分頁，這些值會是預設的 false，錯誤顯示成「尚未設定」，所以這裡也要
+    // 主動刷新一次。
     refreshFolderGuardList()
+    refreshPasswordLockerList()
   } else if (tab === 'folderGuard') {
     refreshFolderGuardList()
+  } else if (tab === 'passwordLocker') {
+    refreshPasswordLockerList()
   }
 })
 
@@ -1325,6 +1542,967 @@ function openFolderGuardItemInExplorer(item) {
 // （規劃文件第 6 節：密碼只用來驗證解鎖身份），這裡也一樣不用先跳確認彈窗或密碼輸入。
 function relockFolderGuardItem(item) {
   sendMessage('lockFolders', { paths: [item.path] })
+}
+
+// ---- 密碼庫（Password Locker）：見 FileLocker_密碼庫_功能規劃.md 第 11 節。----
+
+// 主體對「有沒有裝密碼庫部件」這件事永遠會回應（不管裝了沒），跟其他密碼庫訊息不同——
+// 那些訊息在部件沒裝的時候主體會直接不回應（見 MainWindow.HandlePasswordLockerModuleRequestAsync），
+// 所以每次要跟部件要資料之前都得先查一次狀態，不能直接呼叫 listPasswordLocker，不然沒裝部件時
+// 這個 Promise 永遠不會 resolve。
+async function refreshPasswordLockerModuleStatus() {
+  const data = await requestMessage('getPasswordLockerModuleStatus', 'passwordLockerModuleStatusResult')
+  passwordLockerModuleStatus.value = data.status
+  return data.status
+}
+
+async function refreshPasswordLockerList() {
+  const status = await refreshPasswordLockerModuleStatus()
+  if (status !== 'ok') {
+    return
+  }
+  isLoadingPasswordLocker.value = true
+  const data = await requestMessage('listPasswordLocker', 'passwordLockerListResult')
+  isLoadingPasswordLocker.value = false
+  passwordLockerConfigured.value = data.configured
+  passwordLockerPasskeyEnabled.value = data.passkeyEnabled
+  passwordLockerRecoveryKeyEnabled.value = data.recoveryKeyEnabled
+  passwordLockerSessionTimeoutMinutes.value = data.sessionTimeoutMinutes
+  passwordLockerItems.value = data.items
+}
+
+// 第二階段（規劃文件第 2.4 節）：自動查 FileLocker 本體 GitHub Release 的資產列表，找相容的
+// PasswordLocker zip、下載、解壓到暫存資料夾，成功後請使用者重啟讓它生效（見
+// PasswordLockerModuleInstaller「不做熱重載」的說明）。找不到相容版本或查詢/下載失敗時
+// 退回開發布頁面讓使用者自己確認狀況，不是把使用者晾在原地。
+async function installPasswordLockerModuleAction() {
+  if (isInstallingPasswordLockerModule.value) {
+    return
+  }
+  isInstallingPasswordLockerModule.value = true
+  try {
+    const checkResult = await requestMessage('checkForPasswordLockerModuleUpdate', 'checkForPasswordLockerModuleUpdateResult', {})
+    if (!checkResult.success || !checkResult.available) {
+      showToast(t(checkResult.success ? 'passwordLocker.moduleInstallNotFound' : 'passwordLocker.moduleInstallCheckFailed'))
+      sendMessage('openReleasesPage')
+      return
+    }
+
+    const installResult = await requestMessage('installPasswordLockerModuleUpdate', 'installPasswordLockerModuleUpdateResult', {})
+    if (!installResult.success) {
+      showToast(t('passwordLocker.moduleInstallFailed'))
+      sendMessage('openReleasesPage')
+      return
+    }
+
+    const confirmed = await askConfirm(t('passwordLocker.moduleInstallRestartPrompt'), { confirmLabel: t('passwordLocker.moduleInstallRestartConfirm') })
+    if (confirmed) {
+      sendMessage('restartApp')
+    }
+  } finally {
+    isInstallingPasswordLockerModule.value = false
+  }
+}
+
+// 解除安裝部件（規劃文件第 9.1 節）：資料（憑證）不受影響，只移除 App 內的部件本身，
+// 跟更新/安裝一樣要重啟才真正生效——這裡只是先寫標記，這個 session 裡部件繼續照常可用。
+async function uninstallPasswordLockerModuleAction() {
+  const confirmed = await askConfirm(t('passwordLocker.uninstallModuleWarning'), {
+    confirmLabel: t('passwordLocker.uninstallModuleConfirm'),
+    variant: 'danger'
+  })
+  if (!confirmed) {
+    return
+  }
+
+  const result = await requestMessage('uninstallPasswordLockerModule', 'uninstallPasswordLockerModuleResult', {})
+  if (!result.success) {
+    showToast(t('passwordLocker.uninstallModuleFailed'))
+    return
+  }
+
+  const restartConfirmed = await askConfirm(t('passwordLocker.moduleInstallRestartPrompt'), { confirmLabel: t('passwordLocker.moduleInstallRestartConfirm') })
+  if (restartConfirmed) {
+    sendMessage('restartApp')
+  }
+}
+
+async function submitPasswordLockerSetup() {
+  if (!passwordLockerSetupPassword.value) {
+    showToast(t('passwordLocker.passwordRequired'))
+    return
+  }
+  if (passwordLockerSetupPassword.value !== passwordLockerSetupPasswordConfirm.value) {
+    showToast(t('passwordLocker.passwordMismatch'))
+    return
+  }
+
+  await requestMessage('setupPasswordLockerCredential', 'setupPasswordLockerCredentialResult', {
+    password: passwordLockerSetupPassword.value
+  })
+  passwordLockerSetupPassword.value = ''
+  passwordLockerSetupPasswordConfirm.value = ''
+  passwordLockerConfigured.value = true
+  showToast(t('passwordLocker.setupSuccess'), 'success')
+  refreshPasswordLockerList()
+}
+
+// 密碼庫的分頁內驗證 session 是後端權威（見 PasswordLockerService.TryGetAppSessionMasterKey），
+// 這裡的 passwordLockerSessionExpiresAt 只是前端自己估算「大概還沒過期，先別急著彈驗證窗」，
+// 就算估算錯了，後端還是會用 PASSWORD_LOCKER_NOT_VERIFIED 擋下來，呼叫端要能處理這個情況。
+function isPasswordLockerSessionLikelyValid() {
+  return Date.now() < passwordLockerSessionExpiresAt.value
+}
+
+function markPasswordLockerSessionVerified() {
+  passwordLockerSessionExpiresAt.value = Date.now() + passwordLockerSessionTimeoutMinutes.value * 60000
+}
+
+// 驗證通過（或前端判斷 session 還有效）之後要接著做的事，集中在這裡執行，
+// 呼叫端只需要準備好 pendingAction 丟給 ensurePasswordLockerVerified。
+async function runPasswordLockerAction(action) {
+  if (action.type === 'reveal') {
+    const result = await requestMessage('revealPasswordLockerPassword', 'revealPasswordLockerPasswordResult', { id: action.id })
+    if (result.success) {
+      passwordLockerRevealedPasswords.value = { ...passwordLockerRevealedPasswords.value, [action.id]: result.password }
+      if (action.editAfterReveal) {
+        // 編輯表單需要看到完整內容才能改，帳號被遮蔽時額外多解密一次帳號、備註固定要解密
+        // 一次（備註沒有像帳號那樣「沒隱藏就是明文」的捷徑，清單本身完全不帶備註欄位）——
+        // 這是唯一會在同一個動作裡把多個密文欄位一起解開的地方，其餘情境（清單列的顯示/
+        // 複製）密碼跟帳號各自獨立觸發，見 togglePasswordLockerUsernameVisibility。
+        const decryptedUsername = action.item.usernameHidden
+          ? (await requestMessage('revealPasswordLockerUsername', 'revealPasswordLockerUsernameResult', { id: action.id })).username
+          : null
+        const notesResult = await requestMessage('revealPasswordLockerNotes', 'revealPasswordLockerNotesResult', { id: action.id })
+        openPasswordLockerFormWithItem(action.item, result.password, decryptedUsername, notesResult.success ? notesResult.notes : '')
+      }
+      if (action.showAfterReveal) {
+        passwordLockerVisibleIds.value = new Set(passwordLockerVisibleIds.value).add(action.id)
+      }
+    } else if (result.errorCode === 'PASSWORD_LOCKER_NOT_VERIFIED') {
+      openPasswordLockerVerify(action)
+    } else {
+      showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.verifyFailed')))
+    }
+  } else if (action.type === 'revealUsername') {
+    const result = await requestMessage('revealPasswordLockerUsername', 'revealPasswordLockerUsernameResult', { id: action.id })
+    if (result.success) {
+      passwordLockerRevealedUsernames.value = { ...passwordLockerRevealedUsernames.value, [action.id]: result.username }
+      passwordLockerUsernameVisibleIds.value = new Set(passwordLockerUsernameVisibleIds.value).add(action.id)
+      await copyToClipboardWithAutoClear(result.username)
+      showToast(t('passwordLocker.usernameCopied'), 'success')
+    } else if (result.errorCode === 'PASSWORD_LOCKER_NOT_VERIFIED') {
+      openPasswordLockerVerify(action)
+    } else {
+      showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.verifyFailed')))
+    }
+  } else if (action.type === 'copy') {
+    const result = await requestMessage('revealPasswordLockerPassword', 'revealPasswordLockerPasswordResult', { id: action.id })
+    if (result.success) {
+      await copyToClipboardWithAutoClear(result.password)
+      showToast(t('passwordLocker.copied'), 'success')
+    } else if (result.errorCode === 'PASSWORD_LOCKER_NOT_VERIFIED') {
+      openPasswordLockerVerify(action)
+    } else {
+      showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.verifyFailed')))
+    }
+  } else if (action.type === 'delete') {
+    await finishPasswordLockerDelete(action.ids)
+  } else if (action.type === 'save') {
+    await finishPasswordLockerSave()
+  } else if (action.type === 'changePassword') {
+    const result = await requestMessage('changePasswordLockerPassword', 'changePasswordLockerPasswordResult', { newPassword: action.newPassword })
+    if (result.success) {
+      showToast(t('passwordLocker.changePasswordSuccess'), 'success')
+      passwordLockerChangePasswordState.value = null
+    } else {
+      showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.changePasswordFailed')))
+    }
+  } else if (action.type === 'setupPasskey') {
+    // 驗證剛通過、session 現在有效了，重新呼叫一次原本的動作——這次 backend 的
+    // TryGetAppSessionMasterKey 拿得到金鑰，會直接觸發真正的 Passkey 設定流程，
+    // 不需要使用者自己再手動點一次按鈕。
+    await setupPasswordLockerPasskeyAction()
+  } else if (action.type === 'setupRecoveryKey') {
+    await performPasswordLockerRecoveryKeySetup()
+  } else if (action.type === 'openAssociatePicker') {
+    passwordLockerPickerVisible.value = true
+  } else if (action.type === 'exportCsv') {
+    const result = await requestMessage('exportPasswordLockerCsv', 'exportPasswordLockerCsvResult', {})
+    if (result.success) {
+      const saveResult = await requestMessage('savePasswordLockerCsvToFile', 'savePasswordLockerCsvToFileResult', { content: result.csv })
+      if (saveResult.success) {
+        showToast(t('passwordLocker.exportCsvSuccess'), 'success')
+      } else if (!saveResult.cancelled) {
+        showToast(translateError(saveResult.errorCode, saveResult.errorDetail, t('passwordLocker.exportCsvFailed')))
+      }
+    } else if (result.errorCode === 'PASSWORD_LOCKER_NOT_VERIFIED') {
+      openPasswordLockerVerify(action)
+    } else {
+      showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.exportCsvFailed')))
+    }
+  } else if (action.type === 'saveEncryptedFilesToLocker') {
+    let savedCount = 0
+    for (const item of action.items) {
+      const result = await requestMessage('addOrUpdatePasswordLockerCredential', 'addOrUpdatePasswordLockerCredentialResult', {
+        category: 'EncryptedFile',
+        title: item.path.split(/[\\/]/).pop(),
+        domains: [],
+        username: '',
+        password: action.password,
+        linkedVaultItemUuid: item.uuid
+      })
+      if (result.success) {
+        savedCount++
+      }
+    }
+    if (savedCount > 0) {
+      showToast(t('passwordLocker.saveEncryptedFilesSuccess', { count: savedCount }), 'success')
+    }
+  } else if (action.type === 'importCsv') {
+    const result = await requestMessage('pickAndImportPasswordLockerCsv', 'importPasswordLockerCsvResult', {})
+    if (result.success) {
+      showToast(t('passwordLocker.importCsvSuccess', { imported: result.importedCount, skipped: result.skippedCount }), 'success')
+      // 分開跳第二則 toast（不是併進同一句），讓「這是明文檔案，記得刪除」這個安全提醒
+      // 保有自己的視覺份量，不會被匯入筆數這種例行性資訊稀釋掉（規劃文件第 7 節）。
+      showToast(t('passwordLocker.importCsvDeleteReminder'))
+      await refreshPasswordLockerList()
+    } else if (result.cancelled) {
+      // 使用者自己取消選檔，不是失敗，不用顯示任何訊息。
+    } else if (result.errorCode === 'PASSWORD_LOCKER_NOT_VERIFIED') {
+      openPasswordLockerVerify(action)
+    } else {
+      showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.importCsvFailed')))
+    }
+  }
+}
+
+// 匯出前先跳明確提示告知這是明文內容（規劃文件第 7 節），確認後才走驗證流程——這個提示
+// 本身不算驗證的一部分，就算 session 還沒過期一樣要先看到這個提示才能繼續。
+// 匯出是一次把整個密碼庫的明文內容整份取出，風險比單筆顯示/複製高很多，這裡刻意不沿用
+// 分頁內共用的驗證 session（把 passwordLockerSessionExpiresAt 歸零強制視為過期）——
+// 每次匯出都要求重新驗證一次，不能因為使用者剛好在逾時時間內做過其他操作就跳過。
+async function exportPasswordLockerCsvAction() {
+  const confirmed = await askConfirm(t('passwordLocker.exportCsvWarning'), { confirmLabel: t('passwordLocker.exportCsvConfirm') })
+  if (!confirmed) {
+    return
+  }
+  passwordLockerSessionExpiresAt.value = 0
+  await ensurePasswordLockerVerified({ type: 'exportCsv' })
+}
+
+async function importPasswordLockerCsvAction() {
+  await ensurePasswordLockerVerified({ type: 'importCsv' })
+}
+
+// 加密流程結束時詢問要不要把這次用的密碼存進密碼庫（規劃文件第 4 節）——只在密碼庫這個
+// 可選配部件已安裝「而且」使用者已經設定過的前提下才問，還沒裝／還沒設定的人不會突然被
+// 帶去設定精靈，這輪的範圍只服務「本來就已經在用密碼庫」的使用者，見第 4 節的既有決策。
+async function maybeOfferSaveEncryptedFilesToLocker(password, items) {
+  if (items.length === 0) {
+    return
+  }
+  const status = await refreshPasswordLockerModuleStatus()
+  if (status !== 'ok') {
+    return
+  }
+  await refreshPasswordLockerList()
+  if (!passwordLockerConfigured.value) {
+    return
+  }
+
+  const confirmed = await askConfirm(
+    items.length === 1
+      ? t('passwordLocker.saveEncryptedFilePrompt')
+      : t('passwordLocker.saveEncryptedFilesPrompt', { count: items.length }),
+    { confirmLabel: t('passwordLocker.saveEncryptedFilesConfirm'), cancelLabel: t('passwordLocker.saveEncryptedFilesSkip') }
+  )
+  if (!confirmed) {
+    return
+  }
+
+  await ensurePasswordLockerVerified({ type: 'saveEncryptedFilesToLocker', items, password })
+}
+
+// 顯示/複製/刪除/儲存共用：session 前端估算還有效就直接做；沒有的話，Passkey 已設定就跟
+// 資料夾防護的既有模式一樣先靜默試一次 Passkey（不先跳密碼欄位），失敗/取消才退回密碼彈窗——
+// 不能兩者都做（先跳密碼欄位、送出時後端又預設再試一次 Passkey），那樣使用者要連續應付兩次
+// 驗證，見 submitPasswordLockerVerify 明確傳 tryPasskeyFirst:false 的說明。
+async function ensurePasswordLockerVerified(action) {
+  if (isPasswordLockerSessionLikelyValid()) {
+    await runPasswordLockerAction(action)
+    return
+  }
+  // 已經有一個驗證流程在跑（Passkey 提示開著，或密碼彈窗已經開著）就不要再疊一個——
+  // 沒有這道防線，連續點擊會讓每次點擊各自觸發一次獨立的 Windows Hello 提示。
+  if (isPasswordLockerAuthBusy.value || passwordLockerVerifyState.value) {
+    return
+  }
+  if (passwordLockerPasskeyEnabled.value) {
+    isPasswordLockerAuthBusy.value = true
+    let result
+    try {
+      result = await requestMessage('verifyPasswordLocker', 'verifyPasswordLockerResult', {})
+    } finally {
+      isPasswordLockerAuthBusy.value = false
+    }
+    if (result.success) {
+      markPasswordLockerSessionVerified()
+      await runPasswordLockerAction(action)
+      return
+    }
+  }
+  openPasswordLockerVerify(action)
+}
+
+function openPasswordLockerVerify(pendingAction) {
+  passwordLockerVerifyState.value = { usingRecoveryKey: false, pendingAction }
+  passwordLockerVerifyValue.value = ''
+}
+
+function cancelPasswordLockerVerify() {
+  passwordLockerVerifyState.value = null
+  passwordLockerVerifyValue.value = ''
+}
+
+// 密碼欄位已經開著、使用者想改用 Passkey 重試——不用整個取消再重新觸發一次原本的動作。
+async function retryPasswordLockerVerifyPasskey() {
+  const state = passwordLockerVerifyState.value
+  if (!state || isPasswordLockerAuthBusy.value) {
+    return
+  }
+  isPasswordLockerAuthBusy.value = true
+  let result
+  try {
+    result = await requestMessage('verifyPasswordLocker', 'verifyPasswordLockerResult', {})
+  } finally {
+    isPasswordLockerAuthBusy.value = false
+  }
+  if (!result.success) {
+    showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.verifyFailed')))
+    return
+  }
+  markPasswordLockerSessionVerified()
+  const pendingAction = state.pendingAction
+  passwordLockerVerifyState.value = null
+  passwordLockerVerifyValue.value = ''
+  if (pendingAction) {
+    await runPasswordLockerAction(pendingAction)
+  }
+}
+
+async function submitPasswordLockerVerify() {
+  const state = passwordLockerVerifyState.value
+  const value = passwordLockerVerifyValue.value
+  if (!state || !value) {
+    return
+  }
+
+  // tryPasskeyFirst: false——這裡是密碼欄位，使用者已經在打密碼了，不要讓後端又默默跳一次
+  // Passkey 提示（Passkey 路徑已經在 ensurePasswordLockerVerified 裡試過、失敗了才會走到這裡）。
+  const result = state.usingRecoveryKey
+    ? await requestMessage('verifyPasswordLockerByRecoveryKey', 'verifyPasswordLockerByRecoveryKeyResult', { recoveryKey: value })
+    : await requestMessage('verifyPasswordLocker', 'verifyPasswordLockerResult', { password: value, tryPasskeyFirst: false })
+
+  if (!result.success) {
+    showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.verifyFailed')))
+    return
+  }
+
+  markPasswordLockerSessionVerified()
+  const pendingAction = state.pendingAction
+  passwordLockerVerifyState.value = null
+  passwordLockerVerifyValue.value = ''
+  if (pendingAction) {
+    await runPasswordLockerAction(pendingAction)
+  }
+}
+
+function openPasswordLockerChangePasswordForm() {
+  passwordLockerChangePasswordState.value = { newPassword: '', confirm: '' }
+}
+
+function closePasswordLockerChangePasswordForm() {
+  passwordLockerChangePasswordState.value = null
+}
+
+async function submitPasswordLockerChangePassword() {
+  const state = passwordLockerChangePasswordState.value
+  if (!state.newPassword) {
+    showToast(t('passwordLocker.passwordRequired'))
+    return
+  }
+  if (state.newPassword !== state.confirm) {
+    showToast(t('passwordLocker.passwordMismatch'))
+    return
+  }
+  await ensurePasswordLockerVerified({ type: 'changePassword', newPassword: state.newPassword })
+}
+
+async function setupPasswordLockerPasskeyAction() {
+  if (isPasswordLockerAuthBusy.value || passwordLockerVerifyState.value) {
+    return
+  }
+  isPasswordLockerAuthBusy.value = true
+  let result
+  try {
+    result = await requestMessage('setupPasswordLockerPasskey', 'setupPasswordLockerPasskeyResult', {})
+  } finally {
+    isPasswordLockerAuthBusy.value = false
+  }
+  if (result.success) {
+    passwordLockerPasskeyEnabled.value = true
+    showToast(t('passwordLocker.passkeySetupSuccess'), 'success')
+  } else if (result.errorCode === 'PASSWORD_LOCKER_NOT_VERIFIED') {
+    openPasswordLockerVerify({ type: 'setupPasskey' })
+  } else {
+    showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.passkeySetupFailed')))
+  }
+}
+
+// 停用 Passkey 一樣要先驗證身份，但刻意保留「Passkey 驗證失敗就退回密碼」的逃生門，
+// 理由跟資料夾防護的 disableFolderGuardPasskeyAction 一致。
+async function disablePasswordLockerPasskeyAction() {
+  if (isPasswordLockerAuthBusy.value || passwordLockerVerifyState.value) {
+    return
+  }
+  const confirmed = await askConfirm(t('passwordLocker.passkeyDisableConfirm'), { variant: 'danger' })
+  if (!confirmed) {
+    return
+  }
+  isPasswordLockerAuthBusy.value = true
+  let result
+  try {
+    result = await requestMessage('disablePasswordLockerPasskey', 'disablePasswordLockerPasskeyResult', {})
+  } finally {
+    isPasswordLockerAuthBusy.value = false
+  }
+  if (result.success) {
+    passwordLockerPasskeyEnabled.value = false
+    showToast(t('passwordLocker.passkeyDisabled'), 'success')
+    return
+  }
+  passwordPromptContext.value = { mode: 'passwordLockerDisablePasskey' }
+  passwordPromptValue.value = ''
+}
+
+// 已經有一組恢復金鑰的話，重新產生會讓舊的那組立刻失效（後端整筆覆蓋，見
+// PasswordLockerService.SetupRecoveryKeyAsync）——先跟使用者確認清楚，避免使用者以為
+// 「再設定一次」是疊加、結果手上抄著的舊金鑰突然不能用了都不知道。
+//
+// 重新產生恢復金鑰算是重大操作，跟「顯示/複製某一筆密碼」這類日常操作不該共用同一段
+// 免驗證時間——即使分頁的驗證 session 現在還沒到期，這裡也一律強制跳出驗證彈窗，
+// 不像 ensurePasswordLockerVerified 那樣先檢查 session 是否還有效就直接放行。
+async function setupPasswordLockerRecoveryKeyAction() {
+  if (isPasswordLockerAuthBusy.value || passwordLockerVerifyState.value) {
+    return
+  }
+  if (passwordLockerRecoveryKeyEnabled.value) {
+    const confirmed = await askConfirm(t('passwordLocker.recoveryKeyRegenerateConfirm'), { variant: 'danger' })
+    if (!confirmed) {
+      return
+    }
+  }
+  openPasswordLockerVerify({ type: 'setupRecoveryKey' })
+}
+
+// 驗證彈窗通過之後才會執行到這裡，真正呼叫後端產生新的恢復金鑰。
+async function performPasswordLockerRecoveryKeySetup() {
+  isPasswordLockerAuthBusy.value = true
+  let result
+  try {
+    result = await requestMessage('setupPasswordLockerRecoveryKey', 'setupPasswordLockerRecoveryKeyResult', {})
+  } finally {
+    isPasswordLockerAuthBusy.value = false
+  }
+  if (result.success) {
+    passwordLockerRecoveryKeyEnabled.value = true
+    passwordLockerRecoveryKeyDisplay.value = result.recoveryKey
+    passwordLockerRecoveryKeySaveState.value = ''
+  } else if (result.errorCode === 'PASSWORD_LOCKER_NOT_VERIFIED') {
+    openPasswordLockerVerify({ type: 'setupRecoveryKey' })
+  } else {
+    showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.recoveryKeySetupFailed')))
+  }
+}
+
+function acknowledgePasswordLockerRecoveryKey() {
+  passwordLockerRecoveryKeyDisplay.value = ''
+  passwordLockerRecoveryKeySaveState.value = ''
+}
+
+// 跟 disablePasswordLockerPasskeyAction 同樣的理由：Passkey 已設定就先靜默試一次，
+// 失敗/取消才退回密碼彈窗，不要兩種驗證方式疊在一起要求使用者各做一次。
+async function disablePasswordLockerRecoveryKeyAction() {
+  if (isPasswordLockerAuthBusy.value || passwordLockerVerifyState.value) {
+    return
+  }
+  const confirmed = await askConfirm(t('passwordLocker.recoveryKeyDisableConfirm'), { variant: 'danger' })
+  if (!confirmed) {
+    return
+  }
+  if (passwordLockerPasskeyEnabled.value) {
+    isPasswordLockerAuthBusy.value = true
+    let result
+    try {
+      result = await requestMessage('disablePasswordLockerRecoveryKey', 'disablePasswordLockerRecoveryKeyResult', {})
+    } finally {
+      isPasswordLockerAuthBusy.value = false
+    }
+    if (result.success) {
+      passwordLockerRecoveryKeyEnabled.value = false
+      showToast(t('passwordLocker.recoveryKeyDisabled'), 'success')
+      return
+    }
+  }
+  passwordPromptContext.value = { mode: 'passwordLockerDisableRecoveryKey' }
+  passwordPromptValue.value = ''
+}
+
+// ---- 清單頁：分組/排序/搜尋 ----
+
+// 搜尋觸發備註比對：debounce 避免每打一個字就打一次後端；後端沒有有效 session 時本來就會
+// 安靜回傳空陣列（見 PasswordLockerProtocolHandlers.FindEntriesWithNotesContainingAsync），
+// 這裡不用額外判斷「有沒有驗證過」。
+watch(passwordLockerSearchQuery, (query) => {
+  clearTimeout(passwordLockerSearchDebounceTimer)
+  const trimmed = query.trim()
+  if (!trimmed) {
+    passwordLockerNotesMatchIds.value = new Set()
+    return
+  }
+  passwordLockerSearchDebounceTimer = setTimeout(async () => {
+    const result = await requestMessage('searchPasswordLockerNotes', 'searchPasswordLockerNotesResult', { query: trimmed })
+    passwordLockerNotesMatchIds.value = new Set(result.ids)
+  }, 300)
+})
+
+// 同義詞群組：使用者搜尋「郵件」這種泛稱類別詞的時候，標題／網域欄位裡實際存的常常是
+// 「Gmail」「Outlook」這類具體服務名稱，兩者字面上不會互相包含，純子字串比對搜不到。
+// 群組內任何一個詞都視為互相同義，搜尋其中一個詞時，比對條件同時展開成整組詞的 OR。
+const PASSWORD_LOCKER_SEARCH_SYNONYM_GROUPS = [
+  ['信箱', '郵件', 'email', 'mail', 'gmail', 'outlook', 'yahoo', 'hotmail', 'icloud'],
+  ['存簿', '銀行', '戶頭', '銀行帳戶', 'bank', 'passbook', '提款卡', 'atm'],
+  ['電話', '電話號碼', '手機', '手機號碼', '門號', 'phone', 'mobile'],
+  ['社群', '社交', 'facebook', 'instagram', 'threads', 'line', 'x', 'twitter'],
+  ['購物', '網購', 'shopping', '蝦皮', 'shopee', 'momo', 'amazon', 'pchome'],
+  ['影音', '串流', 'streaming', 'netflix', 'youtube', 'disney', 'spotify']
+]
+
+function expandPasswordLockerSearchToken(token) {
+  const group = PASSWORD_LOCKER_SEARCH_SYNONYM_GROUPS.find((g) => g.includes(token))
+  return group ? group : [token]
+}
+
+// 「更聰明一點」：拆成多個關鍵字，每個關鍵字只要在標題／帳號／關聯網域任一欄位裡出現就算數
+// （不用照順序、不用同一個欄位），比單純比對「整串完整包含」更容易搜到；符合備註內容的
+// 額外用 passwordLockerNotesMatchIds 補上（見上面的 watch）。同義詞群組讓「郵件」這種泛稱
+// 也能搜到「Gmail」這類實際存的具體服務名稱。
+const passwordLockerFilteredItems = computed(() => {
+  const query = passwordLockerSearchQuery.value.trim().toLowerCase()
+  if (!query) {
+    return passwordLockerItems.value
+  }
+  const tokens = query.split(/\s+/).filter(Boolean)
+  return passwordLockerItems.value.filter((item) => {
+    if (passwordLockerNotesMatchIds.value.has(item.id)) {
+      return true
+    }
+    const haystack = [item.title, item.username, ...item.associatedDomains].join(' ').toLowerCase()
+    return tokens.every((token) => expandPasswordLockerSearchToken(token).some((variant) => haystack.includes(variant)))
+  })
+})
+
+function sortPasswordLockerItems(items, mode) {
+  const sorted = [...items]
+  if (mode === 'alphabetical') {
+    // 排序要跟畫面上實際顯示的文字一致——標題留空的紀錄清單上顯示的是自動組合出來的
+    // 網站名稱，不是空字串，用 item.title 排會讓這些紀錄全部被排到最前面，跟看到的
+    // 順序對不起來。
+    sorted.sort((a, b) => passwordLockerDisplayTitle(a).localeCompare(passwordLockerDisplayTitle(b)))
+  } else {
+    sorted.sort((a, b) => new Date(b.createdAtUtc) - new Date(a.createdAtUtc))
+  }
+  return sorted
+}
+
+const passwordLockerWebsiteItems = computed(() =>
+  sortPasswordLockerItems(passwordLockerFilteredItems.value.filter((item) => item.category === 'Website'), passwordLockerWebsiteSort.value)
+)
+const passwordLockerFileItems = computed(() =>
+  sortPasswordLockerItems(passwordLockerFilteredItems.value.filter((item) => item.category === 'EncryptedFile'), passwordLockerFileSort.value)
+)
+
+// 空狀態判斷要跟著顯示內容篩選（全部／網站／已加密檔案）走，不然篩到某個分類剛好沒有
+// 任何項目時，畫面會整個空白、看不出「篩選條件下沒有資料」還是「還在載入」。
+const passwordLockerVisibleItemCount = computed(() => {
+  if (passwordLockerViewFilter.value === 'website') {
+    return passwordLockerWebsiteItems.value.length
+  }
+  if (passwordLockerViewFilter.value === 'file') {
+    return passwordLockerFileItems.value.length
+  }
+  return passwordLockerFilteredItems.value.length
+})
+
+// 已經解密過就純前端切換遮住/顯示，不用重新驗證、也不用重新呼叫後端解密；還沒解密過的話
+// 走一般的驗證流程，驗證通過、拿到明文後直接切成顯示狀態（showAfterReveal），不用使用者
+// 驗證完之後還要再點一次才看得到。
+function togglePasswordLockerVisibility(item) {
+  if (passwordLockerVisibleIds.value.has(item.id)) {
+    const next = new Set(passwordLockerVisibleIds.value)
+    next.delete(item.id)
+    passwordLockerVisibleIds.value = next
+    return
+  }
+  if (passwordLockerRevealedPasswords.value[item.id]) {
+    passwordLockerVisibleIds.value = new Set(passwordLockerVisibleIds.value).add(item.id)
+    return
+  }
+  ensurePasswordLockerVerified({ type: 'reveal', id: item.id, showAfterReveal: true })
+}
+
+// 帳號欄位的點擊手勢，跟密碼那顆眼睛圖示是兩套獨立邏輯（見規劃討論）：
+// - 沒勾選隱藏：帳號本來就是明文，點一下只負責複製，沒有顯示/隱藏狀態可言。
+// - 有勾選隱藏：第一次點擊＝（必要時先驗證）解密＋複製＋顯示；已顯示狀態下再點一次＝
+//   只負責變回隱藏，不重新複製一次。
+async function togglePasswordLockerUsernameVisibility(item) {
+  if (!item.usernameHidden) {
+    await copyToClipboardWithAutoClear(item.username)
+    showToast(t('passwordLocker.usernameCopied'), 'success')
+    return
+  }
+  if (passwordLockerUsernameVisibleIds.value.has(item.id)) {
+    const next = new Set(passwordLockerUsernameVisibleIds.value)
+    next.delete(item.id)
+    passwordLockerUsernameVisibleIds.value = next
+    return
+  }
+  await ensurePasswordLockerVerified({ type: 'revealUsername', id: item.id })
+}
+
+function togglePasswordLockerSelected(id) {
+  const next = new Set(passwordLockerSelectedIds.value)
+  if (next.has(id)) {
+    next.delete(id)
+  } else {
+    next.add(id)
+  }
+  passwordLockerSelectedIds.value = next
+}
+
+function cancelPasswordLockerSelection() {
+  passwordLockerSelectedIds.value = new Set()
+}
+
+async function deleteSelectedPasswordLockerItems() {
+  const ids = [...passwordLockerSelectedIds.value]
+  if (ids.length === 0) {
+    return
+  }
+  await ensurePasswordLockerVerified({ type: 'delete', ids })
+}
+
+async function finishPasswordLockerDelete(ids) {
+  const confirmed = await askConfirm(t('passwordLocker.deleteConfirm', { count: ids.length }), { variant: 'danger' })
+  if (!confirmed) {
+    return
+  }
+  const result = await requestMessage('deletePasswordLockerCredentials', 'deletePasswordLockerCredentialsResult', { ids })
+  if (result.success) {
+    passwordLockerSelectedIds.value = new Set()
+    showToast(t('passwordLocker.deleteSuccess'), 'success')
+    refreshPasswordLockerList()
+  } else {
+    showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.deleteFailed')))
+  }
+}
+
+// ---- 新增/編輯表單 ----
+
+function openPasswordLockerAddForm() {
+  passwordLockerFormState.value = {
+    id: null,
+    category: 'Website',
+    title: '',
+    domains: [],
+    domainInput: '',
+    username: '',
+    usernameHidden: false,
+    password: '',
+    notes: '',
+    linkedVaultItemUuid: null
+  }
+  if (vaultItems.value.length === 0) {
+    refreshList()
+  }
+}
+
+// 選了一個已加密項目就把標題帶入該項目的檔名——「已加密檔案」類別的標題本來就該跟著
+// 連結的項目走，不用使用者自己輸入一次一模一樣的檔名（見 PasswordCredentialEntry.Title
+// 的既有說明）。選回「未連結」不清空標題，讓使用者自己決定要不要保留已輸入的文字。
+function onPasswordLockerLinkedFileChange() {
+  const state = passwordLockerFormState.value
+  const item = vaultItems.value.find((i) => i.uuid === state.linkedVaultItemUuid)
+  if (item) {
+    state.title = item.originalName
+  }
+}
+
+async function openPasswordLockerEditForm(item) {
+  await ensurePasswordLockerVerified({ type: 'reveal', id: item.id, item, editAfterReveal: true })
+}
+
+// 編輯情境專用：拿到解密後的密碼、組出完整表單狀態並打開——跟 openPasswordLockerAddForm
+// 共用同一個 passwordLockerFormState 形狀，差別只在 id 有值、欄位帶入既有資料。
+// decryptedUsername 只有 item.usernameHidden 為 true 時才會有值（見 runPasswordLockerAction
+// 的 'reveal' 分支），沒隱藏的話 item.username 本來就是明文，直接用。
+function openPasswordLockerFormWithItem(item, decryptedPassword, decryptedUsername = null, decryptedNotes = '') {
+  passwordLockerFormState.value = {
+    id: item.id,
+    category: item.category,
+    title: item.title,
+    domains: [...item.associatedDomains],
+    domainInput: '',
+    username: decryptedUsername ?? item.username,
+    usernameHidden: item.usernameHidden,
+    password: decryptedPassword,
+    notes: decryptedNotes,
+    linkedVaultItemUuid: item.linkedVaultItemUuid || null
+  }
+  if (item.category === 'EncryptedFile' && vaultItems.value.length === 0) {
+    refreshList()
+  }
+}
+
+function closePasswordLockerForm() {
+  passwordLockerFormState.value = null
+}
+
+// 切成「已加密檔案」時關聯網站欄位會整個收起來（見表單模板），順手清掉已輸入的內容——
+// 不然欄位藏起來但資料還留著，使用者看不到卻被悄悄存進這筆紀錄，之後切回「網站」又會
+// 無緣無故冒出來，很容易搞不清楚資料哪來的。
+function onPasswordLockerCategoryChange() {
+  const state = passwordLockerFormState.value
+  if (state.category === 'EncryptedFile') {
+    state.domains = []
+    state.domainInput = ''
+  }
+}
+
+function addPasswordLockerDomain() {
+  const state = passwordLockerFormState.value
+  const domain = state.domainInput.trim()
+  if (!domain || state.domains.includes(domain)) {
+    state.domainInput = ''
+    return
+  }
+  state.domains = [...state.domains, domain]
+  state.domainInput = ''
+}
+
+function removePasswordLockerDomain(domain) {
+  const state = passwordLockerFormState.value
+  state.domains = state.domains.filter((d) => d !== domain)
+}
+
+// 產生的密碼很多網站不接受符號（甚至限制哪些符號可以用），改成純英數字、比照恢復金鑰／UUID
+// 的「一組固定長度＋用 - 分段」格式，好讀好抄、也不會因為符號被某個網站的密碼規則拒絕。
+function groupWithDashes(raw, groupSize = 5) {
+  const groups = []
+  for (let i = 0; i < raw.length; i += groupSize) {
+    groups.push(raw.slice(i, i + groupSize))
+  }
+  return groups.join('-')
+}
+
+async function generatePasswordLockerPasswordAction() {
+  const result = await requestMessage('generatePasswordLockerPassword', 'generatePasswordLockerPasswordResult', {
+    length: 20, includeSymbols: false
+  })
+  passwordLockerFormState.value.password = groupWithDashes(result.password)
+  showPasswordLockerFormPassword.value = true
+}
+
+const passwordLockerFormStrength = computed(() => {
+  const password = passwordLockerFormState.value?.password || ''
+  if (!password) {
+    return null
+  }
+  if (password.length < 8) {
+    return 'Weak'
+  }
+  const varietyCount = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/].filter((re) => re.test(password)).length
+  if (varietyCount < 3) {
+    return 'Weak'
+  }
+  return password.length >= 16 ? 'Strong' : 'Medium'
+})
+
+// 「這組密碼在密碼庫裡還有幾筆紀錄也在使用」（規劃文件第 6 節，純資訊性、不阻擋儲存）——
+// 跟上面的強度不同，重複使用要比對整個密碼庫的已存密文，沒辦法在前端純算，每次改動都要
+// 問後端一次；debounce 是為了不要每打一個字元就打一次 IPC。excludeId 排除正在編輯的那筆
+// 紀錄本身，不然編輯既有帳密時「重複使用」永遠至少會算到自己。
+const passwordLockerFormReuseCount = ref(0)
+let passwordLockerReuseCheckTimer = null
+watch(() => passwordLockerFormState.value?.password, (password) => {
+  clearTimeout(passwordLockerReuseCheckTimer)
+  if (!password) {
+    passwordLockerFormReuseCount.value = 0
+    return
+  }
+  passwordLockerReuseCheckTimer = setTimeout(async () => {
+    const result = await requestMessage('checkPasswordLockerPasswordReuse', 'checkPasswordLockerPasswordReuseResult', {
+      password, excludeId: passwordLockerFormState.value?.id || null
+    })
+    passwordLockerFormReuseCount.value = result.reuseCount || 0
+  }, 400)
+})
+
+// ---- 關聯到現有帳號：不建立新紀錄，直接把新網域併進被選中那筆既有憑證的
+// AssociatedDomains（見規劃討論——資料模型本來就支援一筆紀錄關聯多個網站，先前
+// 「用現有密碼建一筆新紀錄」的做法反而是繞了遠路）。獨立於「新增帳密」之外的
+// 工具列入口，兩步驟：選現有帳號→輸入新網域＋選填自訂標題。 ----
+
+// 跟其他改動操作一致，先確保驗證通過才看得到清單/能送出變更。
+async function openPasswordLockerAssociateAction() {
+  await ensurePasswordLockerVerified({ type: 'openAssociatePicker' })
+}
+
+function selectPasswordLockerAssociateTarget(item) {
+  passwordLockerPickerVisible.value = false
+  // titleInput 刻意留空，不是拿現有標題來預填——這一格只負責「這次要多接上去的那一小段」，
+  // 系統會自動接在目前顯示標題後面（見 submitPasswordLockerAssociateDomain），使用者只要
+  // 打新的那個網站名稱，不用自己把舊標題整段複製貼上再手動加。
+  passwordLockerAssociateState.value = { item, domainInput: '', titleInput: '' }
+}
+
+async function submitPasswordLockerAssociateDomain() {
+  const state = passwordLockerAssociateState.value
+  const domain = state.domainInput.trim()
+  if (!domain) {
+    showToast(t('passwordLocker.associateDomainRequired'))
+    return
+  }
+  const item = state.item
+  const label = state.titleInput.trim()
+  // 沒填新標籤：維持原樣（原本是自訂標題就不動，原本是空的就繼續讓清單自動組合，
+  // 現在多了這個新網域，組合結果自然就會跟著更新）。有填新標籤：接在「目前實際顯示的
+  // 標題」後面存成新的自訂標題——不管目前顯示的是使用者自己設過的標題，還是本來就是
+  // 自動組合出來的網站清單，都從使用者「看到的那個文字」接下去，不是接在看不到的
+  // 原始 item.title 後面。
+  const newTitle = label ? `${passwordLockerDisplayTitle(item)}${t('passwordLocker.domainsListSeparator')}${label}` : item.title
+
+  const passwordResult = await requestMessage('revealPasswordLockerPassword', 'revealPasswordLockerPasswordResult', { id: item.id })
+  if (!passwordResult.success) {
+    showToast(translateError(passwordResult.errorCode, passwordResult.errorDetail, t('passwordLocker.verifyFailed')))
+    return
+  }
+  // item.username 是清單 metadata，帳號被遮蔽時這裡只會是空字串——直接原樣送回去會把
+  // 這筆既有紀錄的帳號悄悄清空。先解密拿到真正的值，跟密碼一樣的加密狀態原封不動地
+  // 重新送回去（usernameHidden 也要帶上，不然後端預設會當作「取消隱藏」處理）。
+  const username = item.usernameHidden
+    ? (await requestMessage('revealPasswordLockerUsername', 'revealPasswordLockerUsernameResult', { id: item.id })).username
+    : item.username
+
+  const result = await requestMessage('addOrUpdatePasswordLockerCredential', 'addOrUpdatePasswordLockerCredentialResult', {
+    id: item.id,
+    category: item.category,
+    title: newTitle,
+    domains: [...new Set([...item.associatedDomains, domain])],
+    username,
+    usernameHidden: item.usernameHidden,
+    password: passwordResult.password,
+    linkedVaultItemUuid: item.linkedVaultItemUuid || null
+  })
+  if (result.success) {
+    passwordLockerAssociateState.value = null
+    await refreshPasswordLockerList()
+    showToast(t('passwordLocker.useExistingAssociateSuccess'), 'success')
+  } else {
+    showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.saveFailed')))
+  }
+}
+
+// 標題欄位現在是「使用者自訂顯示名稱」，有填就直接用；沒填的話從關聯網站即時組出
+// 「A、B，以及C」——不寫死存進資料庫，網站增減會自動反映，不用另外找時機重算。
+// 字元預算（不是固定列 3 個）：先試著把全部都列出來，太長再改成「A、B、C 等 N 個網站」，
+// 避免只是第一個網站名稱剛好很長，就整串被 CSS 省略號從奇怪的地方截斷。
+function passwordLockerDomainsSummary(domains, charBudget = 20) {
+  if (!domains || domains.length === 0) {
+    return ''
+  }
+  if (domains.length === 1) {
+    return domains[0]
+  }
+  const separator = t('passwordLocker.domainsListSeparator')
+  const full = domains.slice(0, -1).join(separator) + t('passwordLocker.domainsListFinalSeparator') + domains[domains.length - 1]
+  if (full.length <= charBudget) {
+    return full
+  }
+  const shown = [domains[0]]
+  for (let i = 1; i < domains.length; i++) {
+    const candidate = [...shown, domains[i]].join(separator)
+    const withSuffix = t('passwordLocker.domainsSummarySuffix', { list: candidate, count: domains.length })
+    if (withSuffix.length > charBudget) {
+      break
+    }
+    shown.push(domains[i])
+  }
+  return t('passwordLocker.domainsSummarySuffix', { list: shown.join(separator), count: domains.length })
+}
+
+function passwordLockerDisplayTitle(item) {
+  if (item.title && item.title.trim()) {
+    return item.title
+  }
+  return passwordLockerDomainsSummary(item.associatedDomains) || item.title
+}
+
+async function submitPasswordLockerForm() {
+  const state = passwordLockerFormState.value
+  // 關聯網站欄位要按 Enter 才會變成下面的標籤——使用者打完字直接按「儲存」的話，
+  // 輸入框裡還沒提交的文字會被整個忽略掉，一筆都沒記到。存檔前先幫忙補一次提交，
+  // 跟按 Enter 是同一個動作，只是不強迫使用者一定要記得按。要在檢查標題必填與否
+  // 之前先做，不然使用者只打了網站、標題留空，會被誤判成「網站也是空的」而卡住。
+  if (state.domainInput.trim()) {
+    addPasswordLockerDomain()
+  }
+  // 標題現在是「自訂顯示名稱」，留空的話清單會自動用關聯網站組出顯示文字（見
+  // passwordLockerDisplayTitle）——只有「已加密檔案」類別（沒有網站可以組）或
+  // 「網站」類別但一個關聯網站都沒填（組不出東西可顯示）才強制要填標題。
+  const needsTitle = state.category === 'EncryptedFile' || state.domains.length === 0
+  if (needsTitle && !state.title.trim()) {
+    showToast(t('passwordLocker.titleRequired'))
+    return
+  }
+  if (!state.password) {
+    showToast(t('passwordLocker.passwordFieldRequired'))
+    return
+  }
+  await ensurePasswordLockerVerified({ type: 'save' })
+}
+
+async function finishPasswordLockerSave() {
+  const state = passwordLockerFormState.value
+  const result = await requestMessage('addOrUpdatePasswordLockerCredential', 'addOrUpdatePasswordLockerCredentialResult', {
+    id: state.id,
+    category: state.category,
+    title: state.title.trim(),
+    domains: state.domains,
+    username: state.username,
+    usernameHidden: state.usernameHidden,
+    password: state.password,
+    notes: state.notes || null,
+    linkedVaultItemUuid: state.category === 'EncryptedFile' ? state.linkedVaultItemUuid : null
+  })
+  if (result.success) {
+    showToast(t('passwordLocker.saveSuccess'), 'success')
+    passwordLockerFormState.value = null
+    refreshPasswordLockerList()
+  } else {
+    showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.saveFailed')))
+  }
 }
 
 /// 對應規劃文件第 8 節：加密流程掃描到巢狀防護中的資料夾而中止，前端跳彈窗列出這些子資料夾，
@@ -1683,6 +2861,25 @@ async function submitPasswordPrompt() {
     } else {
       showToast(translateError(result.errorCode, result.errorDetail, t('folderGuard.passkeyDisableFailed')))
     }
+  } else if (ctx.mode === 'passwordLockerDisablePasskey') {
+    // tryPasskeyFirst: false——這一步是使用者已經在打密碼的 fallback，不要讓後端又默默跳一次
+    // Passkey 提示（先前的靜默 Passkey 嘗試已經在 disablePasswordLockerPasskeyAction 裡做過、
+    // 失敗了才會走到這裡）。
+    const result = await requestMessage('disablePasswordLockerPasskey', 'disablePasswordLockerPasskeyResult', { password, tryPasskeyFirst: false })
+    if (result.success) {
+      passwordLockerPasskeyEnabled.value = false
+      showToast(t('passwordLocker.passkeyDisabled'), 'success')
+    } else {
+      showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.passkeyDisableFailed')))
+    }
+  } else if (ctx.mode === 'passwordLockerDisableRecoveryKey') {
+    const result = await requestMessage('disablePasswordLockerRecoveryKey', 'disablePasswordLockerRecoveryKeyResult', { password, tryPasskeyFirst: false })
+    if (result.success) {
+      passwordLockerRecoveryKeyEnabled.value = false
+      showToast(t('passwordLocker.recoveryKeyDisabled'), 'success')
+    } else {
+      showToast(translateError(result.errorCode, result.errorDetail, t('passwordLocker.recoveryKeyDisableFailed')))
+    }
   } else {
     decryptingUuids.value.add(ctx.item.uuid)
     sendMessage('decryptByUuid', { uuid: ctx.item.uuid, password, destinationDir: ctx.destinationDir })
@@ -1766,26 +2963,32 @@ function cancelRecoveryKeyPrompt() {
   recoveryKeyPromptMarkerPath.value = null
 }
 
+// 複製機密內容（密碼、恢復金鑰等）到剪貼簿、過一段時間自動清空——這類內容留在剪貼簿裡
+// 風險不小（Windows 剪貼簿歷史紀錄會保留好幾筆之前複製過的內容，甚至可能跨裝置同步），
+// 比照密碼管理工具的慣例自動清空，但只有在剪貼簿裡還是我們剛剛複製的這份內容時才清，
+// 避免蓋掉使用者後來自己複製的別的東西。原本只有恢復金鑰有這段邏輯，密碼庫的密碼複製
+// （togglePasswordLockerUsernameVisibility 之外的密碼欄位，見 runPasswordLockerAction 的
+// 'copy' 分支）完全沒有——同樣是機密內容、複製頻率還更高，2026-08-09 這輪稽核發現後
+// 抽成共用函式，兩邊都套用同一套清空邏輯。
+async function copyToClipboardWithAutoClear(value, clearAfterMs = 45000) {
+  await navigator.clipboard.writeText(value)
+  setTimeout(async () => {
+    try {
+      const current = await navigator.clipboard.readText()
+      if (current === value) {
+        await navigator.clipboard.writeText('')
+      }
+    } catch {
+      // 讀取剪貼簿失敗（例如視窗失去焦點時瀏覽器會擋）就算了，不強求。
+    }
+  }, clearAfterMs)
+}
+
 // 恢復金鑰顯示畫面：複製到剪貼簿。
 async function copyRecoveryKey() {
   try {
-    const copiedValue = recoveryKeyDisplay.value
-    await navigator.clipboard.writeText(copiedValue)
+    await copyToClipboardWithAutoClear(recoveryKeyDisplay.value)
     recoveryKeySaveState.value = recoveryKeySaveState.value || 'copied'
-
-    // 恢復金鑰等同密碼，留在剪貼簿裡風險不小（Windows 剪貼簿歷史紀錄會保留好幾筆之前複製過的內容，
-    // 甚至可能跨裝置同步）。比照密碼管理工具的慣例，過一段時間自動清空——但只有在剪貼簿裡還是
-    // 我們剛剛複製的這份內容時才清，避免蓋掉使用者後來自己複製的別的東西。
-    setTimeout(async () => {
-      try {
-        const current = await navigator.clipboard.readText()
-        if (current === copiedValue) {
-          await navigator.clipboard.writeText('')
-        }
-      } catch {
-        // 讀取剪貼簿失敗（例如視窗失去焦點時瀏覽器會擋）就算了，不強求。
-      }
-    }, 45000)
   } catch {
     showToast(t('recoveryKeyModal.copyFailed'))
   }
@@ -1911,6 +3114,7 @@ function historyDetailText(entry) {
       <button :ref="(el) => setTabRef('decrypt', el)" class="tab-bar__item" :class="{ 'is-active': activeTab === 'decrypt' }" @click="activeTab = 'decrypt'">{{ t('tab.decrypt') }}</button>
       <button :ref="(el) => setTabRef('list', el)" class="tab-bar__item" :class="{ 'is-active': activeTab === 'list' }" @click="activeTab = 'list'">{{ t('tab.list') }}</button>
       <button :ref="(el) => setTabRef('folderGuard', el)" class="tab-bar__item" :class="{ 'is-active': activeTab === 'folderGuard' }" @click="activeTab = 'folderGuard'">{{ t('tab.folderGuard') }}</button>
+      <button :ref="(el) => setTabRef('passwordLocker', el)" class="tab-bar__item" :class="{ 'is-active': activeTab === 'passwordLocker' }" @click="activeTab = 'passwordLocker'">{{ t('tab.passwordLocker') }}</button>
       <button :ref="(el) => setTabRef('settings', el)" class="tab-bar__item" :class="{ 'is-active': activeTab === 'settings' }" @click="activeTab = 'settings'">{{ t('tab.settings') }}</button>
       <span class="tab-bar__indicator" :style="tabIndicatorStyle"></span>
     </nav>
@@ -2385,7 +3589,7 @@ function historyDetailText(entry) {
 
         <div v-else-if="activeTab === 'folderGuard'" key="folderGuard">
           <h1 class="page-title">
-            <svg class="page-title__icon" viewBox="0 0 24 24" fill="none"><rect x="4" y="10" width="16" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M8 10V7.5a4 4 0 1 1 8 0V10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <svg class="page-title__icon" viewBox="0 0 24 24" fill="none"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l1.8 2h7.2a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-10.5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
             {{ t('tab.folderGuard') }}
           </h1>
           <p class="hint-text">
@@ -2451,16 +3655,16 @@ function historyDetailText(entry) {
             </div>
 
             <div v-if="!isLoadingFolderGuard && folderGuardItems.length === 0" class="empty-state-block">
-              <svg class="empty-state-block__icon" viewBox="0 0 24 24" fill="none"><rect x="4" y="10" width="16" height="11" rx="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M8 10V8a4 4 0 1 1 8 0v2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              <svg class="empty-state-block__icon" viewBox="0 0 24 24" fill="none"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l1.8 2h7.2a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-10.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
               <p class="empty-state-block__text">{{ t('folderGuard.noItems') }}</p>
             </div>
 
             <div v-if="folderGuardItems.length > 0" class="table-scroll">
               <table class="table table--folder-guard">
                 <colgroup>
-                  <col style="width: 65%;" />
-                  <col style="width: 20%;" />
+                  <col style="width: 40%;" />
                   <col style="width: 15%;" />
+                  <col style="width: 45%;" />
                 </colgroup>
                 <thead>
                   <tr>
@@ -2495,6 +3699,225 @@ function historyDetailText(entry) {
                 </tbody>
               </table>
             </div>
+          </template>
+        </div>
+
+        <div v-else-if="activeTab === 'passwordLocker'" key="passwordLocker">
+          <h1 class="page-title">
+            <svg class="page-title__icon" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="8" r="4.25" stroke="currentColor" stroke-width="1.8"/><path d="M11 11l9.5 9.5M16.5 15.5l3-3M19 18l2.5-2.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            {{ t('tab.passwordLocker') }}
+          </h1>
+          <p class="hint-text">{{ t('passwordLocker.pageDescription') }}</p>
+
+          <!-- 密碼庫是可選配部件（見 FileLocker_密碼庫_功能規劃.md 第 2.3 節），畫面依偵測結果
+               分三種：未安裝／已安裝正常運作／已安裝但損毀，彼此分開顯示，不要讓使用者以為
+               「損毀」代表「從沒裝過」。moduleStatus 還沒查完（'unknown'）之前，先不顯示三者中
+               的任何一個，避免畫面先閃一下「未安裝」的引導才又跳成清單，造成視覺閃爍。 -->
+          <div v-if="passwordLockerModuleStatus === 'notInstalled'" class="empty-state-block empty-state-block--module">
+            <svg class="empty-state-block__icon" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="8" r="4.25" stroke="currentColor" stroke-width="1.6"/><path d="M11 11l9.5 9.5M16.5 15.5l3-3M19 18l2.5-2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <p class="empty-state-block__text">{{ t('passwordLocker.moduleNotInstalledText') }}</p>
+            <button class="button button--primary" @click="installPasswordLockerModuleAction" :disabled="isInstallingPasswordLockerModule" type="button">
+              {{ isInstallingPasswordLockerModule ? t('passwordLocker.moduleInstalling') : t('passwordLocker.moduleInstallButton') }}
+            </button>
+          </div>
+
+          <div v-else-if="passwordLockerModuleStatus === 'broken'" class="empty-state-block empty-state-block--module">
+            <svg class="empty-state-block__icon" viewBox="0 0 24 24" fill="none"><path d="M12 9v4M12 17h.01M10.3 3.9 2.7 17.5A2 2 0 0 0 4.4 20.5h15.2a2 2 0 0 0 1.7-3L14 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <p class="empty-state-block__text">{{ t('passwordLocker.moduleBrokenText') }}</p>
+            <button class="button button--primary" @click="installPasswordLockerModuleAction" :disabled="isInstallingPasswordLockerModule" type="button">
+              {{ isInstallingPasswordLockerModule ? t('passwordLocker.moduleInstalling') : t('passwordLocker.moduleReinstallButton') }}
+            </button>
+          </div>
+
+          <template v-else-if="passwordLockerModuleStatus === 'ok'">
+          <!-- 首次設定：比照資料夾防護，只有密碼是新增第一筆前必須先完成的關卡，
+               Passkey／恢復金鑰是設定區塊裡的獨立按鈕（規劃文件第 11.3 節）。 -->
+          <section v-if="!passwordLockerConfigured" class="settings-section">
+            <h3 class="settings-section__title">{{ t('passwordLocker.setupTitle') }}</h3>
+            <p class="hint-text">{{ t('passwordLocker.setupDescription') }}</p>
+            <div class="field">
+              <label class="field__label">{{ t('passwordLocker.passwordLabel') }}</label>
+              <div class="password-field">
+                <input v-model="passwordLockerSetupPassword" :type="showPasswordLockerSetupPassword ? 'text' : 'password'" class="text-input" />
+                <button
+                  type="button"
+                  class="password-field__toggle"
+                  :aria-label="t(showPasswordLockerSetupPassword ? 'common.hidePassword' : 'common.showPassword')"
+                  @click="showPasswordLockerSetupPassword = !showPasswordLockerSetupPassword"
+                >
+                  <svg v-if="showPasswordLockerSetupPassword" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="field">
+              <label class="field__label">{{ t('passwordLocker.passwordConfirmLabel') }}</label>
+              <div class="password-field">
+                <input v-model="passwordLockerSetupPasswordConfirm" :type="showPasswordLockerSetupPassword ? 'text' : 'password'" class="text-input" @keyup.enter="submitPasswordLockerSetup" />
+                <button
+                  type="button"
+                  class="password-field__toggle"
+                  :aria-label="t(showPasswordLockerSetupPassword ? 'common.hidePassword' : 'common.showPassword')"
+                  @click="showPasswordLockerSetupPassword = !showPasswordLockerSetupPassword"
+                >
+                  <svg v-if="showPasswordLockerSetupPassword" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+              </div>
+            </div>
+            <button class="button button--primary" @click="submitPasswordLockerSetup" type="button">{{ t('passwordLocker.setupSubmit') }}</button>
+          </section>
+
+          <template v-else>
+            <!-- 選取模式下換成「取消選取／刪除選取」這兩顆按鈕。這一列固定不換行
+                 （flex-wrap: nowrap，超出寬度用橫向捲動而不是換行）——按鈕數量在
+                 一般模式（3 顆）跟選取模式（2 顆）之間切換時，如果讓這一列自由換行，
+                 總寬度變化會讓搜尋框跟著換不換行，連帶讓整個表格跟著往上/下掉一列。
+                 篩選下拉獨立放到下一列，不受這一列按鈕數量變化影響。 -->
+            <div class="button-row button-row--nowrap" v-if="passwordLockerSelectedIds.size === 0">
+              <button class="button button--primary" @click="openPasswordLockerAddForm" type="button">{{ t('passwordLocker.addButton') }}</button>
+              <button class="button button--secondary" @click="openPasswordLockerAssociateAction" type="button">{{ t('passwordLocker.associateButton') }}</button>
+              <button class="button button--secondary" @click="refreshPasswordLockerList" :disabled="isLoadingPasswordLocker" type="button">
+                {{ isLoadingPasswordLocker ? t('list.loading') : t('list.refresh') }}
+              </button>
+              <input
+                v-model="passwordLockerSearchQuery"
+                class="text-input"
+                style="margin-left: auto; flex: 1 1 160px; min-width: 120px; max-width: 240px;"
+                :placeholder="t('passwordLocker.searchPlaceholder')"
+              />
+            </div>
+            <div class="button-row button-row--nowrap" v-else>
+              <button class="button button--secondary" @click="cancelPasswordLockerSelection" type="button">{{ t('passwordLocker.cancelSelectionButton') }}</button>
+              <button class="button button--danger" @click="deleteSelectedPasswordLockerItems" type="button">
+                {{ t('passwordLocker.deleteSelectedButton') }} ({{ passwordLockerSelectedIds.size }})
+              </button>
+              <input
+                v-model="passwordLockerSearchQuery"
+                class="text-input"
+                style="margin-left: auto; flex: 1 1 160px; min-width: 120px; max-width: 240px;"
+                :placeholder="t('passwordLocker.searchPlaceholder')"
+              />
+            </div>
+            <div class="button-row">
+              <select v-model="passwordLockerViewFilter" class="select-input">
+                <option value="all">{{ t('passwordLocker.viewAll') }}</option>
+                <option value="website">{{ t('passwordLocker.groupWebsite') }}</option>
+                <option value="file">{{ t('passwordLocker.groupEncryptedFile') }}</option>
+              </select>
+            </div>
+
+            <div v-if="!isLoadingPasswordLocker && passwordLockerVisibleItemCount === 0" class="empty-state-block">
+              <svg class="empty-state-block__icon" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="8" r="4.25" stroke="currentColor" stroke-width="1.6"/><path d="M11 11l9.5 9.5M16.5 15.5l3-3M19 18l2.5-2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <p class="empty-state-block__text">{{ passwordLockerSearchQuery ? t('passwordLocker.noSearchResults') : t('passwordLocker.noItems') }}</p>
+            </div>
+
+            <template v-for="group in [
+              { key: 'website', label: t('passwordLocker.groupWebsite'), items: passwordLockerWebsiteItems, sortRef: 'passwordLockerWebsiteSort' },
+              { key: 'file', label: t('passwordLocker.groupEncryptedFile'), items: passwordLockerFileItems, sortRef: 'passwordLockerFileSort' }
+            ].filter((g) => passwordLockerViewFilter === 'all' || passwordLockerViewFilter === g.key)" :key="group.key">
+              <div v-if="group.items.length > 0" class="table-scroll" style="margin-top: 20px; margin-bottom: 24px;">
+                <div style="margin-bottom: 8px;">
+                  <h3 class="settings-section__title" style="margin: 0 0 0.4rem;">{{ group.label }}</h3>
+                  <select
+                    class="select-input select-input--compact"
+                    :value="group.key === 'website' ? passwordLockerWebsiteSort : passwordLockerFileSort"
+                    @change="group.key === 'website' ? (passwordLockerWebsiteSort = $event.target.value) : (passwordLockerFileSort = $event.target.value)"
+                  >
+                    <option value="alphabetical">{{ t('passwordLocker.sortAlphabetical') }}</option>
+                    <option value="time">{{ t('passwordLocker.sortTime') }}</option>
+                  </select>
+                </div>
+                <table class="table table--password-locker">
+                  <colgroup>
+                    <col style="width: 5%;" />
+                    <col style="width: 10%;" />
+                    <col style="width: 22%;" />
+                    <col style="width: 33%;" />
+                    <col style="width: 30%;" />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th></th>
+                      <th>{{ t('passwordLocker.colTitle') }}</th>
+                      <th>{{ t('passwordLocker.colUsername') }}</th>
+                      <th>{{ t('passwordLocker.colPassword') }}</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="item in group.items" :key="item.id">
+                      <td>
+                        <input type="checkbox" :checked="passwordLockerSelectedIds.has(item.id)" @change="togglePasswordLockerSelected(item.id)" />
+                      </td>
+                      <td>
+                        <div
+                          class="cell-name"
+                          :class="{ 'text-strikethrough': item.sourceDeleted }"
+                          :title="item.sourceDeleted ? t('passwordLocker.sourceDeletedLabel') : passwordLockerDisplayTitle(item)"
+                        >
+                          {{ passwordLockerDisplayTitle(item) }}
+                        </div>
+                      </td>
+                      <td>
+                        <div
+                          v-if="item.usernameHidden && !passwordLockerUsernameVisibleIds.has(item.id)"
+                          class="cell-name cell-clickable"
+                          style="max-width: 100%;"
+                          role="button"
+                          tabindex="0"
+                          :title="t('passwordLocker.usernameHiddenHint')"
+                          @click="togglePasswordLockerUsernameVisibility(item)"
+                          @keydown.enter="togglePasswordLockerUsernameVisibility(item)"
+                        >••••••••</div>
+                        <div
+                          v-else
+                          class="cell-name cell-clickable"
+                          style="max-width: 100%;"
+                          role="button"
+                          tabindex="0"
+                          :title="item.usernameHidden ? passwordLockerRevealedUsernames[item.id] : item.username"
+                          @click="togglePasswordLockerUsernameVisibility(item)"
+                          @keydown.enter="togglePasswordLockerUsernameVisibility(item)"
+                        >{{ item.usernameHidden ? passwordLockerRevealedUsernames[item.id] : item.username }}</div>
+                      </td>
+                      <td>
+                        <div
+                          v-if="passwordLockerVisibleIds.has(item.id) && passwordLockerRevealedPasswords[item.id]"
+                          class="cell-name text-input--mono"
+                          style="max-width: calc(100% - 2ch);"
+                          :title="passwordLockerRevealedPasswords[item.id]"
+                        >{{ passwordLockerRevealedPasswords[item.id] }}</div>
+                        <span v-else>••••••••</span>
+                      </td>
+                      <td>
+                        <div class="table__actions">
+                          <button
+                            type="button"
+                            class="password-field__toggle password-field__toggle--inline"
+                            :aria-label="t(passwordLockerVisibleIds.has(item.id) ? 'passwordLocker.hide' : 'passwordLocker.show')"
+                            @click="togglePasswordLockerVisibility(item)"
+                          >
+                            <svg v-if="passwordLockerVisibleIds.has(item.id)" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
+                            <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                          </button>
+                          <button class="button button--tiny" @click="ensurePasswordLockerVerified({ type: 'copy', id: item.id })" type="button">
+                            {{ t('passwordLocker.copy') }}
+                          </button>
+                          <button class="button button--tiny" @click="openPasswordLockerEditForm(item)" type="button">
+                            {{ t('passwordLocker.editButton') }}
+                          </button>
+                          <button class="button button--tiny" @click="ensurePasswordLockerVerified({ type: 'delete', ids: [item.id] })" type="button">
+                            {{ t('passwordLocker.deleteButton') }}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+          </template>
           </template>
         </div>
 
@@ -2684,6 +4107,85 @@ function historyDetailText(entry) {
           </section>
 
           <section class="settings-section">
+            <h3 class="settings-section__title">{{ t('passwordLocker.credentialTitle') }}</h3>
+            <!-- 部件根本沒裝／裝壞掉時，不該顯示「尚未設定密碼」這種暗示「部件在、只是還沒設定」
+                 的引導文字——那樣使用者點進密碼庫分頁只會看到安裝畫面，跟設定頁講的完全對不上。
+                 這裡要先問部件狀態，不能只看 passwordLockerConfigured（那個值在部件沒裝時
+                 本來就是預設的 false，沒辦法分辨「沒裝」跟「裝了但沒設定密碼」）。 -->
+            <template v-if="passwordLockerModuleStatus === 'notInstalled'">
+              <p class="hint-text">{{ t('passwordLocker.moduleNotInstalledText') }}</p>
+              <button class="button button--primary" @click="installPasswordLockerModuleAction" :disabled="isInstallingPasswordLockerModule" type="button" style="margin-top: 0.75rem;">
+                {{ isInstallingPasswordLockerModule ? t('passwordLocker.moduleInstalling') : t('passwordLocker.moduleInstallButton') }}
+              </button>
+            </template>
+            <template v-else-if="passwordLockerModuleStatus === 'broken'">
+              <p class="hint-text">{{ t('passwordLocker.moduleBrokenText') }}</p>
+              <button class="button button--primary" @click="installPasswordLockerModuleAction" :disabled="isInstallingPasswordLockerModule" type="button" style="margin-top: 0.75rem;">
+                {{ isInstallingPasswordLockerModule ? t('passwordLocker.moduleInstalling') : t('passwordLocker.moduleReinstallButton') }}
+              </button>
+            </template>
+            <template v-else-if="passwordLockerConfigured">
+              <!-- 密碼／Passkey／恢復金鑰各自獨立一塊，用分隔線隔開——三者是各自獨立的解鎖路徑
+                   （見規劃文件第 3 節），混在同一排按鈕裡容易讓人以為彼此有關聯或互相依賴。 -->
+              <div class="settings-subsection">
+                <h4 class="settings-subsection__title">{{ t('passwordLocker.passwordSectionLabel') }}</h4>
+                <button class="button button--secondary" @click="openPasswordLockerChangePasswordForm" type="button">
+                  {{ t('passwordLocker.changePasswordButton') }}
+                </button>
+              </div>
+
+              <div class="settings-subsection">
+                <h4 class="settings-subsection__title">{{ t('passwordLocker.passkeySectionLabel') }}</h4>
+                <div class="button-row">
+                  <button class="button button--secondary" @click="setupPasswordLockerPasskeyAction" type="button">
+                    <img :src="passkeyIconUrl" alt="" class="button__icon" />
+                    {{ passwordLockerPasskeyEnabled ? t('passwordLocker.passkeyResetupButton') : t('passwordLocker.passkeySetupButton') }}
+                  </button>
+                  <button v-if="passwordLockerPasskeyEnabled" class="button button--secondary" @click="disablePasswordLockerPasskeyAction" type="button">
+                    {{ t('passwordLocker.passkeyDisableButton') }}
+                  </button>
+                </div>
+              </div>
+
+              <div class="settings-subsection">
+                <h4 class="settings-subsection__title">{{ t('passwordLocker.recoveryKeySectionLabel') }}</h4>
+                <div class="button-row">
+                  <button class="button button--secondary" @click="setupPasswordLockerRecoveryKeyAction" type="button">
+                    <img :src="recoveryKeyIconUrl" alt="" class="button__icon" />
+                    {{ passwordLockerRecoveryKeyEnabled ? t('passwordLocker.recoveryKeyResetupButton') : t('passwordLocker.recoveryKeySetupButton') }}
+                  </button>
+                  <button v-if="passwordLockerRecoveryKeyEnabled" class="button button--secondary" @click="disablePasswordLockerRecoveryKeyAction" type="button">
+                    {{ t('passwordLocker.recoveryKeyDisableButton') }}
+                  </button>
+                </div>
+              </div>
+
+              <div class="settings-subsection">
+                <h4 class="settings-subsection__title">{{ t('passwordLocker.csvSectionLabel') }}</h4>
+                <div class="button-row">
+                  <button class="button button--secondary" @click="importPasswordLockerCsvAction" type="button">{{ t('passwordLocker.importCsvButton') }}</button>
+                  <button class="button button--secondary" @click="exportPasswordLockerCsvAction" type="button">{{ t('passwordLocker.exportCsvButton') }}</button>
+                </div>
+              </div>
+            </template>
+            <template v-else>
+              <p class="hint-text">
+                {{ t('passwordLocker.settingsNotConfiguredHint') }}
+                <button class="link-button" @click="activeTab = 'passwordLocker'" type="button">{{ t('tab.passwordLocker') }}</button>
+              </p>
+            </template>
+
+            <!-- 這個子區塊不受 passwordLockerConfigured 限制——解除安裝的是部件本身（見規劃文件
+                 第 9 節），跟使用者有沒有設定過密碼庫密碼是兩件事，只要部件已安裝就該看得到。 -->
+            <div v-if="passwordLockerModuleStatus === 'ok' || passwordLockerModuleStatus === 'broken'" class="settings-subsection">
+              <h4 class="settings-subsection__title">{{ t('passwordLocker.moduleManagementSectionLabel') }}</h4>
+              <button class="button button--danger" @click="uninstallPasswordLockerModuleAction" type="button">
+                {{ t('passwordLocker.uninstallModuleButton') }}
+              </button>
+            </div>
+          </section>
+
+          <section class="settings-section">
             <h3 class="settings-section__title">{{ t('settings.helpTitle') }}</h3>
             <button class="button button--secondary" @click="isHelpOpen = true" type="button">{{ t('settings.helpButton') }}</button>
           </section>
@@ -2725,7 +4227,7 @@ function historyDetailText(entry) {
 
     <!-- 確認對話框（取代原生 confirm()）：只用在真正的二選一（做／不做同一件事）。 -->
     <Transition name="modal">
-      <div v-if="confirmDialogState" class="modal-overlay" @click.self="resolveConfirmDialog(false)">
+      <div v-if="confirmDialogState" class="modal-overlay modal-overlay--confirm" @click.self="resolveConfirmDialog(false)">
         <div class="modal">
           <p class="modal__message">{{ confirmDialogState.message }}</p>
           <div class="modal__footer">
@@ -2819,6 +4321,10 @@ function historyDetailText(entry) {
               <h3>{{ t('help.folderGuardTitle') }}</h3>
               <p>{{ t('help.folderGuardBody') }}</p>
             </section>
+            <section class="modal--help__section">
+              <h3>{{ t('help.passwordLockerTitle') }}</h3>
+              <p>{{ t('help.passwordLockerBody') }}</p>
+            </section>
           </div>
           <div class="modal__footer modal__footer--center">
             <button class="button button--primary" @click="isHelpOpen = false" type="button">{{ t('recoveryKeyModal.close') }}</button>
@@ -2867,6 +4373,9 @@ function historyDetailText(entry) {
           <p v-else-if="passwordPromptContext.mode === 'folderGuardNestedEncrypt'" class="modal__subtitle">{{ t('folderGuard.nestedGuardedPasswordPrompt') }}</p>
           <p v-else-if="passwordPromptContext.mode === 'folderGuardDisable'" class="modal__subtitle">{{ t('folderGuard.disablePasswordPrompt') }}</p>
           <p v-else-if="passwordPromptContext.mode === 'folderGuardDisablePasskey'" class="modal__subtitle">{{ t('folderGuard.disablePasskeyPasswordPrompt') }}</p>
+          <!-- 這兩種是密碼庫用途：密碼欄位輸入的是密碼庫的密碼，跟加密/資料夾防護密碼是完全不同的命名空間。 -->
+          <p v-else-if="passwordPromptContext.mode === 'passwordLockerDisablePasskey'" class="modal__subtitle">{{ t('passwordLocker.disablePasskeyPasswordPrompt') }}</p>
+          <p v-else-if="passwordPromptContext.mode === 'passwordLockerDisableRecoveryKey'" class="modal__subtitle">{{ t('passwordLocker.disableRecoveryKeyPasswordPrompt') }}</p>
           <div class="password-field">
             <input
               ref="passwordPromptInputRef"
@@ -2917,6 +4426,297 @@ function historyDetailText(entry) {
           <div class="modal__footer">
             <button class="button button--secondary" @click="cancelRecoveryKeyPrompt" type="button">{{ t('recoveryKeyPrompt.cancel') }}</button>
             <button class="button button--primary" @click="submitRecoveryKeyDecrypt" type="button" :disabled="!recoveryKeyInputValue.trim()">{{ t('recoveryKeyPrompt.submit') }}</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- 密碼庫驗證彈窗：跟共用的 passwordPromptContext 分開，因為這裡多了「改用恢復金鑰」
+         的切換（見規劃文件第 11.2 節）。 -->
+    <Transition name="modal">
+      <div v-if="passwordLockerVerifyState" class="modal-overlay">
+        <div class="modal">
+          <h2 class="modal__title">{{ t('passwordLocker.verifyTitle') }}</h2>
+          <p class="modal__subtitle">{{ passwordLockerVerifyState.usingRecoveryKey ? t('passwordLocker.verifyByRecoveryKeyPrompt') : t('passwordLocker.verifyPasswordPrompt') }}</p>
+          <div class="password-field">
+            <input
+              v-model="passwordLockerVerifyValue"
+              :type="showPasswordLockerVerifyValue ? 'text' : 'password'"
+              class="text-input"
+              @keyup.enter="submitPasswordLockerVerify"
+            />
+            <button
+              type="button"
+              class="password-field__toggle"
+              :aria-label="t(showPasswordLockerVerifyValue ? 'common.hidePassword' : 'common.showPassword')"
+              @click="showPasswordLockerVerifyValue = !showPasswordLockerVerifyValue"
+            >
+              <svg v-if="showPasswordLockerVerifyValue" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
+              <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+          <div class="button-row">
+            <button
+              v-if="passwordLockerRecoveryKeyEnabled"
+              class="link-button"
+              type="button"
+              @click="passwordLockerVerifyState.usingRecoveryKey = !passwordLockerVerifyState.usingRecoveryKey; passwordLockerVerifyValue = ''"
+            >
+              {{ passwordLockerVerifyState.usingRecoveryKey ? t('passwordLocker.verifyByPasswordToggle') : t('passwordLocker.verifyByRecoveryKeyToggle') }}
+            </button>
+            <!-- Passkey 已設定的話，第一次靜默嘗試（見 ensurePasswordLockerVerified）失敗/取消
+                 才會走到這個密碼彈窗——這裡補一個能直接重試 Passkey 的按鈕，不用整個取消、
+                 退出去再重新觸發一次原本的動作才能改用 Passkey。 -->
+            <button
+              v-if="passwordLockerPasskeyEnabled && !passwordLockerVerifyState.usingRecoveryKey"
+              class="link-button"
+              type="button"
+              @click="retryPasswordLockerVerifyPasskey"
+            >
+              {{ t('passwordLocker.retryPasskeyButton') }}
+            </button>
+          </div>
+          <div class="modal__footer">
+            <button class="button button--secondary" @click="cancelPasswordLockerVerify" type="button">{{ t('passwordLocker.cancel') }}</button>
+            <button class="button button--primary" @click="submitPasswordLockerVerify" type="button" :disabled="!passwordLockerVerifyValue">
+              {{ t('passwordLocker.verifyTitle') }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- 密碼庫恢復金鑰顯示彈窗：只在這次呼叫回傳看得到，FileLocker 不留任何副本，比照
+         加密流程的 recoveryKeyDisplay 既有慣例。 -->
+    <Transition name="modal">
+      <div v-if="passwordLockerRecoveryKeyDisplay" class="modal-overlay">
+        <div class="modal">
+          <h2 class="modal__title">{{ t('passwordLocker.recoveryKeyDisplayTitle') }}</h2>
+          <p class="modal__subtitle">{{ t('passwordLocker.recoveryKeyDisplayDescription') }}</p>
+          <textarea readonly rows="3" class="text-input text-input--mono">{{ passwordLockerRecoveryKeyDisplay }}</textarea>
+          <label class="checkbox-field" style="margin-top: 12px;">
+            <input type="checkbox" :checked="passwordLockerRecoveryKeySaveState === 'saved'" @change="passwordLockerRecoveryKeySaveState = $event.target.checked ? 'saved' : ''" />
+            <span>{{ t('passwordLocker.recoveryKeySavedConfirm') }}</span>
+          </label>
+          <div class="modal__footer">
+            <button class="button button--primary" @click="acknowledgePasswordLockerRecoveryKey" type="button" :disabled="passwordLockerRecoveryKeySaveState !== 'saved'">
+              {{ t('passwordLocker.recoveryKeyDone') }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- 密碼庫重設密碼：主金鑰不變，只是重新包一次（見 PasswordLockerService.ChangePasswordAsync），
+         既有憑證不用重新輸入。跟新增/編輯表單同樣的疊層理由，驗證彈窗開著時暫時藏起來。 -->
+    <Transition name="modal">
+      <div v-if="passwordLockerChangePasswordState && !passwordLockerVerifyState" class="modal-overlay">
+        <div class="modal">
+          <h2 class="modal__title">{{ t('passwordLocker.changePasswordButton') }}</h2>
+          <div class="field">
+            <label class="field__label">{{ t('passwordLocker.newPasswordLabel') }}</label>
+            <div class="password-field">
+              <input
+                v-model="passwordLockerChangePasswordState.newPassword"
+                :type="showPasswordLockerChangePassword ? 'text' : 'password'"
+                class="text-input"
+              />
+              <button
+                type="button"
+                class="password-field__toggle"
+                :aria-label="t(showPasswordLockerChangePassword ? 'common.hidePassword' : 'common.showPassword')"
+                @click="showPasswordLockerChangePassword = !showPasswordLockerChangePassword"
+              >
+                <svg v-if="showPasswordLockerChangePassword" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
+                <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="field__label">{{ t('passwordLocker.passwordConfirmLabel') }}</label>
+            <div class="password-field">
+              <input
+                v-model="passwordLockerChangePasswordState.confirm"
+                :type="showPasswordLockerChangePassword ? 'text' : 'password'"
+                class="text-input"
+                @keyup.enter="submitPasswordLockerChangePassword"
+              />
+              <button
+                type="button"
+                class="password-field__toggle"
+                :aria-label="t(showPasswordLockerChangePassword ? 'common.hidePassword' : 'common.showPassword')"
+                @click="showPasswordLockerChangePassword = !showPasswordLockerChangePassword"
+              >
+                <svg v-if="showPasswordLockerChangePassword" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
+                <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="modal__footer">
+            <button class="button button--secondary" @click="closePasswordLockerChangePasswordForm" type="button">{{ t('passwordLocker.cancel') }}</button>
+            <button class="button button--primary" @click="submitPasswordLockerChangePassword" type="button">{{ t('passwordLocker.saveButton') }}</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- 密碼庫新增/編輯表單。儲存時會先跳驗證彈窗（見 submitPasswordLockerForm →
+         ensurePasswordLockerVerified）——這兩個彈窗在 DOM 上是先後兩個獨立的 .modal-overlay，
+         同時顯示的話後面的會蓋住前面的，這裡驗證彈窗在後面，會蓋住這個表單，所以驗證彈窗開著
+         的時候暫時把這個表單藏起來（狀態還在，不會遺失已填的內容），驗證完成或取消後再繼續。 -->
+    <Transition name="modal">
+      <div v-if="passwordLockerFormState && !passwordLockerVerifyState" class="modal-overlay">
+        <div class="modal">
+          <h2 class="modal__title">{{ passwordLockerFormState.id ? t('passwordLocker.formEditTitle') : t('passwordLocker.formAddTitle') }}</h2>
+
+          <div class="field">
+            <label class="field__label">{{ t('passwordLocker.categoryLabel') }}</label>
+            <select class="select-input" v-model="passwordLockerFormState.category" @change="onPasswordLockerCategoryChange">
+              <option value="Website">{{ t('passwordLocker.categoryWebsite') }}</option>
+              <option value="EncryptedFile">{{ t('passwordLocker.categoryEncryptedFile') }}</option>
+            </select>
+          </div>
+
+          <!-- 「已加密檔案」類別可以直接從已加密清單挑一個項目連結（linkedVaultItemUuid），
+               挑選後標題跟著該項目的檔名走——跟規劃文件第 4 節「已加密檔案類的憑證關聯到一個
+               Vault 項目」一致，不用使用者自己手動輸入檔名。 -->
+          <div v-if="passwordLockerFormState.category === 'EncryptedFile'" class="field">
+            <label class="field__label">{{ t('passwordLocker.linkedFileLabel') }}</label>
+            <select class="select-input" v-model="passwordLockerFormState.linkedVaultItemUuid" @change="onPasswordLockerLinkedFileChange">
+              <option :value="null">{{ t('passwordLocker.linkedFileNone') }}</option>
+              <option v-for="item in vaultItems" :key="item.uuid" :value="item.uuid">{{ item.originalName }}</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label class="field__label">{{ t('passwordLocker.titleLabel') }}</label>
+            <input v-model="passwordLockerFormState.title" class="text-input" :placeholder="t('passwordLocker.titlePlaceholder')" />
+            <p v-if="passwordLockerFormState.category === 'Website'" class="hint-text">{{ t('passwordLocker.titleOptionalHint') }}</p>
+          </div>
+
+          <!-- 關聯網站只對「網站」類別有意義（瀏覽器擴充功能靠網域比對這筆憑證），
+               「已加密檔案」類別不會有瀏覽器情境，這個欄位對它沒有作用，切過去要跟著收起來。 -->
+          <div v-if="passwordLockerFormState.category === 'Website'" class="field">
+            <label class="field__label">{{ t('passwordLocker.domainsLabel') }}</label>
+            <input
+              v-model="passwordLockerFormState.domainInput"
+              class="text-input"
+              :placeholder="t('passwordLocker.domainsPlaceholder')"
+              @keyup.enter="addPasswordLockerDomain"
+            />
+            <div v-if="passwordLockerFormState.domains.length > 0" class="button-row" style="margin-top: 8px;">
+              <span v-for="domain in passwordLockerFormState.domains" :key="domain" class="tag">
+                {{ domain }}
+                <button type="button" class="tag__remove" @click="removePasswordLockerDomain(domain)" :aria-label="t('passwordLocker.domainRemove')">×</button>
+              </span>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="field__label">{{ t('passwordLocker.usernameLabel') }}</label>
+            <input v-model="passwordLockerFormState.username" class="text-input" />
+            <label class="checkbox-field" style="margin-top: 8px;">
+              <input type="checkbox" v-model="passwordLockerFormState.usernameHidden" />
+              <span>{{ t('passwordLocker.hideUsernameLabel') }}</span>
+            </label>
+          </div>
+
+          <div class="field">
+            <label class="field__label">{{ t('passwordLocker.passwordLabel') }}</label>
+            <div class="password-field">
+              <input v-model="passwordLockerFormState.password" :type="showPasswordLockerFormPassword ? 'text' : 'password'" class="text-input" />
+              <button
+                type="button"
+                class="password-field__toggle"
+                :aria-label="t(showPasswordLockerFormPassword ? 'common.hidePassword' : 'common.showPassword')"
+                @click="showPasswordLockerFormPassword = !showPasswordLockerFormPassword"
+              >
+                <svg v-if="showPasswordLockerFormPassword" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
+                <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </div>
+            <p v-if="passwordLockerFormStrength" class="hint-text">
+              {{ t('passwordLocker.strengthLabel') }}: {{ t(`passwordLocker.strength${passwordLockerFormStrength}`) }}
+            </p>
+            <p v-if="passwordLockerFormReuseCount > 0" class="hint-text text-warning-soft">
+              {{ t('passwordLocker.reuseWarning', { count: passwordLockerFormReuseCount }) }}
+            </p>
+            <div class="button-row" style="margin-top: 8px;">
+              <button class="button button--secondary button--tiny" @click="generatePasswordLockerPasswordAction" type="button">{{ t('passwordLocker.generateButton') }}</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="field__label">{{ t('passwordLocker.notesLabel') }}</label>
+            <textarea v-model="passwordLockerFormState.notes" rows="2" class="text-input"></textarea>
+          </div>
+
+          <div class="modal__footer">
+            <button class="button button--secondary" @click="closePasswordLockerForm" type="button">{{ t('passwordLocker.cancel') }}</button>
+            <button class="button button--primary" @click="submitPasswordLockerForm" type="button">{{ t('passwordLocker.saveButton') }}</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- 「關聯到現有帳號」第一步：挑一筆既有的「網站」類別憑證。複用清單資料，不需要
+         另外呼叫後端。只列「網站」類別——「已加密檔案」沒有瀏覽器情境，關聯網域對它
+         沒有意義。 -->
+    <Transition name="modal">
+      <div v-if="passwordLockerPickerVisible" class="modal-overlay">
+        <div class="modal">
+          <h2 class="modal__title">{{ t('passwordLocker.associatePickerTitle') }}</h2>
+          <div class="table-scroll" style="max-height: 320px;">
+            <table class="table" style="min-width: 0;">
+              <colgroup>
+                <col style="width: 20%;" />
+                <col style="width: 80%;" />
+              </colgroup>
+              <tbody>
+                <tr
+                  v-for="item in passwordLockerWebsiteItems"
+                  :key="item.id"
+                  class="table__row--clickable"
+                  @click="selectPasswordLockerAssociateTarget(item)"
+                >
+                  <td><div class="cell-name" style="max-width: 100%;" :title="passwordLockerDisplayTitle(item)">{{ passwordLockerDisplayTitle(item) }}</div></td>
+                  <td><div class="cell-name" style="max-width: 100%;" :title="item.username">{{ item.username }}</div></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="modal__footer">
+            <button class="button button--secondary" @click="passwordLockerPickerVisible = false" type="button">{{ t('passwordLocker.cancel') }}</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- 第二步：輸入要新增的網域，標題選填（覆蓋自動組合出來的顯示名稱）。 -->
+    <Transition name="modal">
+      <div v-if="passwordLockerAssociateState" class="modal-overlay">
+        <div class="modal">
+          <h2 class="modal__title">{{ t('passwordLocker.associateDomainTitle', { title: passwordLockerDisplayTitle(passwordLockerAssociateState.item) }) }}</h2>
+          <div class="field">
+            <label class="field__label">{{ t('passwordLocker.associateDomainLabel') }}</label>
+            <input
+              v-model="passwordLockerAssociateState.domainInput"
+              class="text-input"
+              :placeholder="t('passwordLocker.domainsPlaceholder')"
+              @keyup.enter="submitPasswordLockerAssociateDomain"
+            />
+          </div>
+          <div class="field">
+            <label class="field__label">{{ t('passwordLocker.associateTitleOverrideLabel') }}</label>
+            <input
+              v-model="passwordLockerAssociateState.titleInput"
+              class="text-input"
+              :placeholder="t('passwordLocker.associateTitleOverridePlaceholder')"
+            />
+          </div>
+          <div class="modal__footer">
+            <button class="button button--secondary" @click="passwordLockerAssociateState = null" type="button">{{ t('passwordLocker.cancel') }}</button>
+            <button class="button button--primary" @click="submitPasswordLockerAssociateDomain" type="button">{{ t('passwordLocker.associateConfirmButton') }}</button>
           </div>
         </div>
       </div>
@@ -3283,6 +5083,13 @@ body {
   position: relative;
 }
 
+/* WebView2（Chromium）內建的密碼欄位「顯示密碼」眼睛圖示會跟這裡自訂的 .password-field__toggle
+   疊在一起，變成同一個欄位出現兩個眼睛圖示——關掉瀏覽器原生的那顆，只留自訂的。 */
+.password-field input[type="password"]::-ms-reveal,
+.password-field input[type="password"]::-ms-clear {
+  display: none;
+}
+
 .password-field .text-input {
   padding-right: 2.4rem;
 }
@@ -3303,11 +5110,39 @@ body {
   color: var(--color-text-tertiary);
   cursor: pointer;
   border-radius: var(--radius-sm);
-  transition: color var(--duration-fast) ease;
+  transition: color var(--duration-fast) ease, transform 160ms var(--ease-out);
 }
 
 .password-field__toggle:hover {
   color: var(--color-text);
+}
+
+/* 跟 .button:active 同一個回饋原則——眼睛圖示雖然不是 <button class="button">，
+   一樣是可點擊元素，按下去也要有立即回饋，不能只有滑鼠移過去的 hover 變色。
+   一定要疊加 translateY(-50%)，不能只寫 scale(0.9)——CSS 的 transform 是單一屬性值，
+   :active 這條規則會整個覆蓋掉 .password-field__toggle 原本用來垂直置中的
+   translateY(-50%)，按下去的瞬間置中效果消失，圖示會整個往下跳半個按鈕高度，
+   看起來像誇張的彈跳，不是單純的縮小回饋。 */
+.password-field__toggle:active {
+  transform: translateY(-50%) scale(0.9);
+}
+
+/* --inline 變體的 base transform 是 none（不是 translateY(-50%)），沒有上面那個
+   疊加問題，維持單純的 scale 就好。 */
+.password-field__toggle--inline:active {
+  transform: scale(0.9);
+}
+
+/* 密碼庫清單裡的顯示/隱藏按鈕跟輸入欄裡的眼睛圖示共用同一顆元件，但這裡不是疊在
+   輸入欄右側（不需要 absolute + translateY 置中），改用一般文件流定位。 */
+.password-field__toggle--inline {
+  position: static;
+  top: auto;
+  right: auto;
+  transform: none;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
 }
 
 .password-field__toggle svg {
@@ -3322,6 +5157,13 @@ textarea.text-input {
 .select-input {
   width: auto;
   min-width: 200px;
+}
+
+/* 分類清單標題下面那顆排序下拉：跟表單/工具列裡的下拉選單不同，這裡旁邊沒有其他
+   控制項要對齊寬度，維持 200px 最小寬度只會在文字右側留一大片沒用到的空白，
+   縮到跟文字本身差不多寬即可。 */
+.select-input--compact {
+  min-width: 0;
 }
 
 .checkbox-field {
@@ -3466,9 +5308,17 @@ textarea.text-input {
 /* ---- 按鈕：所有可點擊元素都要有按下去的回饋（Emil Kowalski 的設計原則） ---- */
 .button-row {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
   margin-top: 0.5rem;
+}
+
+/* 密碼庫工具列：按鈕數量會隨選取狀態切換，這一列固定不換行，寬度不夠就橫向捲動，
+   避免換行行為隨按鈕數量變化而改變、連帶讓下面清單的位置跟著跳動。 */
+.button-row--nowrap {
+  flex-wrap: nowrap;
+  overflow-x: auto;
 }
 
 .button {
@@ -3542,11 +5392,12 @@ textarea.text-input {
 }
 
 .button--tiny {
-  font-size: 0.78rem;
-  padding: 0.32rem 0.6rem;
+  font-size: 0.76rem;
+  padding: 0.28rem 0.5rem;
   background: var(--color-surface);
   color: var(--color-text-secondary);
   border-color: var(--color-border);
+  white-space: nowrap;
 }
 
 .button--tiny:hover:not(:disabled) {
@@ -3730,6 +5581,17 @@ textarea.text-input {
 .empty-state-block {
   padding: 3rem 1rem;
   text-align: center;
+}
+
+/* 密碼庫未安裝／損毀這兩種畫面是整個分頁唯一的內容（不是清單下方的補充提示），
+   直接沿用 .empty-state-block 預設的頂部留白看起來太貼近標題，視覺重心整個偏上——
+   多留一點頂部空間，讓內容大致落在視窗偏中間的位置。 */
+.empty-state-block--module {
+  margin-top: 12vh;
+}
+
+.empty-state-block--module .button {
+  margin-top: 1.25rem;
 }
 
 .empty-state-block__icon {
@@ -3957,7 +5819,6 @@ textarea.text-input {
 .table-scroll {
   overflow-x: auto;
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-xs);
 }
 
 .table {
@@ -4052,11 +5913,20 @@ textarea.text-input {
    跟一般儲存格不同，會導致這個儲存格沒有跟著整列一起撐滿高度，hover 變色只蓋到一半，
    這正是「hover 沒有整塊區域變色」的成因。改成 <td> 裡包一層 div 做 flex，<td> 本身維持
    預設的 table-cell 顯示方式，高度就會跟其他儲存格一致。 */
+/* 原本是 flex-direction: column，每個按鈕各自一列、還因為 align-items: stretch 被撐成整欄寬度——
+   存了很多筆紀錄時，每一列因此佔用很高的垂直空間，要滑很久才能看完清單。改成同一行、
+   強制不換行（flex-wrap: nowrap）：欄位本身用 .table-scroll 既有的水平捲動當保底，比允許
+   換行更可靠——flex-wrap: wrap 在「表格欄寬本來就是用內容自動撐出來」的情況下（例如已加密
+   清單的 .table--auto），瀏覽器計算最小寬度時會把「允許換行」這件事也算進去，導致欄位被
+   算成很窄、又真的換行，兩個問題互相加強，即使按鈕本身沒有很寬還是會擠成好幾列。這個規則
+   是所有表格（已加密清單、資料夾防護、密碼庫）共用的，一起受益。 */
 .table__actions {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 0.4rem;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.3rem;
 }
 
 /* 永久刪除整個搬到每一列最前面獨立一欄（見 .row-delete-button），不再跟解鎖方式的
@@ -4116,6 +5986,25 @@ textarea.text-input {
   padding-top: 1rem;
 }
 
+/* 已加密清單：跟資料夾防護同樣的理由，但排除最左邊的永久刪除按鈕欄
+   （那一欄本身就是按鈕，不需要跟著文字欄一起往下移）。 */
+.table--auto td:not(:first-child):not(:last-child) {
+  padding-top: 1rem;
+}
+
+/* 密碼庫清單：連勾選框欄也一起往下移——checkbox 本身的預設垂直位置比文字基準線高，
+   不移的話勾選框會看起來比同一列的其他內容偏上面。 */
+.table--password-locker td:not(:last-child) {
+  padding-top: 1rem;
+}
+
+/* 標題／帳號兩欄拉近一點，不需要留跟其他欄位一樣寬的間距——這兩個欄位放在一起看
+   本來就有關聯性（誰的帳號），離遠一點反而要多花力氣視覺配對。 */
+.table--password-locker td:nth-child(3),
+.table--password-locker th:nth-child(3) {
+  padding-left: 0.35rem;
+}
+
 .table__actions .link-button {
   text-align: right;
   padding-top: 0.15rem;
@@ -4136,12 +6025,55 @@ textarea.text-input {
   cursor: default;
 }
 
+/* 密碼庫清單裡「點一下就複製／顯示」的帳號欄位——蓋掉 .cell-name 的 cursor: default，
+   讓使用者看得出這裡可以點，不用另外加圖示。 */
+.cell-clickable {
+  cursor: pointer;
+}
+
 .cell-hint {
   max-width: 160px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: default;
+}
+
+/* 密碼庫清單：「已加密檔案」類別憑證對應的 Vault 項目消失後，標題加刪除線（規劃文件第 4 節）。 */
+.text-strikethrough {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+/* 密碼庫新增/編輯表單的關聯網域標籤，跟 .badge 用途類似但需要一個內建的移除按鈕。 */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-size: 0.8rem;
+}
+
+.tag__remove {
+  appearance: none;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0;
+}
+
+/* 「使用現有密碼」選擇器整列可點擊。 */
+.table__row--clickable {
+  cursor: pointer;
+}
+.table__row--clickable:hover {
+  background: var(--color-accent-soft);
 }
 
 .badge {
@@ -4232,11 +6164,32 @@ textarea.text-input {
 }
 
 .settings-section__title {
-  font-size: 0.95rem;
-  font-weight: 600;
+  font-size: 1.15rem;
+  font-weight: 700;
   line-height: 1.4;
   margin: 0 0 0.65rem;
   color: var(--color-text);
+}
+
+/* 密碼庫設定區塊：密碼／Passkey／恢復金鑰是三條各自獨立的解鎖路徑，用分隔線隔成三塊，
+   避免混在同一排按鈕裡看起來像互相關聯。 */
+.settings-subsection {
+  padding-top: 0.9rem;
+  margin-top: 0.9rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.settings-subsection:first-child {
+  padding-top: 0;
+  margin-top: 0;
+  border-top: none;
+}
+
+.settings-subsection__title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin: 0 0 0.5rem;
 }
 
 .vault-path-display {
@@ -4329,6 +6282,15 @@ textarea.text-input {
   transition: opacity var(--duration-base) var(--ease-out);
 }
 
+/* askConfirm 可能是從另一個已經開著的彈窗裡觸發的（例如密碼庫「使用現有密碼」流程），
+   跟其他 .modal-overlay 同一個 z-index 的話，疊在誰上面只看 DOM 順序，這個確認對話框
+   在模板裡的位置剛好比密碼庫表單早，反而會被蓋在下面、點不到。確認對話框永遠代表
+   「當下最需要使用者處理的動作」，固定給它更高的 z-index，不管它在 DOM 裡排在哪都一定
+   在最上層。 */
+.modal-overlay--confirm {
+  z-index: 200;
+}
+
 .modal {
   font-family: var(--font-ui);
   background: var(--color-surface);
@@ -4337,6 +6299,8 @@ textarea.text-input {
   padding: 1.75rem 2rem;
   max-width: 480px;
   width: 100%;
+  max-height: calc(100vh - 3rem);
+  overflow-y: auto;
   text-align: left;
   transform-origin: center;
   transition: transform var(--duration-base) var(--ease-out), opacity var(--duration-base) var(--ease-out);

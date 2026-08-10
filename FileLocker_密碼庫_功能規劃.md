@@ -190,7 +190,7 @@ Core 資料層完成後的第一個 UI 階段，範圍分兩輪：這輪先做�
 
 ## 12. 已知會延後或不做的事
 
-- **獨立單機介面版本**：使用者提過的構想——核心部件另外寫一份「可以單獨只用 PasswordLocker」的獨立介面，直接複製現有分頁內容、砍掉跟 FileLocker（例如 Vault 連結的「已加密檔案」分類）有依賴關係的選項。這次 grilling 明確擱置，範圍與現有 `App.vue` 分頁共用元件的比例還沒定案，留待第 2 節的可選配部件架構真的落地之後再開一輪獨立的 grilling。可選配部件架構（含第二階段自動安裝）現在已經落地，這輪獨立 grilling 可以視需要排入下一輪規劃。
+- **獨立單機介面版本**：已經正式排入規劃，不再是擱置狀態——見 [`PasswordVault_獨立化_規劃.md`](PasswordVault_獨立化_規劃.md) 與 [ADR-0003](docs/adr/0003-passwordvault-separate-repo.md)。定案方向不是單純幫密碼庫部件多做一份 UI，而是整個功能獨立成品牌 PasswordVault，原始碼遷出這個 repo；`FileLocker.PasswordLocker`／`src/FileLocker.Extension/` 屆時會從這個 repo 移除，FileLocker.App 改成消費遷移後的 `PasswordVault.Core` 編譯產物，既有的「執行期偵測外部 dll、動態載入」可選配部件機制不變。
 - **TOTP 動態驗證碼**：第一版不做，之後可以純新增、不影響現有欄位。
 - **自訂欄位／到期提醒**：第一版不做。
 - **瀏覽器插件主動偵測註冊頁、建議強密碼**：第一版不做（見第 5 節），只在密碼庫自己的介面提供密碼產生器。

@@ -6,10 +6,15 @@ namespace FileLocker.Core.Tests;
 
 public class VaultChangeWatcherTests : IDisposable
 {
-    // 覆寫成很短的 debounce 值，搭配逾時輪詢斷言而非固定 sleep，盡量降低機器負載造成的不穩定
-    // ——這類涉及計時的測試先天比純邏輯測試容易偶爾變慢，是明確接受的取捨。
-    private static readonly TimeSpan PerFileDebounce = TimeSpan.FromMilliseconds(30);
-    private static readonly TimeSpan NotifyDebounce = TimeSpan.FromMilliseconds(80);
+    // 覆寫成比正式環境（300ms／750ms）短的 debounce 值，搭配逾時輪詢斷言而非固定 sleep，
+    // 盡量降低機器負載造成的不穩定——這類涉及計時的測試先天比純邏輯測試容易偶爾變慢，是明確
+    // 接受的取捨。原本用 30ms／80ms，`dotnet test` 平行跑多個測試組時 CPU 排程延遲偶爾會讓
+    // BurstOfManyFileChanges_RaisesChangedEventExactlyOnce 15 次連續寫入之間的間隔被拉長到
+    // 超過這個窗口，導致同一輪 burst 被真的拆成兩次 debounce 週期（不是斷言邏輯的問題，是
+    // production code 在那個間隔下本來就會如實回報兩次）——調寬到 80ms／200ms，跟正式環境
+    // 的比例接近，但仍遠比 300ms／750ms 快，測試總時長還在可接受範圍。
+    private static readonly TimeSpan PerFileDebounce = TimeSpan.FromMilliseconds(80);
+    private static readonly TimeSpan NotifyDebounce = TimeSpan.FromMilliseconds(200);
 
     private readonly DirectoryInfo _tempVaultDir;
     private readonly DirectoryInfo _tempCacheDir;

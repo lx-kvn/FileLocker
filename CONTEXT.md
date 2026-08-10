@@ -33,7 +33,18 @@ _Avoid_: 密碼管理員、Password Vault（撞到既有 Vault 專有名詞）
 _Avoid_: 解鎖密碼庫、登入密碼庫
 
 **憑證（Credential）**：
-密碼庫裡的一筆紀錄，欄位為帳號、密碼、關聯網站（可多個）、備註。依「分類」分成「網站」與「已加密檔案」；「已加密檔案」類的憑證會關聯到一個 Vault 項目，該項目被刪除或解密後，憑證不會被刪除，但標題顯示刪除線並標示來源已消失。
+密碼庫裡的一筆紀錄，欄位為帳號、密碼、關聯網站（可多個）、備註。分類拆成兩個獨立欄位（PasswordVault 獨立化規劃定案，見下面「類別標籤」「已加密檔案憑證」「PasswordVault」）：`CategoryLabel`（自由文字分組標籤）與 `IsEncryptedFile`（布林值，決定要不要走 Vault 連結那套特殊行為）——不是單一的固定 enum。「已加密檔案」類的憑證會關聯到一個 Vault 項目，該項目被刪除或解密後，憑證不會被刪除，但標題顯示刪除線並標示來源已消失。
+
+**類別標籤（Category Label）**：
+憑證的自由文字分組欄位，使用者新增憑證時直接打字輸入，相同名稱自動歸為同一類，不需要另外一套「建立類別」的管理介面。「網站」不再是寫死的特殊值，只是系統預設帶入的其中一個標籤字串，使用者可以改成任何名稱（例如「銀行」「軟體授權金鑰」）。除了 `IsEncryptedFile=true` 的憑證，其餘標籤底下的憑證行為完全同等——都支援關聯網域、瀏覽器自動填入、TOTP，不因為標籤名稱不同而有差異。
+_Avoid_: 分類（Category）單獨指這個欄位——「分類」這個詞現在同時牽涉 CategoryLabel 跟 IsEncryptedFile 兩個獨立欄位，容易只講到一半。
+
+**已加密檔案憑證（Encrypted-File Credential）**：
+`IsEncryptedFile=true` 的憑證——唯一行為跟其他憑證不同的一種：關聯到一個 Vault 項目（或手動新增、不連結任何 Vault 項目）、不支援自動填入／網域關聯／TOTP、PasswordVault 獨立版預設隱藏這一類，只有偵測到同一台電腦也裝了 FileLocker 主體才會顯示。
+
+**PasswordVault**：
+密碼庫功能獨立化後的品牌名稱與獨立桌面應用程式（`PasswordVault.exe`），可以不依賴 FileLocker 主體單獨運作；核心邏輯（原 `FileLocker.PasswordLocker`，改名 `PasswordVault.Core`）與這個新程式的原始碼都遷出到獨立 GitHub repo，是該功能的唯一真相來源，這個 FileLocker repo 之後只透過既有的「下載外掛部件」機制取得編譯好的二進位檔。FileLocker 本體 UI 上「密碼庫」這個分頁名稱維持不變，改名範圍是專案／程式碼／安裝路徑層級，不要求使用者跟著改口。詳見 [`PasswordVault_獨立化_規劃.md`](PasswordVault_獨立化_規劃.md)、[ADR-0003](docs/adr/0003-passwordvault-separate-repo.md)。
+_Avoid_: 直接用「密碼庫」指稱這個獨立程式本身——「密碼庫」在 FileLocker 語境裡專指 App 內的那個分頁，PasswordVault 是可以脫離 FileLocker 存在的獨立產品，兩者不是同一個指稱範圍。
 
 **選擇密碼（Choose Password）**：
 讓使用者從密碼庫已存的憑證裡挑一筆重複使用的機制，不限瀏覽器情境——瀏覽器擴充功能裡是「偵測不到目前網站對應的既有憑證時（例如註冊頁）」透過 popup 跳出清單；App 內對應的是獨立工具列按鈕「關聯到現有帳號」（不在「新增帳密」表單裡，兩者是不同的操作，見規劃文件第 11.5 節），兩處都是同一個底層機制：不建立新紀錄，直接把目前網站併入被選中那筆既有憑證的關聯網站清單（`AssociatedDomains`），不會靜默自動關聯——瀏覽器端一定會先用該筆紀錄自己既有的網域觸發一次驗證，才把新網域併進去。

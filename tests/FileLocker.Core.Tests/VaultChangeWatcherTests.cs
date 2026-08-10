@@ -113,8 +113,31 @@ public class VaultChangeWatcherTests : IDisposable
                 _vault.SaveMetadata(CreateSampleMetadata(Guid.NewGuid().ToString()));
             }
 
-            // 等到「安靜下來」的通知 debounce 視窗過去，再多留一點緩衝時間。
-            await Task.Delay(NotifyDebounce + TimeSpan.FromMilliseconds(500));
+            // 不用單一個固定 sleep 就斷言——`dotnet test` 會平行跑好幾個測試組，CPU 排程
+            // 延遲偶爾會讓 15 次 SaveMetadata 之間的間隔被拉長到超過 debounce 視窗，導致
+            // raisedCount 被多算，或是固定等待時間到了但 cache 還沒處理完最後幾筆。改成輪詢
+            // 直到「raisedCount 連續一段安靜視窗內都沒再變化」才罷手，等待時間會隨機器負載
+            // 自動拉長，不受固定時間長度綁死（實際發生過：同一份測試單獨跑穩定通過，
+            // 跟其他測試組一起跑就出現 raisedCount 忽大忽小）。
+            var settleWindow = NotifyDebounce + TimeSpan.FromMilliseconds(150);
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            var lastCount = -1;
+            var lastChangeUtc = DateTime.UtcNow;
+
+            while (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(30);
+                var current = Volatile.Read(ref raisedCount);
+                if (current != lastCount)
+                {
+                    lastCount = current;
+                    lastChangeUtc = DateTime.UtcNow;
+                }
+                else if (DateTime.UtcNow - lastChangeUtc >= settleWindow)
+                {
+                    break;
+                }
+            }
         }
         finally
         {

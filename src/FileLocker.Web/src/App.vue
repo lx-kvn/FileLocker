@@ -143,6 +143,21 @@ function resolveChoiceDialog(value) {
 const activeTab = ref('encrypt')
 const activeListSubTab = ref('files') // 'files' | 'history'
 
+// 分頁主題色：套在 .app 最外層（不是只套在分頁內容），因為彈窗（新增密碼、驗證、確認
+// 對話框…）在模板裡是跟 .page-wrapper 平行的獨立節點，不是分頁內容的子節點，只套在分頁
+// 內容上覆蓋不到彈窗按鈕。套在最外層順便讓分頁列的當前分頁指示器也跟著換色，呼應「現在在
+// 哪一頁」而不是額外的不一致——加密／資料夾防護跟全域預設同一款金色，不需要對應的 class。
+//
+// themeTab（不是直接吃 activeTab）：顏色切換要跟 pageWidthTab 同一個時機點——tab-page
+// 過渡是 mode="out-in"，舊內容淡出、新內容淡入中間有一段交疊的空窗期。如果直接綁
+// activeTab，點分頁的當下顏色就立刻整個換掉，舊內容明明還在淡出、卻已經套用新分頁的顏色，
+// 使用者會看到「還沒退場完的舊畫面用著新顏色」這種對不上的瞬間。延到 @before-enter（新
+// 內容要進場的前一刻，也就是舊內容已經完全淡出隱形的時間點）才切換，顏色變化就會剛好對齊
+// 舊畫面完全消失的瞬間。
+const THEME_CLASS_BY_TAB = { decrypt: 'theme-decrypt', list: 'theme-list', passwordLocker: 'theme-vault' }
+const themeTab = ref(activeTab.value)
+const activeThemeClass = computed(() => THEME_CLASS_BY_TAB[themeTab.value] || '')
+
 // .page 的寬度（page--wide）要延到 tab-page 過渡完全透明的瞬間才切換，
 // 不能直接跟 activeTab 綁在一起——否則點分頁的當下寬度就先跳掉，
 // 舊內容還沒開始淡出就已經被塞進新寬度的容器。
@@ -3318,7 +3333,7 @@ function historyDetailText(entry) {
 </script>
 
 <template>
-  <div class="app" :class="{ 'app--dark': settingsTheme === 'dark' }">
+  <div class="app" :class="[{ 'app--dark': settingsTheme === 'dark' }, activeThemeClass]">
     <!-- 自訂標題列：整條都是可拖曳區域（app-region: drag），交給作業系統的視窗管理員
          原生處理拖曳，所以能得到 Aero Snap、雙擊最大化、右鍵系統選單這些原生行為。
          三顆按鈕本身標記成 no-drag，否則點下去只會開始拖視窗、按不到按鈕。 -->
@@ -3368,7 +3383,7 @@ function historyDetailText(entry) {
 
     <div class="page-wrapper">
       <main class="page" :class="{ 'page--wide': pageWidthTab === 'list' }">
-        <Transition name="tab-page" mode="out-in" @before-enter="pageWidthTab = activeTab">
+        <Transition name="tab-page" mode="out-in" @before-enter="pageWidthTab = activeTab; themeTab = activeTab">
         <div v-if="activeTab === 'encrypt'" key="encrypt">
           <h1 class="page-title">
             <svg class="page-title__icon" viewBox="0 0 24 24" fill="none"><path d="M6 10V8a6 6 0 1 1 12 0v2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="4" y="10" width="16" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="15" r="1.6" fill="currentColor"/></svg>
@@ -3531,7 +3546,7 @@ function historyDetailText(entry) {
 
         <div v-else-if="activeTab === 'decrypt'" key="decrypt">
           <h1 class="page-title">
-            <svg class="page-title__icon" viewBox="0 0 24 24" fill="none"><path d="M6 10V8a6 6 0 0 1 11.2-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="4" y="10" width="16" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="15" r="1.6" fill="currentColor"/></svg>
+            <svg class="page-title__icon page-title__icon--decrypt" viewBox="0 0 24 24" fill="none"><path d="M6 10V8a6 6 0 0 1 11.2-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="4" y="10" width="16" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="15" r="1.6" fill="currentColor"/></svg>
             {{ t('decrypt.title') }}
           </h1>
 
@@ -3580,7 +3595,7 @@ function historyDetailText(entry) {
 
         <div v-else-if="activeTab === 'list'" key="list">
           <h1 class="page-title">
-            <svg class="page-title__icon" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <svg class="page-title__icon page-title__icon--list" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
             {{ t('list.title') }}
           </h1>
 
@@ -3836,7 +3851,7 @@ function historyDetailText(entry) {
 
         <div v-else-if="activeTab === 'folderGuard'" key="folderGuard">
           <h1 class="page-title">
-            <svg class="page-title__icon" viewBox="0 0 24 24" fill="none"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l1.8 2h7.2a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-10.5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+            <svg class="page-title__icon page-title__icon--guard" viewBox="0 0 24 24" fill="none"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l1.8 2h7.2a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-10.5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
             {{ t('tab.folderGuard') }}
           </h1>
           <p class="hint-text">
@@ -3951,7 +3966,7 @@ function historyDetailText(entry) {
 
         <div v-else-if="activeTab === 'passwordLocker'" key="passwordLocker">
           <h1 class="page-title">
-            <svg class="page-title__icon" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="8" r="4.25" stroke="currentColor" stroke-width="1.8"/><path d="M11 11l9.5 9.5M16.5 15.5l3-3M19 18l2.5-2.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <svg class="page-title__icon page-title__icon--vault" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="8" r="4.25" stroke="currentColor" stroke-width="1.8"/><path d="M11 11l9.5 9.5M16.5 15.5l3-3M19 18l2.5-2.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
             {{ t('tab.passwordLocker') }}
           </h1>
           <p class="hint-text">{{ t('passwordLocker.pageDescription') }}</p>
@@ -3969,7 +3984,7 @@ function historyDetailText(entry) {
           </div>
 
           <div v-else-if="passwordLockerModuleStatus === 'broken'" class="empty-state-block empty-state-block--module">
-            <svg class="empty-state-block__icon" viewBox="0 0 24 24" fill="none"><path d="M12 9v4M12 17h.01M10.3 3.9 2.7 17.5A2 2 0 0 0 4.4 20.5h15.2a2 2 0 0 0 1.7-3L14 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <svg class="empty-state-block__icon empty-state-block__icon--danger" viewBox="0 0 24 24" fill="none"><path d="M12 9v4M12 17h.01M10.3 3.9 2.7 17.5A2 2 0 0 0 4.4 20.5h15.2a2 2 0 0 0 1.7-3L14 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
             <p class="empty-state-block__text">{{ t('passwordLocker.moduleBrokenText') }}</p>
             <button class="button button--primary" @click="installPasswordLockerModuleAction" :disabled="isInstallingPasswordLockerModule" type="button">
               {{ isInstallingPasswordLockerModule ? t('passwordLocker.moduleInstalling') : t('passwordLocker.moduleReinstallButton') }}
@@ -4223,7 +4238,7 @@ function historyDetailText(entry) {
 
         <div v-else-if="activeTab === 'settings'" key="settings" class="settings-tab">
           <h1 class="page-title">
-            <svg class="page-title__icon" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <svg class="page-title__icon page-title__icon--settings" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
             {{ t('settings.title') }}
           </h1>
 
@@ -5085,6 +5100,36 @@ function historyDetailText(entry) {
   --color-danger: #B14328;
   --color-danger-soft: #FBEBE6;
 
+  /* 六個分頁各自的主題色——不只是頁首圖示的淡色圓底，整頁的按鈕／連結／checkbox／
+     focus ring 都會跟著這組色（見下面 .theme-* 修飾類別，套在每個分頁最外層的容器上，
+     靠 CSS 自訂屬性往下層層覆蓋掉 --color-accent 系列，不用一一去改每個元件）。
+     跟上面「有意義」的語意色（success＝結果成功、danger＝結果失敗／警告）刻意分開一組
+     獨立 token，避免共用同一個變數造成「這個顏色到底代表分頁主題還是操作結果」混淆——
+     即使解密頁的綠色看起來很接近 --color-success，兩者仍是各自獨立的數值。
+     加密／資料夾防護沿用同一款金色（本來就是這個 App 的主色），解密＝綠、已加密清單＝原本
+     解密頁用過的藍、密碼庫＝橘紅，彼此好分辨又不跟語意色搶意義。 */
+  --tint-decrypt: #2F7D46;
+  --tint-decrypt-hover: #256339;
+  --tint-decrypt-soft: #E6F3EA;
+  --tint-decrypt-border: #A9D6B7;
+  --tint-list: #3568B0;
+  --tint-list-hover: #28517F;
+  --tint-list-soft: #E4EEFB;
+  --tint-list-border: #A9C8EA;
+  --tint-guard: #A8770F;
+  --tint-guard-hover: #8C630C;
+  --tint-guard-soft: #FBF2DE;
+  --tint-guard-border: #E4C77E;
+  /* 密碼庫「橘紅」刻意選比 --color-danger（#B14328，偏暗紅棕、低飽和度的「磚紅」）色相再往
+     橘色偏一點、飽和度更高的「亮橘」——早期版本色相太接近 danger，新增帳密這種主要按鈕跟
+     警告色混在一起，容易誤判成危險操作。 */
+  --tint-vault: #C9690A;
+  --tint-vault-hover: #A8560A;
+  --tint-vault-soft: #FBEDDA;
+  --tint-vault-border: #F0C48A;
+  --tint-settings: #5B6270;
+  --tint-settings-soft: #E7E9ED;
+
   --font-ui: 'IBM Plex Sans', -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'IBM Plex Mono', 'Cascadia Code', 'Consolas', monospace;
 
@@ -5114,14 +5159,63 @@ function historyDetailText(entry) {
   --color-text: #ECEDEF;
   --color-text-secondary: #B0B4BC;
   --color-text-tertiary: #82868F;
-  --color-accent: #D9A83B;
-  --color-accent-hover: #E8B94F;
+  /* --color-accent／--color-danger 原本為了在深色背景上維持文字/圖示的可讀性刻意調亮，
+     但這組色同時也拿來當 .button--primary／.button--danger 的實心底色（配白色文字）——
+     亮度沒收斂的話，整顆按鈕在深色背景裡看起來像在發光，不是「深色模式的強調色」該有的
+     份量。調暗到跟淺色模式下同一顆按鈕差不多的視覺重量（淺色模式的金色按鈕本來就沒人覺得
+     太亮），可讀性測試沿用「白字配這個底色」這組既有搭配，不是全新組合。 */
+  --color-accent: #A37E2C;
+  --color-accent-hover: #BA943F;
   --color-accent-soft: #3A3220;
   --color-accent-border: #6B5726;
   --color-success: #4EAE76;
   --color-success-soft: #1E3327;
-  --color-danger: #E17153;
+  --color-danger: #A9553E;
   --color-danger-soft: #3A2620;
+
+  --tint-decrypt: #4FAE6E;
+  --tint-decrypt-hover: #66C084;
+  --tint-decrypt-soft: #1E3327;
+  --tint-decrypt-border: #3E6B4D;
+  --tint-list: #7FAEE8;
+  --tint-list-hover: #9CC2EF;
+  --tint-list-soft: #202B3B;
+  --tint-list-border: #3C5A80;
+  --tint-guard: #A37E2C;
+  --tint-guard-hover: #BA943F;
+  --tint-guard-soft: #3A3220;
+  --tint-guard-border: #6B5726;
+  --tint-vault: #B37A40;
+  --tint-vault-hover: #C49260;
+  --tint-vault-soft: #3B2C1B;
+  --tint-vault-border: #6E4E29;
+  --tint-settings: #ADB2BC;
+  --tint-settings-soft: #2B2D32;
+}
+
+/* 分頁主題色：套在 .app 最外層（見 activeThemeClass），往下覆蓋掉 --color-accent 系列——
+   分頁內容、以及跟分頁內容平行的彈窗（新增密碼、驗證彈窗、確認對話框…）裡所有本來就吃
+   var(--color-accent*) 的元件（主要按鈕、連結、checkbox、輸入框 focus ring…）會自動跟著
+   換色，不用逐一改元件本身的樣式。加密／資料夾防護跟全域預設同一款金色，不需要覆蓋規則。 */
+.theme-decrypt {
+  --color-accent: var(--tint-decrypt);
+  --color-accent-hover: var(--tint-decrypt-hover);
+  --color-accent-soft: var(--tint-decrypt-soft);
+  --color-accent-border: var(--tint-decrypt-border);
+}
+
+.theme-list {
+  --color-accent: var(--tint-list);
+  --color-accent-hover: var(--tint-list-hover);
+  --color-accent-soft: var(--tint-list-soft);
+  --color-accent-border: var(--tint-list-border);
+}
+
+.theme-vault {
+  --color-accent: var(--tint-vault);
+  --color-accent-hover: var(--tint-vault-hover);
+  --color-accent-soft: var(--tint-vault-soft);
+  --color-accent-border: var(--tint-vault-border);
 }
 
 * {
@@ -5344,11 +5438,44 @@ body {
   text-align: left;
 }
 
+/* 六個分頁的圖示原本全部同一種樣式（22px 單色線框），視覺上幾乎沒辦法用「掃一眼」分辨，
+   要真的讀標題文字才知道在哪一頁。改成統一的「淡色圓底徽章」語彙（跟空狀態圖示是同一套
+   手法），每頁只在底色的色相上做區別——形狀／尺寸／邊框樣式完全一致，不是每頁一套全新
+   視覺系統，維持 Nielsen 一致性原則。 */
 .page-title__icon {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
+  padding: 8px;
+  box-sizing: content-box;
+  border-radius: 999px;
   color: var(--color-accent);
+  background: var(--color-accent-soft);
   flex-shrink: 0;
+}
+
+.page-title__icon--decrypt {
+  color: var(--tint-decrypt);
+  background: var(--tint-decrypt-soft);
+}
+
+.page-title__icon--list {
+  color: var(--tint-list);
+  background: var(--tint-list-soft);
+}
+
+.page-title__icon--guard {
+  color: var(--tint-guard);
+  background: var(--tint-guard-soft);
+}
+
+.page-title__icon--vault {
+  color: var(--tint-vault);
+  background: var(--tint-vault-soft);
+}
+
+.page-title__icon--settings {
+  color: var(--tint-settings);
+  background: var(--tint-settings-soft);
 }
 
 .step-indicator {
@@ -5940,11 +6067,26 @@ textarea.text-input {
   margin-top: 1.25rem;
 }
 
+/* 空狀態圖示：原本是 36px 純灰線框圖示孤零零躺在大片留白裡，加一圈淡色圓底（沿用既有的
+   --color-accent-soft，跟 focus ring 等處同一個 token，不是新增顏色）讓空狀態不再是一片死灰。
+   --icon 縮小成 28px 放進圓底裡，讓整體視覺重量跟原本的 36px 差不多，不會突然變得很搶眼。 */
 .empty-state-block__icon {
-  width: 36px;
-  height: 36px;
-  color: var(--color-text-tertiary);
-  margin-bottom: 0.75rem;
+  width: 28px;
+  height: 28px;
+  padding: 14px;
+  box-sizing: content-box;
+  border-radius: 999px;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  margin-bottom: 0.85rem;
+}
+
+/* 密碼庫部件「損毀」是唯一語意上真的算錯誤/警告的空狀態（跟「還沒裝」「清單是空的」這種
+   中性狀態不同）——沿用既有的 --color-danger-soft／--color-danger，不要跟其他中性空狀態
+   共用金色調，避免使用者誤以為這也只是「沒有內容」而已。 */
+.empty-state-block__icon--danger {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
 }
 
 .empty-state-block__text {
@@ -6690,8 +6832,25 @@ textarea.text-input {
   border-left-color: var(--color-success);
 }
 
+/* 成功 toast 的打勾圖示彈一下再定住——只用在「真的完成了」這種有意義的時刻（複製密碼、
+   儲存成功等），呼應 apple-design skill 的「有momentum 感的互動才用 bounce，其他一律
+   critically damped」；每個 toast 都是全新的 DOM 節點（v-for :key="toast.id"），animation
+   會在掛載時自動觸發一次，不用額外寫 JS 觸發。 */
 .toast--success .toast__icon {
   color: var(--color-success);
+  animation: toast-check-pop 420ms var(--ease-out);
+}
+
+@keyframes toast-check-pop {
+  0% { transform: scale(0.4); opacity: 0; }
+  55% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast--success .toast__icon {
+    animation: none;
+  }
 }
 
 .toast--info {
@@ -6715,16 +6874,29 @@ textarea.text-input {
 }
 
 /* ---- 彈窗（含確認對話框） ---- */
+/* 遮罩加一點模糊而不是純黑蓋住——讓後面內容若隱若現，感覺像半透明的材質層蓋上去，
+   而不是畫面被切斷（apple-design skill 的 Materials & depth 準則）。
+   prefers-reduced-transparency 使用者則退回原本純色蓋住的版本，不強加毛玻璃效果。 */
 .modal-overlay {
   position: fixed;
   inset: 0;
   background: rgba(20, 22, 28, 0.5);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 1.5rem;
   z-index: 100;
   transition: opacity var(--duration-base) var(--ease-out);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .modal-overlay {
+    background: rgba(20, 22, 28, 0.75);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 
 /* askConfirm 可能是從另一個已經開著的彈窗裡觸發的（例如密碼庫「使用現有密碼」流程），

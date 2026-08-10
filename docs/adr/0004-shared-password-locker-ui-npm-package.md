@@ -26,6 +26,24 @@ ADR-0003 決定把密碼庫功能獨立成 PasswordVault，原始碼遷到獨立
 - **翻譯**：套件自帶完整的 zh-TW／en 翻譯表（密碼庫相關的 157 個翻譯鍵值整批搬進套件內部），只接受 `lang` prop，外層不需要透過 props 逐一傳 157 個字串進去。
 - **IPC**：套件接受外層注入的 `sendMessage`／`requestMessage` 函式，不直接內嵌 `window.chrome.webview.postMessage`——兩邊宿主現在都是 WebView2，實際上注入值都是包一層同樣的 API，但套件介面本身不寫死這個假設，保留以後宿主環境改變的彈性。
 
+### 依賴注入介面的完整清單（第二輪定案）
+
+套件骨架建起來、對 `App.vue` 的實際依賴做完整盤點後，發現外層依賴不只 `lang`／`sendMessage`／`requestMessage` 三個，逐一定案如下：
+
+| 依賴 | 決定 | 理由 |
+| --- | --- | --- |
+| `showToast`／`askConfirm`／`translateError` | 整套當 props（函式）注入 | host 本來就有一套現成的視覺實作，注入確保兩邊視覺一致；`PasswordVault.Web` 需要自己實作一份對應 UI 才能傳進去，這是刻意換來一致性的代價。 |
+| `copyToClipboardWithAutoClear` | 套件內建一份，不注入 | 純函式，只用 `navigator.clipboard`／`setTimeout`，不吃任何 host 狀態，複製一份沒有「兩邊行為漂移」的風險。 |
+| `vaultItems`／`refreshList` | 選填 props，不提供就隱藏「已加密檔案」類別的關聯功能 | 跟 `PasswordVault_獨立化_規劃.md` 第 6 節既有定案一致（獨立版預設隱藏這個類別）；`PasswordVault.Web` 不需要假造一份空陣列。 |
+| 停用 Passkey／停用恢復金鑰的密碼提示彈窗 | 套件自己一份獨立簡化版，不再共用 host 的 `passwordPromptContext` 彈窗 | 這兩個流程本質上是密碼庫自己的事，只是歷史上因為同一個檔案裡方便共用；抽出獨立套件後沒有理由再依賴 host 的共用彈窗系統（那個彈窗還服務雙擊 `.locked` 檔案、資料夾防護解鎖等密碼庫以外的情境）。 |
+| 訊息路由（25 個密碼庫訊息類型的回應） | 套件內部自己管一份 `pendingResolvers`，host 只需要把收到的每則訊息轉發給套件一個統一入口方法 | 原本 host 端 25 條 `messageHandlers` 全是機械化的 `resolvePending(同名, data)`，套件抽出去後沒理由讓 host 繼續知道密碼庫有哪些訊息類型的細節。 |
+| Esc 鍵關彈窗、TOTP 計時器清理 | 搬進元件自己的 `onMounted`／`onUnmounted`／`@keydown` | 純粹是元件生命週期該管的事，不需要 host 介入。 |
+| 加密成功後「順便存進密碼庫」的鉤子 | `defineExpose` 暴露方法，host 用 template ref 呼叫 | 這是 host（加密頁）主動呼叫密碼庫元件內部邏輯（含它自己的 confirm／驗證彈窗）的情境，`defineExpose` + template ref 是 Vue 3 標準做法。 |
+| 密碼庫分頁從沒被打開過，也要能跳出上面那個鉤子的警報視窗 | 兩套並存：主畫面維持現有的 `v-if`/`Transition` 分頁切換動畫；另外在 DOM 裡藏一份專門接這個鉤子的密碼庫實例 | 保留現有分頁切換動畫不受影響，用一個額外的隱藏實例處理「使用者還沒點過密碼庫分頁」的情境，取捨是同時存在兩個元件實例、各自狀態不同步——但因為隱藏那份只服務這一個鉤子，不會有實際的狀態衝突。 |
+| 深色／淺色主題（Passkey／恢復金鑰圖示要換黑白版本） | 新增 `theme` prop（`'light'`／`'dark'`），跟 `lang` 同樣由 host 傳入 | 套件目前只有 `lang`，沒有主題資訊；跟 `lang` 同一個設計模式，一致性高。 |
+
+套件對外的完整 props 介面（這輪定案後）：`lang`、`theme`、`sendMessage`、`requestMessage`、`showToast`、`askConfirm`、`translateError`、`vaultItems`（選填）、`refreshList`（選填），另外透過 `defineExpose` 暴露至少一個方法給 host 主動呼叫（例如 `offerSaveEncryptedFiles(password, items)`）。
+
 ## 代價與風險
 
 - **多一個需要獨立維護的套件**：改共用元件的 bug 或加功能，要先在 `packages/password-locker-ui/` 改，`npm publish` 新版本，`FileLocker.Web` 才需要另外去 bump 版本號、`npm install`——比起「複製貼上」多了一道發布步驟，但這是刻意換來的：避免兩邊各自修各自的、行為逐漸不一致。

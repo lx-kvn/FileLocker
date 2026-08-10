@@ -25,7 +25,17 @@ FileLocker 本體 UI 上「密碼庫」分頁的中文名稱維持不變——�
 
 `PasswordVault.exe` 是一個全新的 WPF 宿主專案（不是 `FileLocker.App` 加命令列參數切換模式），有自己的視窗、單一執行個體 Mutex、系統匣圖示，架構上跟 `FileLocker.App` 完全平行、互不影響——理由跟既有的可選配部件決策一致：`FileLocker.App` 拿掉密碼庫功能要能繼續正常運作，兩個消費端各自的生命週期不應該互相牽制。
 
-前端不整支複製，改採**實體分割**：把現有 `App.vue` 裡密碼庫分頁相關的 template/script 拆成獨立 Vue 元件，`PasswordVault.exe`（新的 Vite 專案）與 `FileLocker.App`（現有 `FileLocker.Web`）兩邊都 import 同一份元件——避免以後修一個 bug 要改兩份程式碼、兩邊行為逐漸漂移的既有風險（跟這個專案「不使用複製貼上式的雙份維護」的一貫原則一致）。這輪只確認方向，實際拆分方式（獨立套件、monorepo workspace、或其他形式）留待遷移動工前另外規劃。
+前端不整支複製，改採**實體分割**：把現有 `App.vue` 裡密碼庫分頁相關的 template/script 拆成獨立 Vue 元件，`PasswordVault.exe`（新的 Vite 專案）與 `FileLocker.App`（現有 `FileLocker.Web`）兩邊都 import 同一份元件——避免以後修一個 bug 要改兩份程式碼、兩邊行為逐漸漂移的既有風險（跟這個專案「不使用複製貼上式的雙份維護」的一貫原則一致）。
+
+**實際拆分方式（這輪定案，見 [ADR-0004](docs/adr/0004-shared-password-locker-ui-npm-package.md)）**：
+
+- **跨 repo 共用機制**：把整個密碼庫分頁封裝成一個整體元件（`<PasswordLockerPage>`，內部細節怎麼再拆是套件自己的事），發布成公開 npm 套件 `@lx-kvn/password-locker-ui`——兩個 repo 是完全獨立的 git 歷史、沒有共同的 monorepo workspace，公開 npm registry 免費、不需要自架任何發布基礎設施，版本號天然解決「兩邊發布節奏不同步」的問題。
+- **套件原始碼位置**：放在 PasswordVault repo 的 `packages/password-locker-ui/`——跟 ADR-0003「PasswordVault repo 是密碼庫功能唯一真相來源」的定位一致，不另開第三個 repo。
+- **PasswordVault repo 內部引用**：`src/PasswordVault.Web/`（新 Vite 專案，結構比照 `FileLocker.Web`）用 **npm workspaces** 連結本地版本的 `packages/password-locker-ui/`，開發時不需要先 publish 才能看到最新改動。
+- **FileLocker.Web 引用**：透過 npm 安裝已發布的版本，**金定精確版本號**（不用 `^` caret 範圍）——同一個開發者維護兩邊，不需要 semver 自動升級的便利性，換取「FileLocker 不會因為 PasswordVault 那邊發了新版套件就意外拿到還沒測試過的行為」的穩定性，升級版本要手動改 `package.json` 裡的版本號、重新 `npm install`。
+- **樣式**：套件自己帶一份預設 CSS 變數（`var(--color-accent, #A37E2C)` 這種帶 fallback 值的寫法），允許外層覆蓋——`FileLocker.Web` 繼續用它現有的 `.theme-vault` 等機制從外層覆蓋，行為跟現在完全一致；`PasswordVault.Web`（全新專案，沒有 FileLocker 那套現成的主題 CSS）不提供這些變數也能看到合理的預設樣式。
+- **翻譯字串**：密碼庫相關的 157 個翻譯鍵值（`FileLocker.Web` 的 `locales/*.json` 裡 `passwordLocker.` 前綴那批）整批搬進套件內部，套件自己帶完整的 zh-TW／en 翻譯表，只接受 `lang` prop 決定顯示哪個語言，不需要外層把 157 個字串逐一透過 props 傳進去。
+- **IPC 層**：套件不假設宿主一定是 WebView2，改成接受外層注入的 `sendMessage`／`requestMessage` 函式（props）——兩邊宿主現在都是 WebView2，實際上都是包一層 `window.chrome.webview.postMessage` 當作注入值，但套件本身的介面不寫死這個假設，保留以後宿主環境改變的彈性。
 
 元件的消費關係，兩個消費端不對稱：
 
@@ -107,11 +117,16 @@ PasswordVault 內建 CLI（隨 `PasswordVault.exe` 一起發布、一起編號�
 
 擴充功能 popup／content-script 目前顯示的「FileLocker 密碼庫」等字樣，遷移後直接改稱「PasswordVault」，不保留 FileLocker 名稱過渡——跟第 2 節命名策略一致（品牌層級徹底改名，不做雙名並存），逐字文案（各處確切字串）留待實作時對照既有的 `zh-TW`／`en` locale 檔案逐一替換，這份文件不重複列出每一個字串。
 
-## 17. 尚待規劃的細節（下一輪）
+## 17. 尚待規劃的細節
 
-- **資料遷移失敗的處理細節**：第 7 節「自動搬移舊路徑資料」的具體行為（搬移後是否刪除舊檔案、搬移失敗時怎麼提示使用者、新舊路徑都有資料時如何處理）留到動工前另外定案。
-- **`mac-style-windows-installer` 設定檔的實際欄位**：PasswordVault 的 `installer.json`（EULA、圖示、`no_admin_install` 旗標等）要對照該專案當下的 `CLI_USAGE.md` 準備，這份文件不重複列出工具鏈的用法細節。
-- **CLI 指令集的實際語法**：這輪只定案驗證方式（互動式主密碼），指令名稱、子命令、輸出格式（純文字／JSON）留到實作前設計。
+- **`packages/password-locker-ui` 套件骨架與 `App.vue` 實際拆分**：第 3 節這輪只定案了拆分方式（npm 套件、樣式/翻譯/IPC 的介面契約），套件本身的建置、把 `App.vue` 裡密碼庫相關程式碼實際抽出來、`PasswordVault.Web` 專案骨架，都還沒動工，留到下一輪。
+
+## 已完成之待辦
+
+- 資料遷移失敗的處理細節：已定案並實作——複製不刪舊檔、新舊路徑都有資料時新路徑優先安靜略過，見 `PasswordVault` repo 的 `LegacyDataMigration`。
+- `mac-style-windows-installer` 設定檔的實際欄位：已完成，見 `PasswordVault` repo 的 `installer/passwordvault_installer.json`，`no_admin_install` 模式、雙語 EULA、實測打包成功。
+- CLI 指令集的實際語法：已定案並實作——`PasswordVault.Cli` 提供 `--list`／`--get` 兩個指令，只支援互動式輸入主密碼。
+- 前端拆分的實際方式：已定案，見第 3 節與 ADR-0004。
 
 ## 18. 已知會延後或不做的事
 

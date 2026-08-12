@@ -1144,8 +1144,9 @@ public partial class MainWindow : Window
 
     /// <summary>installer_config.json 是 mac-style-windows-installer 安裝時放進安裝資料夾的，
     /// 跟 FileLocker.exe 同一層——開發環境用 dotnet run 執行時不會有這個檔案，屬於正常情況，
-    /// 不是錯誤。</summary>
-    private static string? ReadInstalledVersion()
+    /// 不是錯誤。internal（不是 private）是因為 App.xaml.cs 的 --updated 啟動旗標處理也需要
+    /// 讀目前版本號顯示在更新完成的提示裡，不重複寫一份同樣的邏輯。</summary>
+    internal static string? ReadInstalledVersion()
     {
         var configPath = Path.Combine(AppContext.BaseDirectory, "installer_config.json");
         if (!File.Exists(configPath))
@@ -1232,11 +1233,14 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>下載安裝檔到暫存資料夾、啟動它（UseShellExecute=true，安裝程式自己的 manifest
-    /// 會觸發 UAC 提權，這裡不用特別做什麼），確認安裝程式真的啟動成功才關閉本體——先關本體
-    /// 再嘗試啟動安裝程式的話，萬一啟動失敗（例如被防毒攔截）使用者就完全沒有退路了；反過來，
-    /// 啟動成功後不關閉本體，安裝程式清空/覆蓋目標資料夾會因為 FileLocker.exe 還在跑、
-    /// 檔案被鎖住而失敗，所以順序很重要。</summary>
+    /// <summary>下載安裝檔到暫存資料夾，啟動 FileLocker.UpdateRelauncher 協助行程，交給它
+    /// 「等 FileLocker 結束 → 跑靜默安裝 → 依結果重啟 FileLocker」，本體確認協助行程真的啟動
+    /// 成功才關閉自己——先關本體再嘗試啟動協助行程的話，萬一啟動失敗（例如被防毒攔截）使用者
+    /// 就完全沒有退路了；反過來，啟動成功後不關閉本體，靜默安裝會因為 FileLocker.exe 還在跑
+    /// 而失敗（mac-style-windows-installer 的 process_running 檢查沒有旗標能跳過），所以順序
+    /// 很重要。改用 /S 靜默安裝＋協助行程重啟，取代原本開出互動安裝視窗的做法——UAC 提權畫面
+    /// 還是會跳一次（CreateProcess 不會觸發提權，只有 ShellExecute 會，協助行程那邊已經用
+    /// UseShellExecute=true 啟動安裝檔），這是 Windows 系統層級的限制，不是這裡能繞過的。</summary>
     private async Task HandleDownloadAndInstallUpdateRequestAsync()
     {
         try
@@ -1258,7 +1262,26 @@ public partial class MainWindow : Window
                 await response.Content.CopyToAsync(fileStream);
             }
 
-            Process.Start(new ProcessStartInfo { FileName = installerPath, UseShellExecute = true });
+            var relauncherPath = Path.Combine(AppContext.BaseDirectory, "FileLocker.UpdateRelauncher.exe");
+            if (!File.Exists(relauncherPath))
+            {
+                // 理論上不該發生：這支協助行程只在 Release 建置才會被複製到這裡（跟這個方法
+                // 本身一樣，靠 installer_config.json 存不存在間接把 Debug 建置擋在外面），
+                // 但找不到的話要明確回報，不要靜默失敗——不然使用者只會看到「下載完但什麼都
+                // 沒發生」。
+                SendToFrontend(new { type = "downloadAndInstallUpdateResult", success = false, errorCode = ErrorCodes.UpdateDownloadFailed });
+                return;
+            }
+
+            var appExePath = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "FileLocker.exe");
+            var logPath = Path.Combine(Path.GetTempPath(), "FileLocker_update_install_log.txt");
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = relauncherPath,
+                Arguments = $"{Environment.ProcessId} \"{installerPath}\" \"{appExePath}\" \"{logPath}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
 
             SendToFrontend(new { type = "downloadAndInstallUpdateResult", success = true });
             Application.Current.Shutdown();

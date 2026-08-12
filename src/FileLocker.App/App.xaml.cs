@@ -357,6 +357,13 @@ public partial class App : Application
     // 只留系統匣圖示（背景服務在呼叫到這裡之前，OnStartup 已經全部啟動完成）。
     private const string StartupArgFlag = "--startup";
 
+    // FileLocker.UpdateRelauncher 靜默安裝完成／失敗後，用這兩個旗標之一重啟 FileLocker
+    // （見 MainWindow.HandleDownloadAndInstallUpdateRequestAsync）——正常開主視窗之後跳一個
+    // 原生 MessageBox 通知結果，不用 Vue toast，因為這個時機點 WebView2／Vue 前端不保證已經
+    // 初始化完成，跟現有「Shell Extension 已完成註冊」那個原生通知同一個理由。
+    private const string UpdateSucceededArgFlag = "--updated";
+    private const string UpdateFailedArgFlag = "--update-failed";
+
     /// <summary>
     /// 「旗標 → 該開哪個資料夾防護進入點」的對應表：之後新增 Folder Guard 命令列旗標，
     /// 只需要在這裡加一列，不需要去改 HandleLaunchArgs 本身的控制流程。
@@ -388,6 +395,23 @@ public partial class App : Application
                 // 沒有視窗也沒有系統匣圖示可以留著，直接結束，不要變成看不見、殺不掉的殭屍行程。
                 Shutdown();
             }
+            return;
+        }
+
+        // 自我更新完成／失敗後的重啟——必須放在下面的一般路徑處理邏輯之前，不然這兩個旗標
+        // 會被 ResolveInitialPaths 誤判成使用者要加密的檔案路徑。這個分支觸發的當下一定是
+        // 全新行程（FileLocker.UpdateRelauncher 是在舊的 FileLocker.exe 完全結束之後才重啟的，
+        // 不會有既有 MainWindow 可以搶焦點），直接開一個全新主視窗即可。
+        if (args.Length == 1 && (args[0] == UpdateSucceededArgFlag || args[0] == UpdateFailedArgFlag))
+        {
+            OpenMainWindow(null, null);
+            var message = args[0] == UpdateSucceededArgFlag
+                // 完整命名空間限定：Application.MainWindow（型別 Window）這個既有屬性會擋掉
+                // 直接寫 MainWindow 時的名稱解析，這裡指的是 MainWindow 這個類別本身，不是那個屬性。
+                ? $"FileLocker 已更新完成，目前版本為 {FileLocker.App.MainWindow.ReadInstalledVersion() ?? "未知"}。"
+                : "更新失敗，FileLocker 已還原為目前版本。詳細原因請查看 %TEMP%\\FileLocker_update_install_log.txt。";
+            MessageBox.Show(message, "FileLocker", MessageBoxButton.OK,
+                args[0] == UpdateSucceededArgFlag ? MessageBoxImage.Information : MessageBoxImage.Warning);
             return;
         }
 

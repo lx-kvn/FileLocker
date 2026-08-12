@@ -160,4 +160,38 @@
     </ItemGroup>
   </Target>
 
+  <!--
+    FileLocker.UpdateRelauncher 是自我更新用的協助行程（見更新流程說明：靜默安裝要求
+    FileLocker.exe 已經完全結束，FileLocker 沒辦法自己等自己的安裝跑完，需要這支獨立行程
+    負責「等 FileLocker 結束 → 跑靜默安裝 → 依結果重啟 FileLocker」）。跟 CLI 那組 Target
+    同一個三段式模式，但**不是**放進 cli/ 子資料夾——直接複製到 $(OutDir) 根目錄，因為
+    MainWindow.HandleDownloadAndInstallUpdateRequestAsync 是用 AppContext.BaseDirectory
+    直接找這支 exe。TargetFramework 是 net10.0（不含 -windows），跟 GUI/CLI 的
+    net10.0-windows... 不同，路徑要分開寫。只在 Release 建置執行：ReadInstalledVersion()
+    在 Debug 建置本來就會因為找不到 installer_config.json 回傳 null，更新檢查功能在 Debug
+    下本來就是關閉的，不需要 Debug 建置也帶著這支協助行程。
+  -->
+  <Target Name="BuildUpdateRelauncher" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+    <Exec Command="dotnet build ..\FileLocker.UpdateRelauncher\FileLocker.UpdateRelauncher.csproj -c Release" />
+  </Target>
+
+  <Target Name="CopyUpdateRelauncherForRelease" AfterTargets="BuildUpdateRelauncher" Condition="'$(Configuration)' == 'Release'">
+    <ItemGroup>
+      <UpdateRelauncherFiles Include="..\FileLocker.UpdateRelauncher\bin\Release\net10.0\**\*.*"
+                              Exclude="..\FileLocker.UpdateRelauncher\bin\Release\net10.0\publish\**\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(UpdateRelauncherFiles)" DestinationFolder="$(OutDir)%(RecursiveDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="AddUpdateRelauncherToPublishOutput" BeforeTargets="ComputeFilesToPublish" Condition="'$(Configuration)' == 'Release' AND Exists('..\FileLocker.UpdateRelauncher\bin\Release\net10.0')">
+    <ItemGroup>
+      <UpdateRelauncherFilesForPublish Include="..\FileLocker.UpdateRelauncher\bin\Release\net10.0\**\*.*"
+                                        Exclude="..\FileLocker.UpdateRelauncher\bin\Release\net10.0\publish\**\*.*" />
+      <ResolvedFileToPublish Include="@(UpdateRelauncherFilesForPublish)">
+        <RelativePath>%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+
 </Project>

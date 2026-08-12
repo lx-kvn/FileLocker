@@ -6,6 +6,7 @@
     <Project Path="src/FileLocker.PasswordLocker/FileLocker.PasswordLocker.csproj" />
     <Project Path="src/FileLocker.PasswordLockerNativeHost/FileLocker.PasswordLockerNativeHost.csproj" />
     <Project Path="src/FileLocker.PluginContracts/FileLocker.PluginContracts.csproj" />
+    <Project Path="src/FileLocker.UpdateRelauncher/FileLocker.UpdateRelauncher.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FileLocker.Core.Tests/FileLocker.Core.Tests.csproj" />

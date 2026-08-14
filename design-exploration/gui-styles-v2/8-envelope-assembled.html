@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>FileLocker — 信封蠟封組裝測試</title>
+<style>
+  :root{
+    --ease-inout: cubic-bezier(0.77,0,0.175,1);
+    --ease-out: cubic-bezier(0.23,1,0.32,1);
+    --brass:#A8770F;
+  }
+  body{margin:0;background:#EDEEF2;font-family:'IBM Plex Sans','Noto Sans TC',sans-serif;padding:40px;display:flex;gap:60px;flex-wrap:wrap;align-items:flex-start;}
+  .stage-label{font-size:13px;color:#666;margin-bottom:10px;font-weight:600;}
+  .stage{display:flex;flex-direction:column;align-items:center;}
+  .btn{margin-top:16px;border:1px solid var(--brass);background:#fff;color:var(--brass);font:inherit;font-weight:600;font-size:13px;padding:8px 18px;border-radius:6px;cursor:pointer;position:relative;z-index:10;}
+  .btn:active{transform:scale(0.97);}
+  .btn.primary{background:var(--brass);color:#fff;}
+
+  /*
+    量測依據（讀 assets/Envelope_Body.svg 與 assets/Envelope_Flap.svg 的原始路徑座標算出來的，
+    不是用眼睛猜的）：兩張圖的 viewBox 都是 1024×1024 正方形。
+    - 信封本體矩形：左緣 6.985% / 右緣 93.02% / 上緣 32.073% / 下緣 67.94%（皆為畫布邊長的百分比）
+    - 封口三角形（Envelope_Flap.svg 自己的座標系）：寬邊（鉸鏈線）在自己畫布的 50%（正中心），
+      封口尖端在 27.53%
+    因為兩者的左右邊界完全對齊（都是 6.985%~93.02%），只要把封口整層往上位移
+    (50% - 32.073%) = 17.927%，封口的寬邊就會剛好落在信封本體的上緣，且封口自己的旋轉中心
+    （transform-origin:50% 50%，圖片正中心）也剛好等於這條鉸鏈線，不需要另外手動找鉸鏈位置。
+  */
+  .envelope-outer{position:relative;width:320px;height:250px;overflow:hidden;perspective:900px;}
+  .envelope-canvas{position:absolute;left:0;top:-19px;width:320px;height:320px;transform-style:preserve-3d;}
+  .envelope-canvas img.body{position:absolute;inset:0;width:100%;height:100%;}
+
+  /* 封口紙：這張圖「沒有旋轉」的原始狀態畫的就是打開站立的樣子（不是闔上平躺），
+     所以打開＝0度、闔上＝旋轉到位，跟一般直覺相反，這是量測時確認過的關鍵。
+     闔上要用完整的 -180deg（不是之前的 -135deg）——可動的封口大小跟信封本體上烤進去的
+     那個固定三角形一模一樣，只有轉滿 180 度、完全貼平，兩者的外框才會真正疊合，轉不滿
+     角度會因為透視關係讓封口看起來比固定三角形小一圈，蓋不滿。 */
+  .flap-group{position:absolute;left:0;top:-17.927%;width:100%;height:100%;transform-style:preserve-3d;transform-origin:50% 50%;
+    transition:transform 420ms var(--ease-inout);}
+  .flap-group img.flap{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;}
+  .envelope-outer.is-open .flap-group{transform:rotateX(0deg);}
+  .envelope-outer.is-closed .flap-group{transform:rotateX(-180deg);}
+
+  /* 蠟滴／蠟封現在都是 .flap-group 的子元素，用封口紙自己的本地座標定位
+     （27.53%＝封口尖端在它自己畫布裡的位置），所以會跟著封口紙一起做 3D 旋轉——
+     整個摺疊過程蠟封都黏在封口尖端上，不是動畫播完才瞬間出現在別的位置。
+     DOM 順序決定圖層前後：蠟滴放在 img.flap 之前＝被紙壓在下面（背面蠟滴的邏輯，
+     紙蓋住大部分蠟滴，只露出邊緣）；蠟封放在 img.flap 之後＝壓在紙上面（正面蠟封蓋章
+     的邏輯，蠟封蓋住封口紙）。 */
+  /* 淡出時機刻意延遲到動畫播到一半左右（420ms 的一半＝210ms）——那一刻封口紙正好轉到
+     側面（-90deg），因為 preserve-3d 的關係從正面看幾乎是一條線、什麼都看不到，這時候
+     切換蠟滴／蠟封才不會被看到「換內容」的瞬間。transition 本身故意設得很短（30ms），
+     讓它在那個看不到的瞬間直接切換，而不是整段旋轉過程中慢慢淡出淡入。 */
+  .wax-drip-back{position:absolute;left:50%;top:27.53%;width:38px;height:38px;transform:translate(-50%,-50%);
+    transition:opacity 30ms linear 195ms;pointer-events:none;}
+  .wax-drip-back img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+  .envelope-outer.is-open .wax-drip-back{opacity:1;}
+  .envelope-outer.is-closed .wax-drip-back{opacity:0;}
+
+  /* top 比蠟滴（27.53%）多往下 3 個百分點——蠟封蓋章要落在封口尖端「再過去一點」的
+     位置，貼著尖端但不完全重疊在同一點，肉眼看起來才像蓋在紙上，不是疊在紙的邊緣上。
+     另外加一個 rotateX(180deg) 抵銷父層 .flap-group 闔上時的 -180deg 翻轉——蠟封本身
+     要正著看，不能因為跟著封口紙的容器一起翻轉就跟著上下顛倒。 */
+  .wax-seal{position:absolute;left:50%;top:29.5%;width:42px;height:42px;transform:translate(-50%,-50%) rotateX(180deg);
+    transition:opacity 30ms linear 195ms;pointer-events:none;}
+  .wax-seal img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+  .envelope-outer.is-closed .wax-seal{opacity:1;}
+  .envelope-outer.is-open .wax-seal{opacity:0;}
+
+  /* top:158px 是刻意避開信封本體圖檔裡烤進去的那個小裝飾圖示（三角形凹槽下半部那個
+     信件圖示＋線條，量出來落在畫布 32.07%~54.54% 之間，換算成這個容器＝83.6px~155.5px），
+     表單直接接在裝飾圖示下面，不會疊在一起。 */
+  .form-zone{position:absolute;left:9%;right:9%;top:158px;display:flex;flex-direction:column;gap:10px;align-items:center;justify-content:flex-start;
+    opacity:1;transition:opacity 180ms var(--ease-inout);}
+  .envelope-outer.is-closed .form-zone{opacity:0;pointer-events:none;}
+  .fake-input{width:70%;background:#fff;border:1px solid #E4D7B8;border-radius:6px;padding:8px 12px;font-size:12px;color:#8a8168;box-shadow:inset 0 1px 2px rgba(0,0,0,.05);}
+  .fake-checks{display:flex;gap:14px;font-size:11px;color:#7a7256;}
+
+  .envelope-closed{position:relative;width:320px;height:250px;overflow:hidden;}
+  .envelope-closed .canvas{position:absolute;left:0;top:-19px;width:320px;height:320px;}
+  .envelope-closed .canvas img.body{position:absolute;inset:0;width:100%;height:100%;}
+  .envelope-closed .flap-static{position:absolute;left:0;top:-17.927%;width:100%;height:100%;transform-style:preserve-3d;transform-origin:50% 50%;transform:rotateX(-180deg);}
+  .envelope-closed .flap-static img{position:absolute;inset:0;width:100%;height:100%;}
+  .envelope-closed .flap-static img.seal{position:absolute;left:50%;top:29.5%;transform:translate(-50%,-50%) rotateX(180deg);width:42px;height:42px;object-fit:contain;}
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="stage-label">動畫測試：加密表單（開）⇄ 完成畫面（闔）</div>
+    <div class="envelope-outer is-open" id="scene">
+      <div class="envelope-canvas">
+        <img class="body" src="../../assets/Envelope_Body.svg" alt="" />
+        <div class="flap-group">
+          <div class="wax-drip-back"><img src="../../assets/Wax_Drip_Back.svg" alt="" /></div>
+          <img class="flap" src="../../assets/Envelope_Flap.svg" alt="" />
+          <div class="wax-seal"><img src="../../assets/Envelope_Wax_Seal.svg" alt="" /></div>
+        </div>
+      </div>
+      <div class="form-zone">
+        <input class="fake-input" type="password" placeholder="輸入密碼的地方" disabled />
+        <div class="fake-checks"><label><input type="checkbox" disabled /> 開啟 Passkey</label><label><input type="checkbox" disabled /> 開啟 恢復金鑰</label></div>
+      </div>
+    </div>
+    <button class="btn primary" id="toggleBtn">加密（播放折疊動畫）</button>
+  </div>
+
+  <div class="stage">
+    <div class="stage-label">對照組：完成畫面（純靜態，不含動畫邏輯）</div>
+    <div class="envelope-closed">
+      <div class="canvas">
+        <img class="body" src="../../assets/Envelope_Body.svg" alt="" />
+        <div class="flap-static">
+          <img class="flap" src="../../assets/Envelope_Flap.svg" alt="" />
+          <img class="seal" src="../../assets/Envelope_Wax_Seal.svg" alt="" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const scene = document.getElementById('scene');
+  const btn = document.getElementById('toggleBtn');
+  btn.addEventListener('click', () => {
+    const opening = scene.classList.contains('is-closed');
+    scene.classList.toggle('is-open', opening);
+    scene.classList.toggle('is-closed', !opening);
+    btn.textContent = opening ? '加密（播放折疊動畫）' : '重新打開';
+  });
+</script>
+</body>
+</html>

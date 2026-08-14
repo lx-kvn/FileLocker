@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>FileLocker — 金庫門組裝測試</title>
+<style>
+  :root{ --ease-inout: cubic-bezier(0.77,0,0.175,1); --brass:#A8770F; }
+  body{margin:0;background:#EDEEF2;font-family:'IBM Plex Sans',sans-serif;padding:40px;display:flex;gap:40px;flex-wrap:wrap;}
+  .stage{display:flex;flex-direction:column;align-items:center;}
+  .stage-label{font-size:13px;color:#666;margin-bottom:10px;font-weight:600;}
+  .btn{margin-top:16px;border:1px solid var(--brass);background:var(--brass);color:#fff;font:inherit;font-weight:600;font-size:13px;padding:8px 18px;border-radius:6px;cursor:pointer;}
+  .btn:active{transform:scale(0.97);}
+
+  .scene{position:relative;width:320px;height:280px;perspective:1000px;}
+  .scene img.frame{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+  .door{position:absolute;inset:0;width:100%;height:100%;transform-style:preserve-3d;transform-origin:21% 50%;
+    transition:transform 500ms var(--ease-inout);}
+  .door img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+  .wheel{position:absolute;left:50%;top:50%;width:34%;height:34%;transform-style:preserve-3d;
+    transition:transform 260ms var(--ease-inout);}
+  .wheel img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+
+  .scene.is-open .door{transform:rotateY(-70deg);}
+  .scene.is-closed .door{transform:rotateY(0deg);}
+  .scene.is-open .wheel{transform:translate(-50%,-50%) rotateZ(220deg);}
+  .scene.is-closed .wheel{transform:translate(-50%,-50%) rotateZ(0deg);}
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="stage-label">金庫門動畫測試（轉輪轉＋門開，兩拍重疊時序）</div>
+    <div class="scene is-closed" id="scene">
+      <img class="frame" src="../../assets/Vault_Frame.svg" alt="" />
+      <div class="door">
+        <img src="../../assets/Vault_Door_Slab.svg" alt="" />
+        <div class="wheel"><img src="../../assets/Vault_Wheel.svg" alt="" /></div>
+      </div>
+    </div>
+    <button class="btn" id="toggleBtn">解鎖（播放開門動畫）</button>
+  </div>
+
+<script>
+  const scene = document.getElementById('scene');
+  const btn = document.getElementById('toggleBtn');
+  btn.addEventListener('click', () => {
+    const opening = scene.classList.contains('is-closed');
+    if (opening) {
+      // 轉輪先轉，門扇緊接著疊上去開（重疊時序，不是排隊等待）
+      scene.classList.remove('is-closed');
+      scene.classList.add('is-open');
+      btn.textContent = '重新關上';
+    } else {
+      scene.classList.remove('is-open');
+      scene.classList.add('is-closed');
+      btn.textContent = '解鎖（播放開門動畫）';
+    }
+  });
+</script>
+</body>
+</html>

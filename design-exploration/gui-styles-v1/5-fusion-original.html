@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>FileLocker — 造型探索 5：融合原創風「保險箱」</title>
+<style>
+  :root{
+    --bg:#FBF7F0; --surface:#FFFFFF; --border:#EAE1D2; --border-strong:#DCCFB6;
+    --ink:#2B2418; --ink-soft:#7A6E5A; --ink-tertiary:#A79C87;
+    --gold:#A8770F; --gold-hover:#8C630C; --gold-soft:#F7EEDB; --gold-border:#E5D2A3;
+    --radius:20px; --radius-sm:10px;
+    --font-display:'Fraunces','Georgia',serif;
+    --font:'IBM Plex Sans',-apple-system,'Segoe UI',sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:var(--font);background:var(--bg);color:var(--ink);font-size:14px;
+    background-image:radial-gradient(circle at 1px 1px, rgba(43,36,24,.05) 1px, transparent 0);
+    background-size:22px 22px;
+  }
+  .shell{display:flex;flex-direction:column;height:100vh;}
+
+  /* 頂部：把導覽做成一整排藥丸型 chip，不用側欄——保險箱主題的「刻度轉盤」意象 */
+  .topbar{display:flex;align-items:center;gap:18px;padding:18px 32px;flex-shrink:0;}
+  .brand{display:flex;align-items:center;gap:10px;}
+  .brand__mark{width:38px;height:38px;border-radius:50%;border:2.5px solid var(--gold);display:flex;align-items:center;justify-content:center;position:relative;}
+  .brand__mark::after{content:"";width:5px;height:5px;border-radius:50%;background:var(--gold);}
+  .brand__name{font-family:var(--font-display);font-size:19px;font-weight:600;letter-spacing:-.01em;}
+  .chip-nav{display:flex;gap:6px;background:var(--surface);padding:5px;border-radius:999px;border:1px solid var(--border);margin-left:8px;}
+  .chip-nav button{border:0;background:none;font:inherit;font-weight:600;font-size:12.5px;padding:8px 16px;border-radius:999px;color:var(--ink-soft);display:flex;align-items:center;gap:6px;}
+  .chip-nav button svg{width:14px;height:14px;stroke-width:1.8;}
+  .chip-nav button.active{background:var(--ink);color:#fff;}
+  .topbar__spacer{flex:1;}
+  .topbar__avatar{width:36px;height:36px;border-radius:50%;background:var(--gold-soft);border:1px solid var(--gold-border);}
+
+  .main{flex:1;overflow-y:auto;padding:6px 32px 32px;}
+  .page-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:20px;}
+  .page-title{font-family:var(--font-display);font-size:30px;font-weight:600;margin:0;letter-spacing:-.01em;}
+  .page-sub{color:var(--ink-soft);font-size:13.5px;margin:4px 0 0;}
+  .head-actions{display:flex;gap:10px;}
+  .btn{border:1px solid var(--border-strong);background:var(--surface);color:var(--ink);font:inherit;font-weight:600;font-size:13px;padding:10px 18px;border-radius:999px;cursor:pointer;}
+  .btn--primary{background:var(--gold);border-color:var(--gold);color:#fff;}
+
+  .sub-tabs{display:flex;gap:8px;margin-bottom:20px;}
+  .sub-tabs button{border:1px solid var(--border);background:var(--surface);font:inherit;font-weight:600;font-size:12.5px;padding:7px 16px;border-radius:999px;color:var(--ink-soft);}
+  .sub-tabs button.active{background:var(--gold-soft);border-color:var(--gold-border);color:var(--gold);}
+
+  .search{max-width:320px;display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:999px;padding:9px 16px;margin-bottom:22px;}
+  .search svg{width:14px;height:14px;color:var(--ink-tertiary);}
+  .search input{border:0;background:none;outline:0;font:inherit;font-size:13px;flex:1;color:var(--ink);}
+
+  /* Bento 卡片網格——不是死板的表格列，每張卡是一個「加密封套」的意象，
+     左側細直條顯示鎖定狀態色，跟保險箱主題呼應 */
+  .bento{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+  .seal-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px;position:relative;overflow:hidden;display:flex;flex-direction:column;gap:10px;}
+  .seal-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--gold);}
+  .seal-card.warn::before{background:#C0783A;}
+  .seal-card__top{display:flex;align-items:flex-start;justify-content:space-between;}
+  .seal-icon{width:40px;height:40px;border-radius:12px;background:var(--gold-soft);display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .seal-icon svg{width:19px;height:19px;color:var(--gold);}
+  .seal-stamp{width:26px;height:26px;border:1.5px dashed var(--gold-border);border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--gold);flex-shrink:0;}
+  .seal-stamp svg{width:12px;height:12px;}
+  .seal-card__name{font-weight:650;font-size:14.5px;font-family:var(--font-display);}
+  .seal-card__meta{font-size:11.5px;color:var(--ink-tertiary);display:flex;flex-wrap:wrap;gap:6px 10px;}
+  .seal-card__hint{font-size:12px;color:var(--ink-soft);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:6px 10px;}
+  .seal-card__hint.warn{color:#A15220;background:#FBEFE4;border-color:#EBCBA4;}
+  .seal-card__actions{margin-top:auto;display:flex;gap:8px;}
+  .seal-card__actions button{flex:1;border:1px solid var(--border-strong);background:var(--surface);font:inherit;font-weight:600;font-size:12px;padding:8px;border-radius:999px;cursor:pointer;color:var(--ink);}
+  .seal-card__actions button.primary{background:var(--gold);border-color:var(--gold);color:#fff;}
+
+  .batch-card{grid-column:span 3;background:var(--gold-soft);border:1px dashed var(--gold-border);border-radius:var(--radius);padding:16px 20px;display:flex;align-items:center;justify-content:space-between;}
+  .batch-card__label{display:flex;align-items:center;gap:12px;font-weight:650;color:var(--gold-hover);font-family:var(--font-display);font-size:15px;}
+  .batch-stack{display:flex;}
+  .batch-stack div{width:30px;height:30px;border-radius:10px;margin-left:-10px;border:2px solid var(--gold-soft);background:var(--surface);}
+  .batch-card button{border:1px solid var(--gold-border);background:var(--surface);color:var(--gold-hover);font:inherit;font-weight:700;font-size:12.5px;padding:8px 18px;border-radius:999px;cursor:pointer;}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="topbar">
+    <div class="brand"><div class="brand__mark"></div><span class="brand__name">FileLocker</span></div>
+    <nav class="chip-nav">
+      <button><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><path d="M5 7h14M5 12h14M5 17h9"/></svg>加密</button>
+      <button><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><path d="M12 3v13m0 0-4-4m4 4 4-4M5 21h14"/></svg>解密</button>
+      <button class="active"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>清單</button>
+      <button><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><path d="M12 3 4 6v6c0 5 3.5 7.7 8 9 4.5-1.3 8-4 8-9V6l-8-3Z"/></svg>資料夾防護</button>
+      <button><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><circle cx="8.5" cy="15.5" r="3.5"/><path d="M11 13 19.5 4.5M19.5 4.5 22 7M17 6.5 19.5 9"/></svg>密碼庫</button>
+    </nav>
+    <div class="topbar__spacer"></div>
+    <div class="topbar__avatar"></div>
+  </header>
+
+  <main class="main">
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">已加密清單</h1>
+        <p class="page-sub">每一份都封存在你的保險箱裡，隨時取用</p>
+      </div>
+      <div class="head-actions">
+        <button class="btn">重新整理</button>
+        <button class="btn btn--primary">＋ 加密新檔案</button>
+      </div>
+    </div>
+
+    <div class="sub-tabs"><button class="active">檔案</button><button>歷史紀錄</button></div>
+
+    <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="搜尋檔名或提示…" /></div>
+
+    <div class="bento">
+      <div class="seal-card">
+        <div class="seal-card__top">
+          <div class="seal-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></div>
+          <div class="seal-stamp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+        </div>
+        <div><div class="seal-card__name">專案合約書.pdf</div><div class="seal-card__meta"><span>PDF · 2.4 MB</span><span>08-10 14:22</span></div></div>
+        <div class="seal-card__hint">提示：合約相關</div>
+        <div class="seal-card__actions"><button class="primary">解密</button><button>Passkey</button></div>
+      </div>
+
+      <div class="seal-card">
+        <div class="seal-card__top">
+          <div class="seal-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg></div>
+          <div class="seal-stamp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+        </div>
+        <div><div class="seal-card__name">家庭照片備份</div><div class="seal-card__meta"><span>資料夾 · 28 個檔案</span><span>08-09 09:03</span></div></div>
+        <div class="seal-card__hint">1.2 GB</div>
+        <div class="seal-card__actions"><button class="primary">解密</button></div>
+      </div>
+
+      <div class="seal-card">
+        <div class="seal-card__top">
+          <div class="seal-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 15l4-4 4 4 4-6 4 6"/></svg></div>
+          <div class="seal-stamp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+        </div>
+        <div><div class="seal-card__name">密碼管理備份.zip</div><div class="seal-card__meta"><span>壓縮檔 · 890 KB</span><span>🔒 內含 2 層加密</span></div></div>
+        <div class="seal-card__hint">提示：常用密碼</div>
+        <div class="seal-card__actions"><button class="primary">恢復金鑰解鎖</button></div>
+      </div>
+
+      <div class="batch-card">
+        <div class="batch-card__label"><div class="batch-stack"><div></div><div></div><div></div></div>批次加密：3 個檔案（報稅資料.xlsx、收據掃描.jpg 等）</div>
+        <button>全部解鎖</button>
+      </div>
+
+      <div class="seal-card">
+        <div class="seal-card__top">
+          <div class="seal-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v3"/></svg></div>
+          <div class="seal-stamp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+        </div>
+        <div><div class="seal-card__name">遠端桌面憑證.pfx</div><div class="seal-card__meta"><span>憑證檔 · 4 KB</span><span>08-05 11:02</span></div></div>
+        <div class="seal-card__hint">提示：公司 VPN</div>
+        <div class="seal-card__actions"><button class="primary">解密</button><button>Passkey</button></div>
+      </div>
+
+      <div class="seal-card warn">
+        <div class="seal-card__top">
+          <div class="seal-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></div>
+          <div class="seal-stamp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+        </div>
+        <div><div class="seal-card__name">個人日記.docx</div><div class="seal-card__meta"><span>Word · 156 KB</span><span>07-28 20:11</span></div></div>
+        <div class="seal-card__hint warn">⚠ 找不到原始位置的指標檔</div>
+        <div class="seal-card__actions"><button class="primary">解密</button></div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>FileLocker — 造型探索 3：Apple 原生軟體風</title>
+<style>
+  :root{
+    --bg:#ECECEC; --sidebar-bg:rgba(246,246,246,.82); --surface:#FFFFFF; --border:#D8D8D8;
+    --text:#1D1D1F; --text-secondary:#6E6E73; --text-tertiary:#98989D;
+    --accent:#007AFF; --accent-soft:#E8F1FF;
+    --radius:10px; --radius-sm:6px;
+    --font:-apple-system,'SF Pro Text','PingFang TC','Segoe UI',sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:var(--font);background:var(--bg);color:var(--text);font-size:13px;-webkit-font-smoothing:antialiased;}
+  .window{height:100vh;display:flex;flex-direction:column;border-radius:10px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.25);}
+  .titlebar{height:38px;background:var(--sidebar-bg);backdrop-filter:blur(20px);display:flex;align-items:center;padding:0 12px;gap:8px;flex-shrink:0;border-bottom:1px solid var(--border);-webkit-app-region:drag;}
+  .traffic{display:flex;gap:8px;}
+  .traffic span{width:12px;height:12px;border-radius:50%;display:block;}
+  .traffic .r{background:#FF5F57;} .traffic .y{background:#FEBC2E;} .traffic .g{background:#28C840;}
+  .titlebar__title{flex:1;text-align:center;font-size:12.5px;font-weight:600;color:var(--text-secondary);margin-right:64px;}
+
+  .body{flex:1;display:flex;overflow:hidden;}
+  .sidebar{width:210px;background:var(--sidebar-bg);backdrop-filter:blur(20px);border-right:1px solid var(--border);padding:14px 10px;overflow-y:auto;flex-shrink:0;}
+  .sidebar__section{margin-bottom:18px;}
+  .sidebar__label{font-size:11px;font-weight:600;color:var(--text-tertiary);padding:0 8px 6px;}
+  .sb-item{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px;color:var(--text);font-size:13px;font-weight:450;}
+  .sb-item svg{width:16px;height:16px;stroke-width:1.6;flex-shrink:0;}
+  .sb-item.active{background:var(--accent);color:#fff;}
+  .sb-item.active svg{stroke:#fff;}
+  .sb-item:not(.active) svg{stroke:var(--text-secondary);}
+
+  .content{flex:1;background:var(--surface);overflow-y:auto;display:flex;flex-direction:column;}
+  .toolbar{height:52px;flex-shrink:0;display:flex;align-items:center;padding:0 18px;gap:12px;border-bottom:1px solid var(--border);}
+  .page-title{font-size:15.5px;font-weight:650;margin:0;display:flex;align-items:center;gap:8px;}
+  .page-title svg{width:17px;height:17px;color:var(--text-secondary);stroke-width:1.6;}
+  .toolbar__spacer{flex:1;}
+  .segmented{display:inline-flex;background:#E9E9EB;border-radius:7px;padding:2px;}
+  .segmented button{border:0;background:transparent;font:inherit;font-size:12px;font-weight:500;padding:4px 12px;border-radius:5px;color:var(--text-secondary);}
+  .segmented button.active{background:#fff;color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.12);}
+  .searchfield{display:flex;align-items:center;gap:6px;background:#EFEFF0;border-radius:7px;padding:5px 10px;width:200px;}
+  .searchfield svg{width:13px;height:13px;color:var(--text-tertiary);}
+  .searchfield input{border:0;background:none;outline:none;font:inherit;font-size:12.5px;flex:1;}
+  .toolbtn{width:28px;height:28px;border-radius:6px;border:none;background:none;display:flex;align-items:center;justify-content:center;color:var(--text-secondary);}
+  .toolbtn svg{width:16px;height:16px;stroke-width:1.7;}
+
+  table{width:100%;border-collapse:collapse;}
+  thead th{position:sticky;top:0;background:#F7F7F8;text-align:left;font-size:11.5px;font-weight:600;color:var(--text-secondary);padding:6px 14px;border-bottom:1px solid var(--border);}
+  tbody td{padding:8px 14px;border-bottom:1px solid #EFEFF0;font-size:12.5px;}
+  tbody tr:hover td{background:var(--accent-soft);}
+  .name-cell{display:flex;align-items:center;gap:9px;}
+  .name-cell svg{width:22px;height:22px;flex-shrink:0;}
+  .name-primary{font-weight:500;}
+  .name-secondary{font-size:11px;color:var(--text-tertiary);}
+  .badge{font-size:10px;font-weight:600;padding:1px 6px;border-radius:999px;margin-left:6px;}
+  .badge--lock{background:#E8F1FF;color:var(--accent);}
+  .badge--warn{background:#FFF1EA;color:#FF9500;}
+  .actions-cell{text-align:right;}
+  .mini-btn{border:1px solid #D8D8D8;background:#fff;font:inherit;font-size:11.5px;font-weight:500;padding:4px 10px;border-radius:6px;color:var(--text);margin-left:5px;}
+  .group-row td{background:#FAFAFA;font-style:normal;color:var(--text-secondary);}
+  .group-row__inner{display:flex;align-items:center;justify-content:space-between;}
+  .disclosure{width:10px;height:10px;color:var(--text-tertiary);}
+</style>
+</head>
+<body>
+<div class="window">
+  <div class="titlebar">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+    <div class="titlebar__title">FileLocker</div>
+  </div>
+  <div class="body">
+    <aside class="sidebar">
+      <div class="sidebar__section">
+        <div class="sidebar__label">項目</div>
+        <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><path d="M5 7h14M5 12h14M5 17h9"/></svg>加密檔案</div>
+        <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><path d="M12 3v13m0 0-4-4m4 4 4-4M5 21h14"/></svg>解密檔案</div>
+        <div class="sb-item active"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>已加密清單</div>
+        <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><path d="M12 3 4 6v6c0 5 3.5 7.7 8 9 4.5-1.3 8-4 8-9V6l-8-3Z"/></svg>資料夾防護</div>
+        <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><circle cx="8.5" cy="15.5" r="3.5"/><path d="M11 13 19.5 4.5M19.5 4.5 22 7M17 6.5 19.5 9"/></svg>密碼庫</div>
+      </div>
+      <div class="sidebar__section">
+        <div class="sidebar__label">偏好設定</div>
+        <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.6-1"/></svg>設定</div>
+      </div>
+    </aside>
+
+    <div class="content">
+      <div class="toolbar">
+        <h1 class="page-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>已加密清單</h1>
+        <div class="segmented"><button class="active">檔案</button><button>歷史紀錄</button></div>
+        <div class="toolbar__spacer"></div>
+        <div class="searchfield"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="搜尋" /></div>
+        <button class="toolbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 8 0 0 1 14.6-4.6M20 12a8 8 0 0 1-14.6 4.6M4 4v5h5M20 20v-5h-5"/></svg></button>
+      </div>
+
+      <table>
+        <thead><tr><th>名稱</th><th>類型</th><th>大小</th><th>提示</th><th>加密時間</th><th></th></tr></thead>
+        <tbody>
+          <tr>
+            <td><div class="name-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#FF3B30" stroke-width="1.5"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg><div><span class="name-primary">專案合約書.pdf</span><div class="name-secondary">合約相關</div></div></div></td>
+            <td>PDF 文件</td><td>2.4 MB</td><td>合約相關</td><td>08-10 14:22</td>
+            <td class="actions-cell"><button class="mini-btn">解密</button><button class="mini-btn">Passkey</button></td>
+          </tr>
+          <tr>
+            <td><div class="name-cell"><svg viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg><div><span class="name-primary">家庭照片備份</span><div class="name-secondary">資料夾 · 28 個檔案</div></div></div></td>
+            <td>資料夾</td><td>1.2 GB</td><td>—</td><td>08-09 09:03</td>
+            <td class="actions-cell"><button class="mini-btn">解密</button></td>
+          </tr>
+          <tr class="group-row">
+            <td colspan="6">
+              <div class="group-row__inner">
+                <span><svg class="disclosure" viewBox="0 0 24 24" fill="currentColor"><path d="M9 6l6 6-6 6"/></svg> 批次加密：3 個檔案（報稅資料.xlsx、收據掃描.jpg 等）</span>
+                <button class="mini-btn">全部解鎖</button>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td><div class="name-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#AF52DE" stroke-width="1.5"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 15l4-4 4 4 4-6 4 6"/></svg><div><span class="name-primary">密碼管理備份.zip<span class="badge badge--lock">×2</span></span><div class="name-secondary">常用密碼</div></div></div></td>
+            <td>壓縮檔</td><td>890 KB</td><td>常用密碼</td><td>08-06 21:40</td>
+            <td class="actions-cell"><button class="mini-btn">恢復金鑰</button></td>
+          </tr>
+          <tr>
+            <td><div class="name-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#34C759" stroke-width="1.5"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v3"/></svg><div><span class="name-primary">遠端桌面憑證.pfx</span><div class="name-secondary">公司 VPN</div></div></div></td>
+            <td>憑證檔</td><td>4 KB</td><td>公司 VPN</td><td>08-05 11:02</td>
+            <td class="actions-cell"><button class="mini-btn">解密</button><button class="mini-btn">Passkey</button></td>
+          </tr>
+          <tr>
+            <td><div class="name-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#8E8E93" stroke-width="1.5"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg><div><span class="name-primary">個人日記.docx<span class="badge badge--warn">⚠</span></span><div class="name-secondary">找不到原始位置的指標檔</div></div></div></td>
+            <td>Word 文件</td><td>156 KB</td><td>—</td><td>07-28 20:11</td>
+            <td class="actions-cell"><button class="mini-btn">解密</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</body>
+</html>

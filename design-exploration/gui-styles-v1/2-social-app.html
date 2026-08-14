@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>FileLocker — 造型探索 2：社交軟體風</title>
+<style>
+  :root{
+    --bg:#0F1013; --surface:#1A1B20; --surface-2:#22242B; --border:#2C2E36;
+    --text:#F2F2F5; --text-secondary:#9B9DAA; --text-tertiary:#6C6E7A;
+    --accent1:#FF5A87; --accent2:#7B5CFA; --accent3:#37D6C0;
+    --radius:18px; --radius-sm:12px;
+    --font:'Poppins','IBM Plex Sans',-apple-system,'Segoe UI',sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:var(--font);background:var(--bg);color:var(--text);font-size:14px;}
+  .shell{display:flex;height:100vh;}
+
+  /* 左側：圖示式導覽，像社交 App 的底部/側邊分頁列，色塊圓角、有存在感 */
+  .rail{width:84px;background:var(--surface);display:flex;flex-direction:column;align-items:center;padding:20px 0;gap:10px;flex-shrink:0;}
+  .rail__logo{width:44px;height:44px;border-radius:14px;background:linear-gradient(135deg,var(--accent1),var(--accent2));display:flex;align-items:center;justify-content:center;margin-bottom:14px;}
+  .rail__logo svg{width:22px;height:22px;stroke:#fff;}
+  .rail__item{width:52px;height:52px;border-radius:16px;display:flex;align-items:center;justify-content:center;color:var(--text-tertiary);position:relative;}
+  .rail__item svg{width:22px;height:22px;stroke:currentColor;}
+  .rail__item.active{background:var(--surface-2);color:#fff;}
+  .rail__item.active::before{content:"";position:absolute;left:-10px;top:50%;transform:translateY(-50%);width:4px;height:22px;border-radius:4px;background:linear-gradient(180deg,var(--accent1),var(--accent2));}
+  .rail__avatar{margin-top:auto;width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,var(--accent3),var(--accent2));}
+
+  .main{flex:1;overflow-y:auto;padding:28px 36px;max-width:960px;}
+  .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px;}
+  .page-title{font-size:24px;font-weight:700;letter-spacing:-.02em;margin:0;display:flex;align-items:center;gap:12px;}
+  .page-title__icon{width:26px;height:26px;padding:6px;border-radius:12px;background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;box-sizing:content-box;}
+  .page-sub{color:var(--text-secondary);font-size:13px;margin:4px 0 0 46px;}
+  .fab{width:48px;height:48px;border-radius:16px;background:linear-gradient(135deg,var(--accent1),var(--accent2));border:none;color:#fff;font-size:22px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 8px 20px rgba(255,90,135,.35);}
+
+  .stories{display:flex;gap:14px;margin-bottom:24px;overflow-x:auto;padding-bottom:4px;}
+  .story{flex-shrink:0;width:132px;background:var(--surface);border-radius:16px;padding:14px;text-align:center;border:1px solid var(--border);}
+  .story__ring{width:52px;height:52px;border-radius:50%;margin:0 auto 8px;display:flex;align-items:center;justify-content:center;padding:3px;background:conic-gradient(var(--accent1),var(--accent2),var(--accent3),var(--accent1));}
+  .story__ring div{width:100%;height:100%;border-radius:50%;background:var(--surface);display:flex;align-items:center;justify-content:center;}
+  .story__ring svg{width:20px;height:20px;stroke:#fff;}
+  .story__label{font-size:11.5px;color:var(--text-secondary);font-weight:600;}
+  .story__count{font-size:15px;font-weight:700;}
+
+  .tabs{display:flex;gap:8px;margin-bottom:18px;}
+  .tabs button{border:none;background:var(--surface);color:var(--text-secondary);font:inherit;font-weight:600;font-size:13px;padding:9px 18px;border-radius:999px;cursor:pointer;}
+  .tabs button.active{background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;}
+
+  .search-row{display:flex;gap:10px;margin-bottom:18px;}
+  .search{flex:1;background:var(--surface);border-radius:999px;padding:10px 16px;display:flex;align-items:center;gap:8px;border:1px solid var(--border);}
+  .search svg{width:15px;height:15px;color:var(--text-tertiary);}
+  .search input{background:none;border:none;outline:none;color:var(--text);font:inherit;flex:1;}
+
+  .feed{display:flex;flex-direction:column;gap:12px;}
+  .file-card{background:var(--surface);border-radius:var(--radius);padding:16px 18px;display:flex;align-items:center;gap:14px;border:1px solid var(--border);}
+  .file-card__icon{width:46px;height:46px;border-radius:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .file-card__icon svg{width:20px;height:20px;}
+  .file-card__body{flex:1;min-width:0;}
+  .file-card__name{font-weight:650;font-size:14.5px;display:flex;align-items:center;gap:8px;}
+  .file-card__meta{color:var(--text-tertiary);font-size:12px;margin-top:3px;display:flex;gap:8px;flex-wrap:wrap;}
+  .pill{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:999px;}
+  .pill--lock{background:rgba(255,90,135,.16);color:var(--accent1);}
+  .pill--warn{background:rgba(255,180,60,.16);color:#FFB43C;}
+  .file-card__actions{display:flex;gap:8px;flex-shrink:0;}
+  .icon-btn{min-width:38px;height:38px;padding:0 14px;border-radius:12px;background:var(--surface-2);border:none;display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;color:var(--text-secondary);font:inherit;font-weight:600;font-size:12.5px;white-space:nowrap;}
+  .icon-btn:empty,.icon-btn:has(svg:only-child){width:38px;padding:0;}
+  .icon-btn svg{width:16px;height:16px;stroke:currentColor;flex-shrink:0;}
+  .icon-btn.primary{background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;}
+
+  .group-card{background:var(--surface-2);border-radius:var(--radius);padding:14px 18px;display:flex;align-items:center;justify-content:space-between;border:1px dashed var(--border);}
+  .group-card__label{display:flex;align-items:center;gap:10px;color:var(--text-secondary);font-weight:600;font-size:13px;}
+  .stack{display:flex;}
+  .stack div{width:26px;height:26px;border-radius:8px;margin-left:-8px;border:2px solid var(--surface-2);}
+  .group-card button{background:none;border:1px solid var(--border);color:var(--text);font:inherit;font-weight:600;font-size:12px;padding:7px 14px;border-radius:999px;cursor:pointer;}
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav class="rail">
+    <div class="rail__logo"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+    <div class="rail__item"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M5 12h14M5 17h9"/></svg></div>
+    <div class="rail__item"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v13m0 0-4-4m4 4 4-4M5 21h14"/></svg></div>
+    <div class="rail__item active"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+    <div class="rail__item"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round"><path d="M12 3 4 6v6c0 5 3.5 7.7 8 9 4.5-1.3 8-4 8-9V6l-8-3Z"/></svg></div>
+    <div class="rail__item"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round"><circle cx="8.5" cy="15.5" r="3.5"/><path d="M11 13 19.5 4.5M19.5 4.5 22 7M17 6.5 19.5 9"/></svg></div>
+    <div class="rail__avatar"></div>
+  </nav>
+
+  <main class="main">
+    <div class="header">
+      <div>
+        <h1 class="page-title"><svg class="page-title__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>已加密清單</h1>
+        <p class="page-sub">你的檔案，鎖起來安心放著</p>
+      </div>
+      <button class="fab">＋</button>
+    </div>
+
+    <div class="stories">
+      <div class="story"><div class="story__ring"><div><svg viewBox="0 0 24 24" fill="none" stroke="var(--accent1)" stroke-width="2"><path d="M4 12a8 8 0 0 1 14.6-4.6"/></svg></div></div><div class="story__count">6</div><div class="story__label">全部項目</div></div>
+      <div class="story"><div class="story__ring"><div><svg viewBox="0 0 24 24" fill="none" stroke="#37D6C0" stroke-width="2"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/></svg></div></div><div class="story__count">2</div><div class="story__label">Passkey</div></div>
+      <div class="story"><div class="story__ring"><div><svg viewBox="0 0 24 24" fill="none" stroke="#FFB43C" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9 2.5 18a2 2 0 0 0 1.7 3h15.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg></div></div><div class="story__count">1</div><div class="story__label">需要留意</div></div>
+    </div>
+
+    <div class="tabs"><button class="active">檔案</button><button>歷史紀錄</button></div>
+
+    <div class="search-row">
+      <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="搜尋檔名或提示…" /></div>
+    </div>
+
+    <div class="feed">
+      <div class="file-card">
+        <div class="file-card__icon" style="background:rgba(255,90,135,.14);"><svg viewBox="0 0 24 24" fill="none" stroke="var(--accent1)" stroke-width="1.8"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></div>
+        <div class="file-card__body">
+          <div class="file-card__name">專案合約書.pdf</div>
+          <div class="file-card__meta"><span>PDF · 2.4 MB</span><span>合約相關</span><span>08-10 14:22</span></div>
+        </div>
+        <div class="file-card__actions"><button class="icon-btn primary">解密</button><button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/></svg></button></div>
+      </div>
+
+      <div class="file-card">
+        <div class="file-card__icon" style="background:rgba(123,92,250,.14);"><svg viewBox="0 0 24 24" fill="none" stroke="var(--accent2)" stroke-width="1.8"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg></div>
+        <div class="file-card__body"><div class="file-card__name">家庭照片備份</div><div class="file-card__meta"><span>資料夾 · 28 個檔案</span><span>1.2 GB</span><span>08-09 09:03</span></div></div>
+        <div class="file-card__actions"><button class="icon-btn primary">解密</button></div>
+      </div>
+
+      <div class="group-card">
+        <div class="group-card__label"><div class="stack"><div style="background:#FF5A87;"></div><div style="background:#7B5CFA;"></div><div style="background:#37D6C0;"></div></div>批次加密：3 個檔案（報稅資料、收據掃描…）</div>
+        <button>全部解鎖</button>
+      </div>
+
+      <div class="file-card">
+        <div class="file-card__icon" style="background:rgba(55,214,192,.14);"><svg viewBox="0 0 24 24" fill="none" stroke="var(--accent3)" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 15l4-4 4 4 4-6 4 6"/></svg></div>
+        <div class="file-card__body">
+          <div class="file-card__name">密碼管理備份.zip <span class="pill pill--lock">🔒 ×2</span></div>
+          <div class="file-card__meta"><span>壓縮檔 · 890 KB</span><span>常用密碼</span><span>08-06 21:40</span></div>
+        </div>
+        <div class="file-card__actions"><button class="icon-btn primary">恢復金鑰</button></div>
+      </div>
+
+      <div class="file-card">
+        <div class="file-card__icon" style="background:rgba(255,255,255,.08);"><svg viewBox="0 0 24 24" fill="none" stroke="#9B9DAA" stroke-width="1.8"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></div>
+        <div class="file-card__body">
+          <div class="file-card__name">個人日記.docx <span class="pill pill--warn">⚠ 需要留意</span></div>
+          <div class="file-card__meta"><span>Word · 156 KB</span><span>找不到原始位置的指標檔</span><span>07-28 20:11</span></div>
+        </div>
+        <div class="file-card__actions"><button class="icon-btn primary">解密</button></div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

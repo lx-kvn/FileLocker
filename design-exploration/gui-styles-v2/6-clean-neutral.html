@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>FileLocker — 造型探索 v2-6：清爽中性風</title>
+<style>
+  :root{
+    --vault-paper:#FFFFFF; --vault-paper-dim:#FAFAF9; --vault-line:#EDEDEB; --vault-line-strong:#DDDDD9;
+    --ledger-ink:#1C1C1A; --ledger-ink-soft:#68675F; --ledger-ink-faint:#7D7B72;
+    --brass:#A8770F; --brass-deep:#8C630C; --brass-tint:#FBF1DF; --brass-line:#EAD5A6;
+    --radius:8px; --radius-sm:6px;
+    /* 標題用 Space Grotesk（幾何感、字寬偏寬，帶一點個性），內文/中繼資料統一用 IBM Plex Sans——
+       只在標題這一個地方做字體對比，不是整頁襯線/等寬互相拉扯，維持「保留一點特色但不雜亂」 */
+    --font-display:'Space Grotesk','IBM Plex Sans',-apple-system,sans-serif;
+    --font-body:'IBM Plex Sans','Noto Sans TC',-apple-system,sans-serif;
+    --ease-out:cubic-bezier(0.23,1,0.32,1);
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:var(--font-body);color:var(--ledger-ink);font-size:14px;background:var(--vault-paper);}
+  .shell{display:flex;height:100vh;}
+
+  /* 側欄：跟內容同一塊白，只用一條極淡的分隔線劃開，不做玻璃、不做色塊背景 */
+  .sidebar{width:210px;flex-shrink:0;background:var(--vault-paper-dim);border-right:1px solid var(--vault-line);padding:22px 12px;display:flex;flex-direction:column;gap:2px;}
+  .brand{display:flex;align-items:center;gap:9px;padding:4px 10px 20px;}
+  .brand__mark{width:26px;height:26px;border-radius:7px;background:var(--brass);display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .brand__mark svg{width:14px;height:14px;stroke:#fff;}
+  .brand__name{font-family:var(--font-display);font-weight:600;font-size:14.5px;letter-spacing:.01em;}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--radius-sm);color:var(--ledger-ink-soft);font-weight:500;font-size:13.5px;border-left:2px solid transparent;transition:background 150ms var(--ease-out),color 150ms var(--ease-out);}
+  .nav-item svg{width:16px;height:16px;stroke-width:1.7;flex-shrink:0;}
+  .nav-item.active{color:var(--brass);font-weight:600;background:var(--brass-tint);}
+
+  .main{flex:1;overflow-y:auto;padding:32px 40px 48px;}
+
+  .page-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:26px;}
+  .page-title{font-family:var(--font-display);font-size:22px;font-weight:600;margin:0;letter-spacing:-.01em;display:flex;align-items:center;gap:10px;}
+  .page-title svg{width:19px;height:19px;color:var(--brass);}
+  .page-stats{font-size:12.5px;color:var(--ledger-ink-faint);}
+
+  .toolbar-row{display:flex;align-items:center;gap:18px;margin-bottom:24px;}
+  .tabs{display:flex;gap:20px;}
+  .tabs button{border:0;background:none;font:inherit;font-weight:600;font-size:13px;color:var(--ledger-ink-faint);padding:0 0 8px;border-bottom:2px solid transparent;cursor:pointer;transition:color 150ms var(--ease-out);}
+  .tabs button.active{color:var(--ledger-ink);border-bottom-color:var(--brass);}
+  .toolbar-row__spacer{flex:1;}
+  .search-field{display:flex;align-items:center;gap:7px;border:1px solid var(--vault-line-strong);padding:7px 11px;border-radius:var(--radius-sm);background:#fff;}
+  .search-field svg{width:13px;height:13px;color:var(--ledger-ink-faint);}
+  .search-field input{border:0;outline:0;background:none;font:inherit;font-size:12.5px;width:170px;color:var(--ledger-ink);}
+  .btn{border:1px solid var(--vault-line-strong);background:#fff;color:var(--ledger-ink);font:inherit;font-weight:600;font-size:12.5px;padding:8px 15px;border-radius:var(--radius-sm);cursor:pointer;transition:transform 150ms var(--ease-out),border-color 150ms var(--ease-out);}
+  .btn:active{transform:scale(0.97);}
+  .btn--primary{background:var(--brass);border-color:var(--brass);color:#fff;}
+  @media (hover:hover) and (pointer:fine){ .btn--primary:hover{background:var(--brass-deep);} }
+
+  /* 清單：純行式，靠留白分組，不用邊框/卡片/索引編號 */
+  .list{display:flex;flex-direction:column;}
+  .row{display:flex;align-items:center;gap:14px;padding:18px 4px;}
+  /* 簽名元素：每個項目的圖示做成圓形「封蠟章」而不是通用的圓角方塊——
+     呼應這個產品真正的機制（檔案被「封」進集中管理區、原地只留一個蓋了章的憑證），
+     不是裝飾性的圓角選擇。細環用來模擬蓋章壓出來的邊緣，故意做得很淡（呼應 squint test）。 */
+  .row__icon{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 0 0 1px rgba(0,0,0,.07), inset 0 1px 2px rgba(0,0,0,.05);}
+  .row__icon svg{width:15px;height:15px;}
+  .row__body{flex:1;min-width:0;}
+  .row__name{font-weight:600;font-size:14px;}
+  .row__meta{color:var(--ledger-ink-faint);font-size:12px;margin-top:3px;}
+  .row__meta span+span::before{content:"·";margin:0 6px;color:var(--vault-line-strong);}
+  .row__tag{font-size:11px;font-weight:600;margin-left:8px;}
+  .row__tag--warn{color:#B24A00;}
+  .row__tag--lock{color:var(--brass-deep);}
+  .row__actions{display:flex;gap:8px;flex-shrink:0;}
+  .row__actions button{border:1px solid var(--vault-line-strong);background:#fff;font:inherit;font-weight:600;font-size:12px;padding:7px 13px;border-radius:var(--radius-sm);color:var(--ledger-ink);cursor:pointer;transition:transform 150ms var(--ease-out),border-color 150ms var(--ease-out);}
+  .row__actions button:active{transform:scale(0.97);}
+  .row__actions button.primary{background:var(--brass);border-color:var(--brass);color:#fff;}
+  @media (hover:hover) and (pointer:fine){
+    .row__actions button.primary:hover{background:var(--brass-deep);}
+    .row__actions button:not(.primary):hover{border-color:var(--brass);color:var(--brass-deep);}
+  }
+
+  .row--batch{background:var(--brass-tint);border-radius:var(--radius);padding:14px 16px;margin:6px 0;}
+  .row--batch .row__body{font-size:13px;color:var(--ledger-ink-soft);display:flex;align-items:center;gap:12px;}
+  .row--batch .row__body strong{color:var(--ledger-ink);font-weight:650;}
+  .row--batch button{border:1px solid var(--brass-line);background:#fff;color:var(--brass);font:inherit;font-weight:650;font-size:12px;padding:7px 13px;border-radius:var(--radius-sm);cursor:pointer;transition:transform 150ms var(--ease-out);}
+  .row--batch button:active{transform:scale(0.97);}
+  /* 批次群組沿用同一個「封蠟章」語彙：幾個小圓疊在一起，像好幾份被夾在一起蓋章送出的憑證，
+     跟單一項目的圓形圖示是同一套視覺邏輯，不是另外發明一種樣式 */
+  .seal-stack{display:flex;flex-shrink:0;}
+  .seal-stack span{width:20px;height:20px;border-radius:50%;margin-left:-8px;border:2px solid var(--brass-tint);box-shadow:0 0 0 1px rgba(0,0,0,.07);}
+  .seal-stack span:first-child{margin-left:0;}
+
+  /* 進場淡入：屬於「偶爾發生」等級的畫面切換（不是鍵盤重複觸發的高頻操作），
+     給一個很輕、很快的 stagger 就好——用 opacity+translateY 而不是更搶眼的位移/縮放 */
+  .row{animation:row-in 260ms var(--ease-out) backwards;}
+  .row:nth-child(1){animation-delay:0ms;}
+  .row:nth-child(2){animation-delay:30ms;}
+  .row:nth-child(3){animation-delay:60ms;}
+  .row:nth-child(4){animation-delay:90ms;}
+  .row:nth-child(5){animation-delay:120ms;}
+  .row:nth-child(6){animation-delay:150ms;}
+  @keyframes row-in{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+  @media (prefers-reduced-motion: reduce){
+    .row{animation:none;}
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><div class="brand__mark"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div><span class="brand__name">FileLocker</span></div>
+    <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><path d="M5 7h14M5 12h14M5 17h9"/></svg>加密檔案</div>
+    <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><path d="M12 3v13m0 0-4-4m4 4 4-4M5 21h14"/></svg>解密檔案</div>
+    <div class="nav-item active"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>已加密清單</div>
+    <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><path d="M12 3 4 6v6c0 5 3.5 7.7 8 9 4.5-1.3 8-4 8-9V6l-8-3Z"/></svg>資料夾防護</div>
+    <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><circle cx="8.5" cy="15.5" r="3.5"/><path d="M11 13 19.5 4.5M19.5 4.5 22 7M17 6.5 19.5 9"/></svg>密碼庫</div>
+    <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9"/></svg>設定</div>
+  </aside>
+
+  <main class="main">
+    <div class="page-head">
+      <h1 class="page-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>已加密清單</h1>
+      <div class="page-stats">共 6 個項目 · 集中管理區使用 1.2 GB</div>
+    </div>
+
+    <div class="toolbar-row">
+      <div class="tabs"><button class="active">檔案</button><button>歷史紀錄</button></div>
+      <div class="toolbar-row__spacer"></div>
+      <div class="search-field"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="搜尋檔名或提示" /></div>
+      <button class="btn">重新整理</button>
+      <button class="btn btn--primary">加密新檔案</button>
+    </div>
+
+    <div class="list">
+      <div class="row">
+        <div class="row__icon" style="background:#FBEAE6;"><svg viewBox="0 0 24 24" fill="none" stroke="#C1502F" stroke-width="1.7"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></div>
+        <div class="row__body"><div class="row__name">專案合約書.pdf</div><div class="row__meta"><span>PDF · 2.4 MB</span><span>合約相關</span><span>2026-08-10 14:22</span></div></div>
+        <div class="row__actions"><button class="primary">解密</button><button>Passkey</button></div>
+      </div>
+      <div class="row">
+        <div class="row__icon" style="background:var(--brass-tint);"><svg viewBox="0 0 24 24" fill="none" stroke="var(--brass)" stroke-width="1.7"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg></div>
+        <div class="row__body"><div class="row__name">家庭照片備份</div><div class="row__meta"><span>資料夾 · 28 個檔案</span><span>1.2 GB</span><span>2026-08-09 09:03</span></div></div>
+        <div class="row__actions"><button class="primary">解密</button></div>
+      </div>
+      <div class="row row--batch">
+        <div class="row__body">
+          <div class="seal-stack"><span style="background:#E8F0D9;"></span><span style="background:#E6F0FA;"></span><span style="background:#FBEAE6;"></span></div>
+          <span>批次加密：<strong>3 個檔案</strong>（報稅資料.xlsx、收據掃描.jpg 等）</span>
+        </div>
+        <button>全部解鎖</button>
+      </div>
+      <div class="row">
+        <div class="row__icon" style="background:#F1E9FC;"><svg viewBox="0 0 24 24" fill="none" stroke="#7B4FE0" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 15l4-4 4 4 4-6 4 6"/></svg></div>
+        <div class="row__body"><div class="row__name">密碼管理備份.zip<span class="row__tag row__tag--lock">2 層加密</span></div><div class="row__meta"><span>壓縮檔 · 890 KB</span><span>常用密碼</span><span>2026-08-06 21:40</span></div></div>
+        <div class="row__actions"><button class="primary">恢復金鑰</button></div>
+      </div>
+      <div class="row">
+        <div class="row__icon" style="background:#E6F0FA;"><svg viewBox="0 0 24 24" fill="none" stroke="#2B6CB0" stroke-width="1.7"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v3"/></svg></div>
+        <div class="row__body"><div class="row__name">遠端桌面憑證.pfx</div><div class="row__meta"><span>憑證檔 · 4 KB</span><span>公司 VPN</span><span>2026-08-05 11:02</span></div></div>
+        <div class="row__actions"><button class="primary">解密</button><button>Passkey</button></div>
+      </div>
+      <div class="row">
+        <div class="row__icon" style="background:#F1F1EF;"><svg viewBox="0 0 24 24" fill="none" stroke="var(--ledger-ink-faint)" stroke-width="1.7"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></div>
+        <div class="row__body"><div class="row__name">個人日記.docx<span class="row__tag row__tag--warn">找不到指標檔</span></div><div class="row__meta"><span>Word 文件 · 156 KB</span><span>2026-07-28 20:11</span></div></div>
+        <div class="row__actions"><button class="primary">解密</button></div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

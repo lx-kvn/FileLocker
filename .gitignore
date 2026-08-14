@@ -13,6 +13,54 @@
 node_modules/
 dist/
 
+# Affinity Designer 開啟檔案時產生的暫時鎖定標記，檔案關閉就消失，不是真正的內容。
+*.af~lock~
+
 # Rider / VS Code 本機設定，因人而異。
 .idea/
 .vscode/
+
+# 這台機器上額外安裝的一批設計／美學相關 Claude skills（非本專案自己寫的、跟
+# FileLocker 本身無關），排除掉不進版控，避免跟專案既有的 .claude/skills/ 混在一起。
+.claude/skills/absence-audit/
+.claude/skills/audience-translation/
+.claude/skills/color-systems/
+.claude/skills/constraint-evaluation/
+.claude/skills/consumption-discipline/
+.claude/skills/craft-signals/
+.claude/skills/critique-vocabulary/
+.claude/skills/cross-domain-seeing/
+.claude/skills/cross-pollination/
+.claude/skills/daily-routines/
+.claude/skills/decision-tracing/
+.claude/skills/design-critique/
+.claude/skills/design-ranking/
+.claude/skills/design-rationale/
+.claude/skills/detail-observation/
+.claude/skills/field-notes/
+.claude/skills/flow-patterns/
+.claude/skills/frontend-design/
+.claude/skills/hierarchy-principles/
+.claude/skills/interface-design/
+.claude/skills/learning-by-making/
+.claude/skills/library-architecture/
+.claude/skills/motion-design/
+.claude/skills/principle-tagging/
+.claude/skills/quality-checklist/
+.claude/skills/screenshot-surgery/
+.claude/skills/self-assessment/
+.claude/skills/spatial-rhythm/
+.claude/skills/system-deconstruction/
+.claude/skills/taste-as-strategy/
+.claude/skills/taste-gap/
+.claude/skills/taste-vs-trends/
+.claude/skills/teaching-taste/
+.claude/skills/timing-feedback/
+.claude/skills/tradeoff-assessment/
+.claude/skills/type-as-signal/
+.claude/skills/type-selection/
+.claude/skills/type-systems/
+.claude/skills/version-archaeology/
+.claude/skills/visual-audit/
+.claude/skills/web-design-guidelines/
+.claude/skills/written-critique/

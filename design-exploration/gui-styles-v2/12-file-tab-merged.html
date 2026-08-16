@@ -307,15 +307,23 @@
     const fakeNames = ['季度報告.docx', '員工名冊.xlsx', '掃描件_0816.pdf', '設計稿.fig'];
     let counter = 0;
 
-    // 信封本體圖檔在「還沒選檔案」跟「已經選了檔案」用不同版本——Envelope_Body_Empty.svg
-    // 是使用者直接改 Envelope_Body.svg、把裡面烤進去的裝飾圖示拿掉做出來的版本，兩張圖除了
-    // 裡面那個圖示有沒有之外完全一樣，所以直接切換 src 就好，不用調整任何座標/尺寸。
+    // 信封本體圖檔依「選了幾個檔案」分四級（0／1／2／3 以上），不是原本的空/有東西二選一——
+    // 0 用 Empty，1 用 One，2 用 Two，3 以上封頂共用原本的 Envelope_Body.svg（不會一路畫到
+    // 「裝 87 個東西」，3 個以上視覺上都算「滿」）。四張圖除了裡面裝飾圖示的內容不一樣之外
+    // 完全同尺寸同座標，純粹換 src。
+    function bodyImgFor(count){
+      if (count <= 0) return '../../assets/Envelope_Body_Empty.svg';
+      if (count === 1) return '../../assets/Envelope_Body_One.svg';
+      if (count === 2) return '../../assets/Envelope_Body_Two.svg';
+      return '../../assets/Envelope_Body.svg';
+    }
+
     function render(){
-      const hasFiles = pickedList.children.length > 0;
-      nextBtn.disabled = !hasFiles;
-      dropzone.style.display = hasFiles ? 'none' : '';
-      pickedWrap.style.display = hasFiles ? '' : 'none';
-      bodyImg.src = hasFiles ? '../../assets/Envelope_Body.svg' : '../../assets/Envelope_Body_Empty.svg';
+      const count = pickedList.children.length;
+      nextBtn.disabled = count === 0;
+      dropzone.style.display = count === 0 ? '' : 'none';
+      pickedWrap.style.display = count === 0 ? 'none' : '';
+      bodyImg.src = bodyImgFor(count);
     }
 
     // 模擬「拖曳檔案懸停在這個區域上」——真正串進 App 時要接 dragenter/dragleave（且要用
@@ -331,14 +339,16 @@
     const envelopeOuter = document.querySelector('#addFileOverlay .envelope-outer');
     envelopeCanvas.addEventListener('mouseenter', () => {
       if (pickedList.children.length === 0) {
-        bodyImg.src = '../../assets/Envelope_Body.svg';
+        // 懸停預覽用「One」而不是直接跳到滿版——懸停中還不知道實際拖了幾個檔案，先用最保守
+        // 的「至少會有東西進來」預覽，放開之後 render() 會依實際筆數再算一次正確的級別。
+        bodyImg.src = bodyImgFor(1);
         dropzoneHint.style.visibility = 'hidden';
         envelopeOuter.classList.add('is-drag-hover');
       }
     });
     envelopeCanvas.addEventListener('mouseleave', () => {
       if (pickedList.children.length === 0) {
-        bodyImg.src = '../../assets/Envelope_Body_Empty.svg';
+        bodyImg.src = bodyImgFor(0);
         dropzoneHint.style.visibility = '';
         envelopeOuter.classList.remove('is-drag-hover');
       }

@@ -17,23 +17,52 @@
     transition:transform 500ms var(--ease-inout);}
   .door img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
   .wheel{position:absolute;left:50%;top:50%;width:34%;height:34%;transform-style:preserve-3d;
-    transition:transform 260ms var(--ease-inout);}
+    transform:translate(-50%,-50%) rotateZ(0deg);}
   .wheel img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
 
-  .scene.is-open .door{transform:rotateY(-70deg);}
-  .scene.is-closed .door{transform:rotateY(0deg);}
-  .scene.is-open .wheel{transform:translate(-50%,-50%) rotateZ(220deg);}
-  .scene.is-closed .wheel{transform:translate(-50%,-50%) rotateZ(0deg);}
+  .scene.door-open .door{transform:rotateY(-70deg);}
+
+  /* 轉盤的「儀式感」拆成兩段，用 @keyframes 分段指定各自的速度曲線（單一條 cubic-bezier
+     沒辦法同時做到「起手不要太快、中段持續重重地減速、到底只有一點點回彈、回彈到定位時
+     瞬間停住」這麼多段落各自不同的要求）：
+     - 0%→88%（轉盤本體、佔掉大部分時間跟圈數）：起手偏緩、全程持續減速，做出轉盤本身
+       有重量、不是輕飄飄轉過去的感覺。轉到 88% 時故意轉過頭（比最終停等角度多轉一點），
+       這個「過頭的量」就是回彈的量——量變小＝回彈變小，不用另外調參數控制回彈幅度。
+     - 88%→100%（最後這一小段時間、只走一點點角度）：短時間內走完一小段距離，讀起來就是
+       「還有一點點動量，但幾乎立刻被吸收停住」——不是真的物理上瞬間變成 0（CSS 曲線本來
+       就沒辦法做到真正不連續的速度），而是靠「這段時間極短＋距離極短」讓眼睛感覺不到還在
+       減速，錯覺成「喀」一聲卡住。
+
+     開鎖／上鎖故意用不同的曲線跟時長，不是同一組參數正反播放——開鎖起手就要快（一啟動
+     馬上衝到高速），中段開始持續遞減、拖得比較久，轉盤自己的重量感要在減速的尾巴上；
+     上鎖同樣是起手就衝到高速，但整段時間比開鎖短、收尾更快，讀起來比較乾脆俐落。開鎖
+     這條實測調過好幾輪——最早版本起手太緩，播起來覺得拖沓，後來把起手速度一路往上調，
+     同時把整段動畫時長從 1300ms 收到 1000ms，才不會轉盤明明已經轉完卻還在空等門開始開。
+     圈數比最早版本收斂一點（多轉 1 圈），最終停等角度改成 540deg（=360+180，mod 360
+     是 180°，90° 的整數倍——轉盤本來就是四個握把、四等分的造型，停在 90° 的倍數上跟外觀
+     本身的對稱性才對得上，不是隨便選一個角度）。 */
+  @keyframes wheel-spin-open{
+    0%{transform:translate(-50%,-50%) rotateZ(0deg);animation-timing-function:cubic-bezier(0.1,0.24,0.46,1);}
+    90%{transform:translate(-50%,-50%) rotateZ(550deg);animation-timing-function:cubic-bezier(0.3,0.6,0.5,1);}
+    100%{transform:translate(-50%,-50%) rotateZ(540deg);}
+  }
+  @keyframes wheel-spin-close{
+    0%{transform:translate(-50%,-50%) rotateZ(540deg);animation-timing-function:cubic-bezier(0.18,0.5,0.32,1);}
+    90%{transform:translate(-50%,-50%) rotateZ(-9deg);animation-timing-function:cubic-bezier(0.3,0.6,0.5,1);}
+    100%{transform:translate(-50%,-50%) rotateZ(0deg);}
+  }
+  .wheel.spin-open{animation:wheel-spin-open 1000ms both;}
+  .wheel.spin-close{animation:wheel-spin-close 780ms both;}
 </style>
 </head>
 <body>
   <div class="stage">
-    <div class="stage-label">金庫門動畫測試（轉輪轉＋門開，兩拍重疊時序）</div>
-    <div class="scene is-closed" id="scene">
+    <div class="stage-label">金庫門動畫測試（轉輪轉完才開門，關門關完才轉回鎖上——接力時序，不重疊）</div>
+    <div class="scene" id="scene">
       <img class="frame" src="../../assets/Vault_Frame.svg" alt="" />
       <div class="door">
         <img src="../../assets/Vault_Door_Slab.svg" alt="" />
-        <div class="wheel"><img src="../../assets/Vault_Wheel.svg" alt="" /></div>
+        <div class="wheel" id="wheel"><img src="../../assets/Vault_Wheel.svg" alt="" /></div>
       </div>
     </div>
     <button class="btn" id="toggleBtn">解鎖（播放開門動畫）</button>
@@ -41,19 +70,44 @@
 
 <script>
   const scene = document.getElementById('scene');
+  const wheel = document.getElementById('wheel');
   const btn = document.getElementById('toggleBtn');
+  const WHEEL_OPEN_MS = 1000;  // 對應 wheel-spin-open 的 animation 時長
+  const WHEEL_CLOSE_MS = 780;  // 對應 wheel-spin-close 的 animation 時長
+  const DOOR_MS = 500;         // 對應 .door 的 transition 時長
+  let isOpen = false;
+  let timer = null;
+
+  function restartSpin(className){
+    // 換方向重播時強制 reflow，確保同一個 class 名稱如果剛好連續用兩次也會重新觸發
+    // animation（例如快速連點造成中途被打斷又重新開始的情況），不是只有第一次有效。
+    wheel.classList.remove('spin-open', 'spin-close');
+    void wheel.offsetWidth;
+    wheel.classList.add(className);
+  }
+
   btn.addEventListener('click', () => {
-    const opening = scene.classList.contains('is-closed');
-    if (opening) {
-      // 轉輪先轉，門扇緊接著疊上去開（重疊時序，不是排隊等待）
-      scene.classList.remove('is-closed');
-      scene.classList.add('is-open');
+    clearTimeout(timer);
+    btn.disabled = true;
+
+    if (!isOpen) {
+      // 解鎖：轉盤先轉開（含衝過頭再回彈卡住），轉完之後門才開始開
+      restartSpin('spin-open');
+      timer = setTimeout(() => {
+        scene.classList.add('door-open');
+        timer = setTimeout(() => { btn.disabled = false; }, DOOR_MS);
+      }, WHEEL_OPEN_MS);
       btn.textContent = '重新關上';
     } else {
-      scene.classList.remove('is-open');
-      scene.classList.add('is-closed');
+      // 上鎖：門先關上，關完轉盤才轉回原位（同樣有回彈卡住的手感）
+      scene.classList.remove('door-open');
+      timer = setTimeout(() => {
+        restartSpin('spin-close');
+        timer = setTimeout(() => { btn.disabled = false; }, WHEEL_CLOSE_MS);
+      }, DOOR_MS);
       btn.textContent = '解鎖（播放開門動畫）';
     }
+    isOpen = !isOpen;
   });
 </script>
 </body>

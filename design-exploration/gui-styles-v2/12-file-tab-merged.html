@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>FileLocker — 「檔案」分頁合併 mockup（加密／解密／清單）</title>
+<style>
+  :root{
+    --brass:#A8770F; --brass-deep:#8C630C; --brass-tint:#FBF1DF; --void-red:#A23B2A;
+    --void-tint:#F7E4DF; --ink:#3A331F; --ink-soft:#7A7256; --paper:#FFFDF8; --line:#E7DCC0;
+    --ease:cubic-bezier(0.23,1,0.32,1); --ease-inout:cubic-bezier(0.77,0,0.175,1);
+  }
+  body{margin:0;background:#EDEEF2;font-family:'IBM Plex Sans','Noto Sans TC',sans-serif;padding:32px;}
+  .note{max-width:820px;background:#fff;border:1px dashed var(--line);border-radius:8px;padding:12px 16px;
+    font-size:12.5px;color:var(--ink-soft);line-height:1.6;margin-bottom:24px;}
+  .note b{color:var(--ink);}
+
+  /* 頁首：跟資料夾防護／密碼庫等其他分頁共用同一種標題列樣式，這裡只是簡化示範 */
+  .page-title{font-size:20px;font-weight:700;color:var(--ink);margin:0 0 16px;display:flex;align-items:center;gap:14px;}
+  .page-title img{width:44px;height:44px;}
+
+  /* 工具列：新增檔案／選擇要解密的檔案——兩顆按鈕語意不同，見定案文件的決策記錄，
+     所以刻意用不同視覺權重（新增檔案是主要動作用實心，選擇要解密的檔案是次要動作用外框），
+     不是隨機挑的樣式。 */
+  .toolbar{display:flex;gap:10px;max-width:820px;margin-bottom:20px;}
+  .btn{font:inherit;font-weight:600;font-size:13px;padding:9px 16px;border-radius:7px;cursor:pointer;
+    border:1px solid var(--brass);background:#fff;color:var(--brass-deep);transition:transform 150ms var(--ease);}
+  .btn:active{transform:scale(0.97);}
+  .btn.primary{background:var(--brass);color:#fff;}
+
+  .list{display:flex;flex-direction:column;gap:10px;max-width:820px;}
+  .row{position:relative;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:12px 20px;
+    display:grid;grid-template-columns:40px 0 1fr 150px auto;align-items:center;gap:16px;
+    transition:border-color 150ms var(--ease);}
+  .row:hover{border-color:#D8C89A;}
+  .file-icon{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .file-icon svg{width:19px;height:19px;}
+  .tear-line{width:0;align-self:stretch;border-left:1.5px dashed var(--line);}
+  .info{min-width:0;}
+  .name{font-weight:650;font-size:14px;color:var(--ink);}
+  .meta{font-size:11.5px;color:var(--ink-soft);margin-top:3px;white-space:nowrap;}
+  .meta span+span::before{content:"·";margin:0 6px;}
+  .postmark-slot{position:relative;height:36px;}
+  .actions{display:flex;gap:8px;width:200px;justify-content:flex-end;align-items:center;}
+  .actions button{border:1px solid var(--line);background:#fff;color:var(--ink);font:inherit;font-weight:600;font-size:12px;padding:8px 14px;border-radius:6px;cursor:pointer;transition:transform 150ms var(--ease),border-color 150ms var(--ease);}
+  .actions button:active{transform:scale(0.97);}
+  .actions button:hover{border-color:var(--brass);color:var(--brass-deep);}
+
+  /* ===== 覆蓋層共用（新增檔案信封 / 外部解密表單都用同一層遮罩） ===== */
+  .overlay{position:fixed;inset:0;background:rgba(58,51,31,0.35);display:flex;align-items:center;justify-content:center;
+    opacity:0;pointer-events:none;transition:opacity 200ms var(--ease);z-index:50;}
+  .overlay.is-open{opacity:1;pointer-events:auto;}
+
+  /* 「繼續新增」每加一筆，.sheet 就長高一點——如果整層 .overlay 用 align-items:center
+     置中，envelope-outer 整體高度一變，flex 置中會重新計算，連信封本體都會跟著往上跳，
+     不是只有清單自己變長。改成信封彈出這個覆蓋層固定用頂部對齊（align-items:flex-start
+     + 固定 padding-top），信封的位置就不會再因為底下清單長高而跟著整組漂移，只有
+     .picked-list 自己在原地長高／捲動。外部解密那個純表單彈窗高度本來就不會變，不受這個
+     問題影響，維持原本置中，不用跟著改。 */
+  #addFileOverlay{align-items:flex-start;padding-top:70px;}
+
+  /* ===== 新增檔案：信封彈出容器 =====
+     這裡沿用 8-envelope-assembled.html 的信封本體/封口素材跟開合邏輯，但入場動畫先簡化成
+     scale+fade（不是完整的「垂直落下＋回彈」），因為定案文件裡這塊「是不是共用同一套進場
+     動畫」還沒有明確定案（見〈加密／解密／清單合併為單一「檔案」分頁〉那節的「尚未確認」），
+     這裡只是先把「選檔案這一步包進信封容器」的排版/互動概念做出來，動畫細節之後對照
+     8-envelope-assembled.html 補上完整版。 */
+  /* 380px 一開始不夠高——選檔案這步的內容（標題＋dropzone＋已選清單＋取消/下一步）疊起來
+     比信封本體矩形那段窄橫帶高很多，內容會溢出信封輪廓外面。放大到 480px 才夠放，這也側面
+     印證了定案文件裡「選檔案這步包進信封容器」這件事，尺寸要另外抓，不能直接照搬
+     8-envelope-assembled.html 那個「只需要放密碼欄位」的 320px 尺寸。 */
+  /* 老實說這裡卡了一輪：一開始想讓「選檔案卡片＋取消/下一步」整塊都框在信封輪廓「裡面」
+     （比照 8-envelope-assembled.html 用 top+bottom 兩端固定），但信封本體的可視輪廓只佔
+     整張正方形畫布高度的一個固定比例（32.07%~67.94%，量測筆記在 8-envelope-assembled.html
+     開頭），不管整體再放多大，這個比例都不會變——放大信封並不會多出「相對空間」，內容需要的
+     高度是絕對值（字級/padding 決定的），信封可視範圍是比例值，兩者不會同步變大。這也是
+     為什麼原本密碼表單（只有 2 個欄位）塞得下、但這裡「檔名列表可能有好幾筆」塞不下的
+     根本原因。
+     這裡先讓步：overflow 改回 visible、拿掉底部固定邊界，讓「選檔案卡片」用自然流式排版
+     往下長，超出信封視覺輪廓的部分就讓它自然垂到信封下緣外面（視覺上比較像「信封打開、
+     東西攤在信封前面的桌上」，不是「東西完全塞在信封裡」）——這不是我原本想要的效果，
+     但比起硬把列表高度壓死、犧牲可讀性，這是目前想到比較誠實的退讓，需要使用者看過確認
+     這樣是否可以接受，還是要往別的方向想（例如選檔案這步乾脆不用信封容器，只有密碼那步
+     才用）。 */
+  /* emil-design-eng 那輪抓出來的根本問題：畫面裡同時有三種「邊界語言」在搶當容器
+     （信封本身的實線摺邊／dropzone 自己的虛線框／picked-card 自己的白底方框），
+     修法是砍到只剩兩層邊界，各自負責清楚不同的區域，不再互相重疊打架：
+     1. 信封輪廓本身——負責「標題＋提示文字」這段還在信封可視範圍內的內容，這段不再另外
+        加框，直接用透明背景，讓信封的線條就是唯一的容器邊界。
+     2. `.sheet`——負責「已選檔案清單＋取消/下一步」這段會溢出信封輪廓外的內容，這是唯一
+        一個有自己背景/陰影的容器，讀起來像「從信封裡抽出來攤在信封前面的一張紙」，不是
+        兩個各自獨立的區塊（虛線 dropzone + 白框 picked-card + 懸空按鈕）疊在一起。
+     進場動畫的 easing 也一併修正：這是進場（entering）動畫，要用 ease-out（快速起步），
+     原本用的 --ease-inout 是「畫面上移動」該用的曲線，兩頭都慢，進場用起來會感覺遲鈍。 */
+  .envelope-outer{position:relative;width:420px;overflow:visible;transform:scale(0.92);
+    transition:transform 220ms var(--ease-out),filter 200ms var(--ease-out);filter:drop-shadow(0 0 0 rgba(58,51,31,0));}
+  .overlay.is-open .envelope-outer{transform:scale(1);}
+  /* 懸停時信封外面加一圈偏下方的陰影——用 filter:drop-shadow()（不是 box-shadow），因為
+     信封是不規則形狀（菱形+矩形），box-shadow 只會畫出一個看不見邊界的矩形陰影，
+     drop-shadow 才會照著圖片實際的透明度輪廓走，陰影形狀才會貼合信封本身，不是一個方塊。
+     偏移量只給 Y 軸正值（往下），不給 X，讓陰影讀起來像信封微微浮起來、往下沉一點點的
+     重量感，不是四面均勻的光暈。 */
+  .envelope-outer.is-drag-hover{filter:drop-shadow(0 14px 20px rgba(58,51,31,.38));}
+  .envelope-canvas{position:relative;width:420px;height:420px;}
+  .envelope-canvas img.body{position:absolute;inset:0;width:100%;height:100%;}
+  .flap-group{position:absolute;left:0;top:-17.927%;width:100%;height:100%;transform-style:preserve-3d;transform-origin:50% 50%;transform:rotateX(0deg);}
+  .flap-group img.flap{position:absolute;inset:0;width:100%;height:100%;}
+  .wax-drip-back{position:absolute;left:50%;top:27.53%;width:44px;height:44px;transform:translate(-50%,-50%);}
+  .wax-drip-back img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+
+  /* 「新增檔案」這行字拿掉——跟外面工具列上那顆已經寫著「新增檔案」的按鈕重複，信封打開後
+     不需要再講一次。原本標題的位置（top:60%）改放「選擇檔案」按鈕，「拖曳檔案，或」這行
+     提示字往上移到裝飾三角形（`Envelope_Body.svg` 本體圖檔裡烤進去的信件圖示＋線條，畫布
+     32.07%~54.54% 之間）的正中間（top:44%）——兩個元素各自獨立定位、上下錯開，不是黏在
+     同一個容器裡一起移動。 */
+  .dropzone p{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);margin:0;
+    font-size:11.5px;color:var(--ink-soft);white-space:nowrap;}
+  .dropzone .btn{position:absolute;left:50%;top:60%;transform:translate(-50%,-50%);
+    font-size:12px;padding:7px 16px;white-space:nowrap;}
+
+  /* 信封可視輪廓在畫布 67.94% 結束，但 .envelope-canvas 這個盒子本身是滿版 420px 高
+     （素材本身「畫布留白」的老問題，量測筆記在檔案開頭），.sheet 接在 canvas 後面的正常
+     文件流裡，會被推到那多出來的留白區域下面，造成信封跟卡片之間空一大截。用負的
+     margin-top 把 .sheet 拉回來，貼近信封可視輪廓的實際下緣（留一點點呼吸空間，不是完全
+     貼死）：420px（canvas 高）− 67.94%×420px（可視下緣）− 12px（想要的間距）≈ 123px。
+     .sheet 改成 width:fit-content + margin:0 auto，卡片寬度貼合按鈕內容，不再是撐滿
+     420px、按鈕置中後兩側留一大片死白的樣子。
+     這個負 margin 會讓 .sheet 跟 .envelope-canvas 產生視覺重疊——`.envelope-canvas` 有
+     `position:relative`，沒設 z-index 的「有定位」元素預設會蓋過沒有定位的一般元素，不管
+     DOM 順序誰在後面，所以原本重疊處是 canvas（其實是它裡面透明的留白區）蓋住 .sheet，
+     擋住按鈕的點擊——.sheet 也要給 `position:relative` 參與同一個層疊順序，才會照 DOM
+     順序（比 canvas 晚）疊在上面。 */
+  /* 縮小整體份量，讓這塊不要跟上面的信封搶視線——陰影變淺變短、圓角變小、內距壓緊，
+     這塊本來就是輔助性的「收尾動作」，不該跟主體一樣搶眼。 */
+  .sheet{position:relative;width:fit-content;margin:-123px auto 0;box-sizing:border-box;background:var(--paper);border-radius:9px;
+    box-shadow:0 4px 10px rgba(58,51,31,.12);padding:9px 12px 10px;}
+  .sheet .btn{font-size:11.5px;padding:6px 12px;}
+
+  /* .sheet 現在是 width:fit-content——只有按鈕那一列時會縮到剛好包住兩顆按鈕；一旦顯示
+     檔案清單，清單需要自己給一個固定寬度（不能沿用父層的 fit-content，不然每一列會各自
+     縮到自己檔名的寬度，長短不一時清單會參差不齊），.sheet 才會跟著撐到這個寬度。
+     高度原本用 max-height（只有超過才捲動，1 筆的時候是矮的），改成固定 height——1 筆
+     跟 5 筆佔的高度一樣，底下的「＋ 繼續新增」連結跟取消/下一步按鈕才不會因為清單筆數
+     不同而跟著上下移動，只有清單自己內部捲動。固定高度從 150px 降到 112px（少一點初始
+     空白，大約 3 行多一點的高度，超過才捲動）。
+     另外加一層 `.picked-list-frame`，用邊框把「清單捲動的範圍」跟「清單外面（繼續新增
+     連結、取消/下一步按鈕）」明確隔開——原本清單直接跟外面的內容黏在一起，沒有邊界，看不
+     出來哪一塊是會捲動的、哪一塊是固定的。 */
+  .picked-list-frame{border:1px solid var(--line);border-radius:8px;padding:6px;margin-bottom:8px;background:#fdfcf7;}
+  .picked-list{list-style:none;margin:0;padding:0;width:268px;display:flex;flex-direction:column;gap:6px;height:112px;overflow-y:auto;}
+  .picked-list li{display:flex;align-items:center;justify-content:space-between;background:#fff;border:1px solid var(--line);
+    border-radius:6px;padding:6px 10px;font-size:12px;color:var(--ink);}
+  .picked-list li button{border:none;background:none;color:var(--void-red);font:inherit;font-size:11px;cursor:pointer;}
+  .link-more{border:none;background:none;color:var(--brass-deep);font:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:0;}
+
+  /* 取消／下一步原本 space-between 撐到卡片左右兩端，中間空一大塊——上一版只把兩顆按鈕拉近
+     靠右，卡片左半邊還是留了一大塊死白，看起來還是不平衡。這次改成兩顆一組置中在整張卡片
+     裡（不是靠右），卡片左右兩側對稱留白，不再有偏一邊的空白。 */
+  .add-file-actions{display:flex;justify-content:center;gap:8px;}
+  #pickedWrap{margin-bottom:8px;}
+
+  /* ===== 選擇要解密的檔案：不用信封造型，維持中性表單 =====
+     這是刻意的（見定案文件「尚未確認」），這次先不幫解密流程套視覺造型，等下一輪定案。 */
+  .plain-dialog{background:#fff;border-radius:12px;padding:28px;width:360px;box-shadow:0 20px 50px rgba(0,0,0,.2);
+    transform:scale(0.94);transition:transform 220ms var(--ease-out);}
+  .overlay.is-open .plain-dialog{transform:scale(1);}
+  .plain-dialog h2{margin:0 0 4px;font-size:16px;color:var(--ink);}
+  .plain-dialog p.hint{margin:0 0 18px;font-size:12px;color:var(--ink-soft);}
+  .field{margin-bottom:14px;}
+  .field label{display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:6px;}
+  .field input{width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:6px;padding:9px 10px;font:inherit;font-size:13px;}
+  .field-row{display:flex;gap:8px;}
+  .field-row input{flex:1;}
+  .dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px;}
+</style>
+</head>
+<body>
+
+  <div class="note">
+    這是〈加密／解密／清單合併為單一「檔案」分頁〉這輪定案的排版 mockup，不是最終動畫細節——
+    重點是驗證「清單為預設畫面＋兩顆動作按鈕」這個結構感覺順不順，<b>不是</b>驗證信封動畫本身
+    （那部分完整版在 <code>8-envelope-assembled.html</code>）。點下面兩顆按鈕可以看兩種彈出
+    情境的排版差異。
+  </div>
+
+  <h1 class="page-title"><img src="../../assets/Envelope_Wax_Seal.svg" alt="" />檔案</h1>
+
+  <div class="toolbar">
+    <button class="btn primary" id="openAddFile">＋ 新增檔案</button>
+    <button class="btn" id="openDecryptExternal">選擇要解密的檔案</button>
+  </div>
+
+  <div class="list">
+    <div class="row">
+      <div class="file-icon" style="background:#FBEAE6;"><svg viewBox="0 0 24 24" fill="none" stroke="#C1502F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></div>
+      <div class="tear-line"></div>
+      <div class="info">
+        <div class="name">專案合約書.pdf</div>
+        <div class="meta"><span>PDF · 2.4 MB</span><span>合約相關</span><span>2026-08-10 14:22</span></div>
+      </div>
+      <span class="postmark-slot"></span>
+      <div class="actions"><button>解密</button><button>Passkey</button></div>
+    </div>
+
+    <div class="row">
+      <div class="file-icon" style="background:var(--brass-tint);"><svg viewBox="0 0 24 24" fill="none" stroke="var(--brass)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg></div>
+      <div class="tear-line"></div>
+      <div class="info">
+        <div class="name">家庭照片備份</div>
+        <div class="meta"><span>資料夾 · 28 個檔案</span><span>1.2 GB</span><span>2026-08-09 09:03</span></div>
+      </div>
+      <span class="postmark-slot"></span>
+      <div class="actions"><button>解密</button></div>
+    </div>
+
+    <div class="row">
+      <div class="file-icon" style="background:#F1E9FC;"><svg viewBox="0 0 24 24" fill="none" stroke="#7B4FE0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 15l4-4 4 4 4-6 4 6"/></svg></div>
+      <div class="tear-line"></div>
+      <div class="info">
+        <div class="name">密碼管理備份.zip</div>
+        <div class="meta"><span>壓縮檔 · 890 KB</span><span>常用密碼</span><span>2026-08-06 21:40</span></div>
+      </div>
+      <span class="postmark-slot"></span>
+      <div class="actions"><button>解密</button><button>恢復金鑰</button></div>
+    </div>
+  </div>
+
+  <!-- ===== 覆蓋層 1：新增檔案（信封彈出，包著現有 encrypt 步驟一的選檔案邏輯） ===== -->
+  <div class="overlay" id="addFileOverlay">
+    <div class="envelope-outer">
+      <div class="envelope-canvas">
+        <img class="body" id="addFileBodyImg" src="../../assets/Envelope_Body_Empty.svg" alt="" />
+        <div class="flap-group">
+          <div class="wax-drip-back"><img src="../../assets/Wax_Drip_Back.svg" alt="" /></div>
+          <img class="flap" src="../../assets/Envelope_Flap.svg" alt="" />
+        </div>
+        <!-- 沿用 App.vue encrypt 步驟一的既有邏輯：dropzone 跟「已選檔案清單」是互斥的
+             （v-if/v-else），不是疊在一起同時顯示——選了檔案之後 dropzone 讓位。
+             「新增檔案」標題拿掉了（跟外面觸發這個彈窗的按鈕重複），原本標題的位置改放
+             「選擇檔案」按鈕，提示文字往上移到裝飾三角形正中間，兩者上下錯開。 -->
+        <div class="dropzone" id="dropzone">
+          <p>拖曳檔案，或</p>
+          <button class="btn" id="fakePickBtn" type="button">選擇檔案</button>
+        </div>
+      </div>
+      <!-- .sheet 現在是唯一一個「懸空內容」的容器，從一開始（還沒選檔案）就存在，只是裡面
+           的 #pickedWrap 依狀態顯示/隱藏——取消/下一步永遠在 .sheet 裡面，不會有時候懸空
+           有時候不懸空，維持單一、一致的容器語言。跟 envelope-canvas 是 sibling，自然接在
+           信封下緣。 -->
+      <div class="sheet">
+        <div id="pickedWrap" style="display:none;">
+          <div class="picked-list-frame">
+            <ul class="picked-list" id="pickedList"></ul>
+          </div>
+          <button class="link-more" id="fakePickBtnMore" type="button">＋ 繼續新增</button>
+        </div>
+        <div class="add-file-actions">
+          <button class="btn" id="addFileCancel" type="button">取消</button>
+          <button class="btn primary" id="addFileNext" type="button" disabled>下一步</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 覆蓋層 2：選擇要解密的檔案（外部 .locked 檔案，中性表單，不套信封） ===== -->
+  <div class="overlay" id="decryptExternalOverlay">
+    <div class="plain-dialog">
+      <h2>選擇要解密的檔案</h2>
+      <p class="hint">給不在上面清單中的 .locked 指標檔使用（例如別人給的、或從備份還原回來的）。</p>
+      <div class="field">
+        <label>指標檔路徑</label>
+        <div class="field-row">
+          <input type="text" placeholder="尚未選擇檔案" readonly />
+          <button class="btn" type="button">選檔案</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>密碼</label>
+        <input type="password" placeholder="輸入密碼" />
+      </div>
+      <div class="dialog-actions">
+        <button class="btn" id="decryptExternalCancel" type="button">取消</button>
+        <button class="btn primary" type="button">解密</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  function wireOverlay(overlayId, openBtnId, cancelBtnId){
+    const overlay = document.getElementById(overlayId);
+    const openBtn = document.getElementById(openBtnId);
+    const cancelBtn = document.getElementById(cancelBtnId);
+    openBtn.addEventListener('click', () => overlay.classList.add('is-open'));
+    cancelBtn.addEventListener('click', () => overlay.classList.remove('is-open'));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.classList.remove('is-open'); });
+  }
+  wireOverlay('addFileOverlay', 'openAddFile', 'addFileCancel');
+  wireOverlay('decryptExternalOverlay', 'openDecryptExternal', 'decryptExternalCancel');
+
+  // 模擬選檔案：現有 encrypt 步驟一的邏輯是「選完出現在列表、可個別移除、下一步在沒有檔案時
+  // disabled」，這裡用假資料模擬同樣的互動，不接真的檔案系統對話框。
+  (function setupFakePicker(){
+    const pickedList = document.getElementById('pickedList');
+    const pickedWrap = document.getElementById('pickedWrap');
+    const dropzone = document.getElementById('dropzone');
+    const nextBtn = document.getElementById('addFileNext');
+    const bodyImg = document.getElementById('addFileBodyImg');
+    const fakeNames = ['季度報告.docx', '員工名冊.xlsx', '掃描件_0816.pdf', '設計稿.fig'];
+    let counter = 0;
+
+    // 信封本體圖檔在「還沒選檔案」跟「已經選了檔案」用不同版本——Envelope_Body_Empty.svg
+    // 是使用者直接改 Envelope_Body.svg、把裡面烤進去的裝飾圖示拿掉做出來的版本，兩張圖除了
+    // 裡面那個圖示有沒有之外完全一樣，所以直接切換 src 就好，不用調整任何座標/尺寸。
+    function render(){
+      const hasFiles = pickedList.children.length > 0;
+      nextBtn.disabled = !hasFiles;
+      dropzone.style.display = hasFiles ? 'none' : '';
+      pickedWrap.style.display = hasFiles ? '' : 'none';
+      bodyImg.src = hasFiles ? '../../assets/Envelope_Body.svg' : '../../assets/Envelope_Body_Empty.svg';
+    }
+
+    // 模擬「拖曳檔案懸停在這個區域上」——真正串進 App 時要接 dragenter/dragleave（且要用
+    // 進入次數計數處理子元素造成的閃爍，見前面討論），這裡先用滑鼠 hover 簡化模擬同樣的
+    // 視覺效果（mouseenter/mouseleave 天生不會被子元素觸發，跟 dragenter/dragleave 的行為
+    // 不一樣，之後接真正的拖放事件時這個坑還是要處理，不是這個 mock 沒踩到就代表不存在）。
+    // 只有在還沒選過任何檔案（dropzone 還顯示著）的時候才需要這個懸停預覽，已經有檔案時
+    // 信封本來就已經是「有東西」的圖示，不需要額外處理。
+    // 懸停時「拖曳檔案，或」這行提示字要隱藏——一旦真的懸停著，代表使用者已經知道可以放開了，
+    // 這句「拖曳檔案」的提示反而是多餘的干擾，留著「選擇檔案」按鈕就好。
+    const dropzoneHint = document.querySelector('#addFileOverlay .dropzone p');
+    const envelopeCanvas = document.querySelector('#addFileOverlay .envelope-canvas');
+    const envelopeOuter = document.querySelector('#addFileOverlay .envelope-outer');
+    envelopeCanvas.addEventListener('mouseenter', () => {
+      if (pickedList.children.length === 0) {
+        bodyImg.src = '../../assets/Envelope_Body.svg';
+        dropzoneHint.style.visibility = 'hidden';
+        envelopeOuter.classList.add('is-drag-hover');
+      }
+    });
+    envelopeCanvas.addEventListener('mouseleave', () => {
+      if (pickedList.children.length === 0) {
+        bodyImg.src = '../../assets/Envelope_Body_Empty.svg';
+        dropzoneHint.style.visibility = '';
+        envelopeOuter.classList.remove('is-drag-hover');
+      }
+    });
+
+    function addFakeFile(){
+      const name = fakeNames[counter % fakeNames.length];
+      counter++;
+      const li = document.createElement('li');
+      li.innerHTML = `<span>${name}</span>`;
+      const removeBtn = document.createElement('button');
+      removeBtn.textContent = '移除';
+      removeBtn.addEventListener('click', () => { li.remove(); render(); });
+      li.appendChild(removeBtn);
+      pickedList.appendChild(li);
+      render();
+    }
+
+    document.getElementById('fakePickBtn').addEventListener('click', addFakeFile);
+    document.getElementById('fakePickBtnMore').addEventListener('click', addFakeFile);
+
+    document.getElementById('addFileNext').addEventListener('click', () => {
+      alert('下一步：密碼／Passkey／恢復金鑰設定（沿用現有 encrypt 步驟二，這個 mockup 沒有另外做）');
+    });
+  })();
+</script>
+</body>
+</html>

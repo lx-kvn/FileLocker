@@ -124,8 +124,14 @@ public class VaultChangeWatcherTests : IDisposable
             // 直到「raisedCount 連續一段安靜視窗內都沒再變化」才罷手，等待時間會隨機器負載
             // 自動拉長，不受固定時間長度綁死（實際發生過：同一份測試單獨跑穩定通過，
             // 跟其他測試組一起跑就出現 raisedCount 忽大忽小）。
+            //
+            // deadline 原本是 5 秒，實際發生過整套 `dotnet test` 一起跑、系統比較忙的時候，
+            // 真正的 FileSystemWatcher 送出事件本身的延遲被拉長超過這個上限，導致輪詢直接
+            // 等到 deadline 就放棄、raisedCount 還停在 0（不是被多算，是連一次都還沒等到），
+            // 斷言就誤判成失敗。拉長到 10 秒給系統忙的時候多一點緩衝，不是延長 debounce
+            // 視窗本身（NotifyDebounce／settleWindow 不變，只是願意多等幾輪安靜視窗）。
             var settleWindow = NotifyDebounce + TimeSpan.FromMilliseconds(150);
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
             var lastCount = -1;
             var lastChangeUtc = DateTime.UtcNow;
 
@@ -151,6 +157,61 @@ public class VaultChangeWatcherTests : IDisposable
 
         Assert.Equal(1, raisedCount);
         Assert.Equal(15, _cache.GetItems().Count);
+    }
+
+    [Fact]
+    public void DisposeCalledImmediatelyAfterFileChange_DoesNotRaceWithCacheDisposal()
+    {
+        // 重現一個實際發生過、把整個測試主機行程弄當機的競爭情況：VaultChangeWatcher.Dispose()
+        // 原本只是把每個檔案的 Timer 呼叫 .Dispose()，但 Timer.Dispose() 不保證「已經在執行中」
+        // 的回呼會被中斷完成才返回——如果呼叫端緊接著就把 VaultIndexCache（包著 SqliteConnection）
+        // 也 Dispose 掉（這正是本測試類別的 IDisposable.Dispose() 在做的事，也是實際 App 層
+        // shutdown 邏輯的既有順序），一個還在飛的 ProcessFile 回呼繼續存取 SQLite 就會撞到
+        // ObjectDisposedException——而且是背景執行緒上未攔截的例外，直接讓整個行程當掉，不是
+        // 單純的測試失敗（.NET 對執行緒集區背景執行緒上的未攔截例外，預設行為就是終止行程）。
+        //
+        // 用極短的 debounce（1ms）讓 debounce 計時器幾乎立刻觸發，緊接著不等待、立刻呼叫
+        // watcher.Dispose() 再呼叫 cache.Dispose()，盡量重現「Dispose 那一刻回呼剛好在飛」
+        // 的窗口。watcher.Dispose() 回傳之後，緊接著 Dispose cache 必須是安全的——如果修好了，
+        // Dispose() 內部要真的等到所有在飛的計時器回呼完全執行完畢才能返回，而不是只是把
+        // Timer 物件標記成已釋放。
+        // 單一輪的時機窗口很窄（不一定每次都撞得到），重複跑 30 輪疊加機率——這是刻意的
+        // 壓力測試寫法，不是隨手複製貼上：目的是讓這份回歸測試在「修復前」有夠高的機率
+        // 真的複現當機，而不是矇對一次就過。
+        for (var attempt = 0; attempt < 30; attempt++)
+        {
+            var tempVaultDir = Directory.CreateTempSubdirectory("FileLockerVaultTests_DisposeRace_");
+            var tempCacheDir = Directory.CreateTempSubdirectory("FileLockerCacheTests_DisposeRace_");
+            try
+            {
+                var vault = new VaultManager(tempVaultDir.FullName);
+                var cache = new VaultIndexCache(vault, tempCacheDir.FullName);
+                var watcher = new VaultChangeWatcher(
+                    tempVaultDir.FullName,
+                    cache,
+                    perFileDebounce: TimeSpan.FromMilliseconds(1),
+                    notifyDebounce: TimeSpan.FromMilliseconds(1));
+                watcher.Start();
+
+                // 筆數故意拉高（200 筆）：每個檔案各自的 1ms debounce 幾乎都會在我們還在寫檔的
+                // 這段時間內就到期，一大批 ProcessFile 回呼會同時搶 VaultIndexCache 內部那道
+                // 序列化存取的鎖（見 VaultIndexCache._connectionLock 上的註解），排隊處理需要
+                // 一點時間，這樣才能讓「呼叫 Dispose() 那一刻還有回呼在飛」這個窗口變得夠寬。
+                for (var i = 0; i < 200; i++)
+                {
+                    vault.SaveMetadata(CreateSampleMetadata(Guid.NewGuid().ToString()));
+                }
+
+                // 故意不等待、不 sleep——緊接著立刻收尾，這正是會觸發競爭的順序。
+                watcher.Dispose();
+                cache.Dispose();
+            }
+            finally
+            {
+                if (tempVaultDir.Exists) tempVaultDir.Delete(recursive: true);
+                if (tempCacheDir.Exists) tempCacheDir.Delete(recursive: true);
+            }
+        }
     }
 
     [Fact]

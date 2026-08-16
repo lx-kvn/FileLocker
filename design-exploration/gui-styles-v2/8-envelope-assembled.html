@@ -118,9 +118,18 @@
      位置＝53%+(98-53)/3≈68%，時間文字改成用 left:68% 對齊「文字最左邊」（不是文字中心，
      所以拿掉原本的 translateX(-50%)），這樣文字左緣會卡在郵戳線左三分之一處，不是整段
      文字置中在郵戳線範圍中央。 */
-  .mail-postmark{position:absolute;right:25%;top:58%;transform:translateY(-50%);width:64px;height:64px;}
+  .mail-postmark{position:absolute;right:19%;top:58%;transform:translateY(-50%);width:64px;height:64px;}
   .mail-postmark img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
   .mail-postmark .mail-timestamp{position:absolute;left:68%;top:59%;font-size:6px;font-weight:700;letter-spacing:-0.3px;color:#8a6a1f;white-space:nowrap;font-variant-numeric:tabular-nums;}
+
+  /* 全流程測試（#fullRig）才有「跳進來→打開→關起來」這個時間軸，檔名/郵戳要等使用者
+     輸入完密碼、信封重新闔上蓋章那一刻才出現，不是一開始就貼著——跟定案文件的語意一致
+     （封好才代表這份檔案真的被鎖進去了）。單純飛走／帶文字飛走那兩個測試（#flyOnlyRig、
+     #flyTextRig）沒有這個開闔流程，本來就是從「已經封好」的狀態開始，維持一直顯示。 */
+  #fullRig .mail-filename,
+  #fullRig .mail-postmark{opacity:0;transition:opacity 260ms var(--ease-out);}
+  #fullRig.show-mail-info .mail-filename,
+  #fullRig.show-mail-info .mail-postmark{opacity:1;}
 
   /* 實測後發現動畫版（.mailaway-rig 裡）蠟封的位置其實跟靜態版一樣落在 52.6%（原本猜想
      两邊的 3D 情境不同、位置會不一樣，實測結果推翻了這個猜想）——所以不需要另外覆蓋
@@ -304,6 +313,11 @@
             <img class="flap" src="../../assets/Envelope_Flap.svg" alt="" />
             <div class="wax-seal"><img src="../../assets/Envelope_Wax_Seal.svg" alt="" /></div>
           </div>
+          <div class="mail-filename">專案合約書_最終版.pdf</div>
+          <div class="mail-postmark">
+            <img src="../../assets/Postmark_Nested_Lock.svg" alt="" />
+            <span class="mail-timestamp">2026-08-16 14:32</span>
+          </div>
         </div>
         <div class="form-zone">
           <input class="fake-input" type="password" placeholder="輸入密碼的地方" disabled />
@@ -391,7 +405,7 @@
       replayBtn.disabled = true;
 
       // 重置到起點：信封在畫面外上方、闔著、看不見
-      rig.classList.remove('is-flying', 'is-dropping');
+      rig.classList.remove('is-flying', 'is-dropping', 'show-mail-info');
       outer.classList.remove('is-open');
       outer.classList.add('is-closed');
       rig.style.transition = 'none';
@@ -422,10 +436,11 @@
         rig.classList.remove('is-dropping');
       });
 
-      // 階段三：闔起來（沿用既有的折疊動畫，蠟封同時换回正面）
+      // 階段三：闔起來（沿用既有的折疊動畫，蠟封同時换回正面）＋這一刻才淡入檔名/郵戳
       after(DROP_MS + HOLD_OPEN_MS, () => {
         outer.classList.remove('is-open');
         outer.classList.add('is-closed');
+        rig.classList.add('show-mail-info');
       });
 
       // 階段四：停頓一下（顯示檔名/郵戳的既定語意），再往後躺、飛出去

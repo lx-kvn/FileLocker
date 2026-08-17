@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>FileLocker — 造型探索 v2-13：側欄殼子 + 票根撕開改版（v4）</title>
+<style>
+  :root{
+    --vault-steel:#F4F3F0; --vault-steel-dim:#ECEAE5; --vault-line:#E0DDD5; --vault-line-strong:#CFCAC0;
+    --ink:#22221E; --ink-soft:#63604F; --ink-faint:#8B8776;
+    --brass:#A8770F; --brass-deep:#8C630C; --brass-tint:#FBF1DF; --brass-line:#EAD5A6;
+    --void-red:#A23B2A;
+    --paper:#FFFDF8; --line:#E7DCC0;
+    --radius:8px; --radius-sm:5px;
+    --font-stamp:'IBM Plex Mono','JetBrains Mono',ui-monospace,monospace;
+    --font-body:'IBM Plex Sans','Noto Sans TC',-apple-system,sans-serif;
+    --ease-out:cubic-bezier(0.23,1,0.32,1);
+    --sidebar-w:200px; --sidebar-w-collapsed:60px;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:var(--font-body);color:var(--ink);font-size:14px;background:var(--vault-steel);}
+
+  /* TODO（實作進 App.vue 時要做的新功能，使用者要求先記下來，這輪還沒有 grilling 過細節）：
+     視窗控制鈕（關閉／最小化／最大化）的風格要能在 macOS／Windows 兩種造型之間切換。
+     不是換成原生控制項——兩種風格都還是用這裡的 Vue（.traffic-light 這組）做，Windows
+     樣式只是把位置（通常在右上角、由左到右依序是最小化／最大化／關閉，跟 macOS 由左到右
+     關閉／最小化／最大化、位置在左上角相反）跟造型（方形圖示按鈕，不是圓點）換成比較接近
+     Windows 原生的樣子。這輪的 mockup 還是固定用 macOS 造型，沒有做這個切換功能。 */
+  .shell{height:100vh;display:flex;flex-direction:column;}
+  .title-bar{height:38px;flex-shrink:0;display:flex;align-items:center;padding:0 14px;
+    -webkit-app-region:drag;border-bottom:1px solid var(--vault-line);background:var(--vault-steel);}
+  .traffic-lights{display:flex;gap:8px;-webkit-app-region:no-drag;}
+  .traffic-light{width:12px;height:12px;border-radius:50%;border:none;padding:0;}
+  .traffic-light--close{background:#FF5F57;} .traffic-light--minimize{background:#FEBC2E;} .traffic-light--maximize{background:#28C840;}
+  .title-bar__brand{margin-left:14px;font-weight:650;font-size:13px;color:var(--ink-soft);}
+
+  .body{flex:1;display:flex;min-height:0;}
+
+  .sidebar{width:var(--sidebar-w);flex-shrink:0;background:var(--vault-steel);border-right:1px solid var(--vault-line);
+    padding:14px 10px;display:flex;flex-direction:column;gap:2px;transition:width 220ms var(--ease-out);overflow:hidden;}
+  .sidebar.is-collapsed{width:var(--sidebar-w-collapsed);padding:14px 8px;}
+  .sidebar__collapse-btn{display:flex;align-items:center;gap:8px;border:1px solid transparent;background:none;
+    color:var(--ink-faint);font:inherit;font-size:12px;font-weight:600;padding:7px 8px;border-radius:var(--radius-sm);
+    cursor:pointer;margin-bottom:14px;transition:background-color 150ms ease,color 150ms ease;white-space:nowrap;}
+  .sidebar__collapse-btn:hover{background:var(--vault-steel-dim);color:var(--ink);}
+  .sidebar__collapse-btn svg{width:15px;height:15px;flex-shrink:0;transition:transform 220ms var(--ease-out);}
+  .sidebar.is-collapsed .sidebar__collapse-btn svg{transform:rotate(180deg);}
+  .sidebar.is-collapsed .sidebar__collapse-btn{justify-content:center;}
+  .sidebar__collapse-btn .label{overflow:hidden;text-overflow:ellipsis;}
+  .sidebar.is-collapsed .sidebar__collapse-btn .label{display:none;}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--radius-sm);
+    color:var(--ink-soft);font-weight:500;font-size:13.5px;text-decoration:none;white-space:nowrap;
+    position:relative;cursor:pointer;}
+  .nav-item svg{width:16px;height:16px;stroke-width:1.7;flex-shrink:0;}
+  .nav-item.active{color:var(--brass);font-weight:600;background:var(--brass-tint);}
+  .nav-item:focus-visible{outline:2px solid var(--brass);outline-offset:-4px;border-radius:var(--radius-sm);}
+  .sidebar.is-collapsed .nav-item{justify-content:center;padding:9px 0;}
+  .sidebar.is-collapsed .nav-item .label{display:none;}
+  .sidebar.is-collapsed .nav-item::after{
+    content:attr(data-label);position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%) scale(0.96);
+    background:var(--ink);color:#fff;font-size:12px;font-weight:500;padding:5px 9px;border-radius:6px;
+    white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 140ms ease,transform 140ms ease;z-index:20;}
+  .sidebar.is-collapsed .nav-item:hover::after{opacity:1;transform:translateY(-50%) scale(1);}
+
+  .main{flex:1;overflow-y:auto;padding:28px 40px 48px;min-width:0;}
+  .page-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:24px;}
+  .page-title{font-size:22px;font-weight:650;margin:0;letter-spacing:-.01em;display:flex;align-items:center;gap:10px;}
+  .page-title svg{width:19px;height:19px;color:var(--brass);}
+  .page-stats{font-family:var(--font-stamp);font-size:11.5px;color:var(--ink-faint);}
+  .toolbar-row{display:flex;align-items:center;gap:14px;margin-bottom:22px;}
+  .tabs{display:flex;gap:20px;}
+  .tabs button{border:0;background:none;font:inherit;font-weight:600;font-size:13px;color:var(--ink-faint);
+    padding:0 0 8px;border-bottom:2px solid transparent;cursor:pointer;}
+  .tabs button.active{color:var(--ink);border-bottom-color:var(--brass);}
+  .toolbar-row__spacer{flex:1;}
+  .btn{border:1px solid var(--vault-line-strong);background:#fff;color:var(--ink);font:inherit;font-weight:600;
+    font-size:12.5px;padding:8px 15px;border-radius:var(--radius-sm);cursor:pointer;transition:transform 150ms var(--ease-out);}
+  .btn:active{transform:scale(0.97);}
+  .btn--primary{background:var(--brass);border-color:var(--brass);color:#fff;}
+  .btn--reset{border-color:var(--void-red);color:var(--void-red);}
+
+  .hint{font-size:12px;color:var(--ink-faint);margin:-8px 0 18px;line-height:1.6;}
+
+  /* ============ 票根列 v4 ============
+     v3 → v4 改動：
+     1. 撕線太短、圖示太大看起來像蟑螂鬚——撕線現在貫穿整張票根卡片的全高（`.ticket__seal`
+        用 align-self:stretch 撐滿整列高度），圖示縮小一點，線本身看得更清楚是一條真正的
+        「貫穿卡片」的虛線，不是圖示旁邊兩根短短的裝飾。
+     2. 撕開範圍要包含承載文字內容的白色卡片本身——上一版只有內容（文字/按鈕）被複製兩份
+        裁切，卡片的白底+邊框留在原地不動，看起來像「內容飄在卡片上面裂開」，不夠有說服力。
+        這版把整張 `.ticket`（含背景/邊框/圓角）拿去複製裁切，撕開時看到的是兩個各自完整
+        的半張卡片（各自帶著自己那一側的白底/邊框）飛開，才是真的「卡片本身裂成兩半」。
+     3. 郵戳徽章（找不到指標檔／巢狀鎖定）改成直接照抄 9-envelope-list.html 的尺寸與文字
+        擺放邏輯（80×80 大圖示＋文字並排，獨立固定寬度欄位，圖示用 position:absolute 疊出
+        列高之外，不會把整列撐高）。
+     4. 撕開動畫播完，比照〈信封清單虛線的互動〉原本定案的收尾：整張（已經裂開的兩半合在
+        一起當一個單位）往旁邊飛走、淡出，下面的列跟著往上補位——不是像上一版那樣自動彈回
+        原地。因為這是測試不是真的刪除，右上角加一顆「重置清單」把所有列復原，方便重複測試。 ============ */
+  .list{display:flex;flex-direction:column;}
+
+  /* v4 → v5：原本 `.ticket-wrap` 一直帶著 `overflow:hidden` + 寫死的 `max-height:200px`，
+     兩個問題都出在這裡——①窄視窗時文字換行需要的高度一旦超過 200px 就直接被裁掉，列看起來
+     矮了一截；②飛走動畫的位移（translateX）也會被同一個 overflow:hidden 攔腰截斷，看起來
+     像卡到外面去。改成平常完全不設高度限制／不裁切（自然高度，會隨內容換行正常撐高），
+     只有「真的要收合讓下面的列補位」那一刻才由 JS 量測當下實際高度、暫時鎖住當成收合動畫
+     的起點，而且要等飛走＋淡出動畫真的播完（畫面上已經看不到東西）才開始收合，兩段動畫
+     前後接續、不重疊，收合的當下沒有任何可見內容會被裁到。 */
+  .ticket-wrap{margin-bottom:10px;}
+  .ticket-wrap.is-collapsing{overflow:hidden;transition:max-height 360ms var(--ease-out),margin-bottom 360ms var(--ease-out);}
+  .ticket-wrap.is-collapsing.is-gone{max-height:0 !important;margin-bottom:0;}
+
+  .ticket-stage{position:relative;transition:transform 380ms var(--ease-out),opacity 340ms ease;}
+  .ticket-wrap.is-leaving .ticket-stage{transform:translateX(90px) rotate(2.5deg);opacity:0;}
+
+  /* 撕線／圖示（`.ticket__seal`）改成用 position:absolute 直接掛在 `.ticket` 上，脫離
+     原本受卡片自己 padding 限制的 flex 排版——這樣它才能真的頂到卡片白底的上下邊緣
+     （absolute 子元素的 top/bottom 是相對容器的 padding box 量，不受 `.ticket` 自己的
+     padding 影響），不是被內距框住、停在文字內容一樣高的範圍。右邊 padding-left 留出
+     seal 的寬度＋間距，其餘內容（文字/郵戳/按鈕）照舊走 flex 排版，只是往右挪出這塊空間。 */
+  .ticket{position:relative;background:var(--paper);border:1px solid var(--line);border-radius:10px;
+    display:flex;align-items:center;gap:16px;padding:10px 20px 10px 76px;
+    transition:border-color 150ms var(--ease-out),opacity 200ms ease;}
+  .ticket-stage:hover .ticket{border-color:var(--vault-line-strong);}
+  .ticket-wrap.is-tearing .ticket,
+  .ticket-wrap.is-peeking .ticket{opacity:0;}
+
+  .ticket__half{position:absolute;inset:0;display:flex;align-items:center;gap:16px;padding:10px 20px 10px 76px;
+    opacity:0;pointer-events:none;transition:transform 420ms var(--ease-out);}
+  .ticket-wrap.is-tearing .ticket__half,
+  .ticket-wrap.is-peeking .ticket__half{opacity:1;}
+  .ticket__half--left{transform-origin:bottom left;}
+  .ticket__half--right{transform-origin:bottom right;}
+
+  /* 「撕一小角」原本只有轉一下圖示＋線變紅，跟真正撕開的動作沒有視覺上的關聯，看起來
+     像另一個不相干的小動畫。改成直接借用撕開機制本身，只是位移／角度縮到很小（真正撕開的
+     四分之一左右）＋更快的過場時間（160ms，不是完整撕開用的 420ms）——播的其實是「撕開
+     動畫的最前面一小段」，不是另外設計一套獨立的回饋動作，驗證通過後接著播的完整撕開才會
+     感覺是同一個動作的延續，不是切成兩段不同的東西。 */
+  .ticket-wrap.is-peeking .ticket__half{transition:transform 160ms var(--ease-out);}
+  .ticket-wrap.is-peeking .ticket__half--left{transform:translateX(-0.75px) rotate(-0.35deg);}
+  .ticket-wrap.is-peeking .ticket__half--right{transform:translateX(0.75px) rotate(0.3deg);}
+  .ticket-wrap.is-tearing.is-open .ticket__half--left{transform:translateX(-9px) rotate(-3.5deg);}
+  .ticket-wrap.is-tearing.is-open .ticket__half--right{transform:translateX(9px) rotate(2.5deg);}
+
+  .ticket__seal{position:absolute;left:0;top:0;bottom:0;width:56px;
+    display:flex;align-items:center;justify-content:center;border:none;background:none;cursor:pointer;
+    padding:0;border-radius:8px;transition:background-color 150ms ease;}
+  .ticket .ticket__seal:hover{background:rgba(34,34,30,0.035);}
+  .ticket .ticket__seal:focus-visible{outline:2px solid var(--brass);outline-offset:2px;}
+
+  /* 撕線貫穿整個 seal（top:0;bottom:0），seal 本身又是貼齊卡片上下邊緣的 absolute 元素——
+     等於撕線直接頂到卡片白底的邊緣，讀起來才像真正的票根騎縫線貫穿整張票根，不是一小段
+     浮在圖示旁邊、被內距框住的裝飾線。 */
+  .ticket__tear-line{position:absolute;left:50%;top:0;bottom:0;width:0;
+    border-left:2px dashed var(--ink-faint);transform:translateX(-50%);transition:border-color 160ms ease;}
+  .ticket-wrap.is-peeking .ticket .ticket__tear-line,
+  .ticket-wrap.is-tearing .ticket__tear-line{border-color:var(--void-red);}
+
+  /* 撕開的兩半各自帶著自己那一份撕線的複製（因為左右半邊本來就是整張卡片各自的完整複製，
+     撕線也在複製範圍內）。平常兩邊的撕線疊在正中間、看起來就是同一條線；撕開時要讓兩邊
+     各自留一條線在自己的切邊旁邊，不是這條共用的線被攔腰裁成兩段（裁在正中央的話，兩邊
+     各自只分到線寬的一半，很容易其中一邊視覺上完全看不到）。左右半邊各自把線往自己那一側
+     推開一點點，撕線裁切邊界（50%）左右各留出完整一條線的空間。 */
+  .ticket__half--left .ticket__tear-line{left:calc(50% - 2px);}
+  .ticket__half--right .ticket__tear-line{left:calc(50% + 2px);}
+
+  /* 圖示比上一版縮小（38px→32px），邊線維持——沒有邊線色塊看起來像印刷上去的，
+     不像「貼上去」的貼紙／蠟封；縮小之後跟貫穿全高的撕線比例才協調，不會頭重腳輕。 */
+  .ticket__icon{position:relative;z-index:2;width:32px;height:32px;border-radius:50%;
+    border:1.6px solid currentColor;background:#fff;display:flex;align-items:center;justify-content:center;
+    box-shadow:0 1px 2px rgba(34,34,30,0.08);transition:transform 150ms var(--ease-out);}
+  .ticket__icon svg{width:14px;height:14px;}
+  .ticket-wrap.is-peeking .ticket .ticket__icon{transform:rotate(-6deg);}
+
+  .info{min-width:0;flex:1;align-self:center;}
+  .name{font-weight:650;font-size:14px;color:var(--ink);}
+  .meta{font-size:11.5px;color:var(--ink-soft);margin-top:3px;white-space:nowrap;}
+  .meta span+span::before{content:"·";margin:0 6px;color:var(--vault-line-strong);}
+
+  /* 郵戳徽章——直接照抄 9-envelope-list.html 的尺寸／文字擺放（80px 大圖示＋文字並排，
+     獨立固定寬度欄位，圖示用 absolute 疊出列高之外，不撐開整列高度）。 */
+  .postmark-slot{position:relative;align-self:center;width:90px;height:36px;flex-shrink:0;}
+  .postmark{position:absolute;left:0;top:50%;width:90px;transform:translateY(-50%);display:flex;align-items:center;gap:6px;}
+  .postmark img{width:56px;height:56px;object-fit:contain;flex-shrink:0;}
+  .postmark .pm-text{font-size:11px;font-weight:800;letter-spacing:-.01em;line-height:1.25;white-space:normal;max-width:40px;}
+  .postmark.lock .pm-text{color:var(--brass-deep);}
+  .postmark.warn .pm-text{color:var(--void-red);}
+
+  /* 固定寬度＋靠右對齊（照抄 9-envelope-list.html 的既有作法）：不管這一列的動作按鈕是
+     1 顆還是 2 顆，.actions 這個欄位的寬度都一樣、按鈕永遠貼著欄位右緣——這樣緊接在它
+     前面的郵戳欄位（.postmark-slot）水平位置才會真正固定，不會因為隔壁按鈕數量不同、
+     .info 那個 flex:1 欄位跟著吸收/釋放空間，把郵戳擠著跟著飄移。寬度抓 180px，足夠容納
+     「解密」+「Passkey」兩顆按鈕還有間距。 */
+  .actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-shrink:0;
+    align-self:center;width:180px;}
+  .actions button{border:1px solid var(--vault-line-strong);background:#fff;font:inherit;font-weight:600;
+    font-size:12px;padding:7px 13px;border-radius:var(--radius-sm);color:var(--ink);cursor:pointer;
+    transition:transform 150ms var(--ease-out);}
+  .actions button:active{transform:scale(0.97);}
+  /* 動作按鈕全部統一成白底外框，不特別標示哪一顆是「主要」——每一列實際會開放哪些按鈕
+     本來就不固定（有的列 2 顆、有的列 1 顆），如果金色實心只套在其中一顆，那顆金色按鈕
+     在畫面上的左右位置會隨列而變，看起來像色塊亂跳，反而更亂，不如統一成同一種樣式。 */
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="title-bar">
+    <div class="traffic-lights">
+      <button class="traffic-light traffic-light--close"></button>
+      <button class="traffic-light traffic-light--minimize"></button>
+      <button class="traffic-light traffic-light--maximize"></button>
+    </div>
+    <span class="title-bar__brand">FileLocker</span>
+  </header>
+
+  <div class="body">
+    <aside class="sidebar" id="sidebar">
+      <button class="sidebar__collapse-btn" id="collapseBtn" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 5 9 12l6 7"/></svg>
+        <span class="label">收合側欄</span>
+      </button>
+      <nav>
+        <div class="nav-item active" data-label="加密">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M6 10V8a6 6 0 1 1 12 0v2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="4" y="10" width="16" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="15" r="1.6" fill="currentColor"/></svg>
+          <span class="label">加密</span>
+        </div>
+        <div class="nav-item" data-label="資料夾防護">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"><path d="M12 3 4 6v6c0 5 3.5 7.7 8 9 4.5-1.3 8-4 8-9V6l-8-3Z"/></svg>
+          <span class="label">資料夾防護</span>
+        </div>
+        <div class="nav-item" data-label="密碼庫">
+          <svg viewBox="0 0 24 24" fill="none"><circle cx="8" cy="8" r="4.25" stroke="currentColor" stroke-width="1.8"/><path d="M11 11l9.5 9.5M16.5 15.5l3-3M19 18l2.5-2.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="label">密碼庫</span>
+        </div>
+        <div class="nav-item" data-label="設定">
+          <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="label">設定</span>
+        </div>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <div class="page-head">
+        <h1 class="page-title"><svg viewBox="0 0 24 24" fill="none"><path d="M6 10V8a6 6 0 1 1 12 0v2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="4" y="10" width="16" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="15" r="1.6" fill="currentColor"/></svg>加密</h1>
+        <div class="page-stats">6 張憑證 · 集中管理區使用 1.2 GB</div>
+      </div>
+
+      <div class="toolbar-row">
+        <div class="tabs"><button class="active">清單</button><button>歷史紀錄</button></div>
+        <div class="toolbar-row__spacer"></div>
+        <button class="btn">重新整理</button>
+        <button class="btn btn--primary">加密新檔案</button>
+        <button class="btn btn--reset" id="resetBtn" type="button">重置清單</button>
+      </div>
+
+      <p class="hint">點圖示（撕線貫穿卡片全高、圖示疊在正中間，點哪裡都算）試試撕開動畫——
+        先撕一小角、停一下（正式版這裡會跳密碼／Passkey 驗證），驗證通過才整張裂開，
+        裂開後整列會飛走、下面的列往上補位（這是測試，用右上角「重置清單」復原）。</p>
+
+      <!-- TODO（實作進 App.vue 時要做的邏輯，這裡只是先用固定顏色/圖形手刻示意，這輪還沒
+           grilling 過細節，記下來避免之後忘記）：
+           1. 判斷檔案類型（PDF／壓縮檔／Word 文件／圖片／憑證檔／資料夾…）的邏輯——目前
+              每一列的圖示、圈色都是寫死在這個 mockup 裡的範例資料，正式串接時要依實際檔案
+              （副檔名／MIME type／是不是資料夾）判斷出檔案類型。
+           2. 圖示比對邏輯——判斷出類型之後，要對到哪一個線條圖示、用哪個識別色，需要一份
+              「類型 → 圖示／顏色」的對照表，不是每個檔案類型各自散落寫在畫面裡，也要決定
+              「未知/不支援的類型」要顯示哪一種預設圖示（這輪 mockup 沒有這個 fallback）。 -->
+      <div class="list" id="list">
+        <div class="ticket-wrap">
+          <div class="ticket-stage">
+            <div class="ticket">
+              <button class="ticket__seal" type="button">
+                <span class="ticket__tear-line"></span>
+                <span class="ticket__icon" style="color:#C1502F;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></span>
+              </button>
+              <div class="info">
+                <div class="name">專案合約書.pdf</div>
+                <div class="meta"><span>PDF · 2.4 MB</span><span>合約相關</span><span>2026-08-10 14:22</span></div>
+              </div>
+              <span class="postmark-slot"></span>
+              <div class="actions"><button>解密</button><button>Passkey</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ticket-wrap">
+          <div class="ticket-stage">
+            <div class="ticket">
+              <button class="ticket__seal" type="button">
+                <span class="ticket__tear-line"></span>
+                <span class="ticket__icon" style="color:var(--brass);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg></span>
+              </button>
+              <div class="info">
+                <div class="name">家庭照片備份</div>
+                <div class="meta"><span>資料夾 · 28 個檔案</span><span>1.2 GB</span><span>2026-08-09 09:03</span></div>
+              </div>
+              <span class="postmark-slot"></span>
+              <div class="actions"><button>解密</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ticket-wrap">
+          <div class="ticket-stage">
+            <div class="ticket" style="background:var(--brass-tint);border-color:var(--brass-line);">
+              <button class="ticket__seal" type="button">
+                <span class="ticket__tear-line" style="border-left-color:var(--brass-deep);"></span>
+                <span class="ticket__icon" style="color:var(--brass);background:#fff;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3a4 4 0 0 1 4 4v10a2 2 0 1 1-4 0V8"/><path d="M11 3a4 4 0 0 1 4 4v6"/></svg></span>
+              </button>
+              <div class="info" style="color:var(--ink-soft);font-size:13px;">批次加密：<strong style="color:var(--ink);font-weight:650;">3 個檔案</strong>（報稅資料.xlsx、收據掃描.jpg 等）</div>
+              <span class="postmark-slot"></span>
+              <div class="actions"><button>全部解鎖</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ticket-wrap">
+          <div class="ticket-stage">
+            <div class="ticket">
+              <button class="ticket__seal" type="button">
+                <span class="ticket__tear-line"></span>
+                <span class="ticket__icon" style="color:#7B4FE0;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 15l4-4 4 4 4-6 4 6"/></svg></span>
+              </button>
+              <div class="info">
+                <div class="name">密碼管理備份.zip</div>
+                <div class="meta"><span>壓縮檔 · 890 KB</span><span>常用密碼</span><span>2026-08-06 21:40</span></div>
+              </div>
+              <span class="postmark-slot"><div class="postmark lock" title="巢狀鎖定 ×2"><img src="../../assets/Postmark_Nested_Lock.svg" alt="" /><span class="pm-text">×2</span></div></span>
+              <div class="actions"><button>恢復金鑰</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ticket-wrap">
+          <div class="ticket-stage">
+            <div class="ticket">
+              <button class="ticket__seal" type="button">
+                <span class="ticket__tear-line"></span>
+                <span class="ticket__icon" style="color:#2B6CB0;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v3"/></svg></span>
+              </button>
+              <div class="info">
+                <div class="name">遠端桌面憑證.pfx</div>
+                <div class="meta"><span>憑證檔 · 4 KB</span><span>公司 VPN</span><span>2026-08-05 11:02</span></div>
+              </div>
+              <span class="postmark-slot"></span>
+              <div class="actions"><button>解密</button><button>Passkey</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ticket-wrap">
+          <div class="ticket-stage">
+            <div class="ticket">
+              <button class="ticket__seal" type="button">
+                <span class="ticket__tear-line"></span>
+                <span class="ticket__icon" style="color:var(--ink-faint);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></span>
+              </button>
+              <div class="info">
+                <div class="name">個人日記.docx</div>
+                <div class="meta"><span>Word 文件 · 156 KB</span><span>2026-07-28 20:11</span></div>
+              </div>
+              <span class="postmark-slot"><div class="postmark warn" title="找不到原始位置的指標檔"><img src="../../assets/Postmark_Warning.svg" alt="" /><span class="pm-text">指標遺失</span></div></span>
+              <div class="actions"><button>解密</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  const sidebar = document.getElementById('sidebar');
+  document.getElementById('collapseBtn').addEventListener('click', () => sidebar.classList.toggle('is-collapsed'));
+
+  const tickets = [];
+
+  document.querySelectorAll('.ticket-wrap').forEach((wrap) => {
+    const stage = wrap.querySelector('.ticket-stage');
+    const card = stage.querySelector('.ticket');
+    const seal = card.querySelector('.ticket__seal');
+    const seamX = seal.offsetLeft + seal.offsetWidth / 2;
+
+    const left = card.cloneNode(true);
+    const right = card.cloneNode(true);
+    left.classList.add('ticket__half', 'ticket__half--left');
+    right.classList.add('ticket__half', 'ticket__half--right');
+    left.style.clipPath = `inset(0 calc(100% - ${seamX}px) 0 0)`;
+    right.style.clipPath = `inset(0 0 0 ${seamX}px)`;
+    stage.appendChild(left);
+    stage.appendChild(right);
+
+    let state = 'idle'; // idle | peeking | tearing | leaving | gone
+    let timers = [];
+    function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+
+    function playSequence() {
+      if (state !== 'idle') return;
+      clearTimers();
+      state = 'peeking';
+      wrap.classList.add('is-peeking');
+      // 撕一小角，停等——正式版這裡是跳密碼／Passkey 驗證視窗，這個 demo 只是單純等待。
+      timers.push(setTimeout(() => {
+        wrap.classList.remove('is-peeking');
+        wrap.classList.add('is-tearing');
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          wrap.classList.add('is-open');
+          state = 'tearing';
+          // 裂開後停留一下，讓使用者看清楚裂開的樣子，再整個飛走。
+          timers.push(setTimeout(() => {
+            wrap.classList.add('is-leaving');
+            state = 'leaving';
+            // 飛走＋淡出動畫（380ms transform／340ms opacity）要完全播完、畫面上已經看不到
+            // 任何內容了，才開始收合高度——不能在飛走途中就疊加收合，那樣 overflow:hidden
+            // 會把還沒飛完、還看得到的內容硬生生裁掉。收合起點用 JS 量測當下真實高度，
+            // 不是猜一個寫死的數字，這樣不管視窗多窄、文字換幾行，收合動畫都對得上實際尺寸。
+            timers.push(setTimeout(() => {
+              const measuredHeight = wrap.scrollHeight;
+              wrap.style.maxHeight = `${measuredHeight}px`;
+              wrap.classList.add('is-collapsing');
+              requestAnimationFrame(() => requestAnimationFrame(() => {
+                wrap.classList.add('is-gone');
+                state = 'gone';
+              }));
+            }, 400));
+          }, 550));
+        }));
+      }, 1000));
+    }
+
+    function reset() {
+      clearTimers();
+      wrap.classList.remove('is-peeking', 'is-tearing', 'is-open', 'is-leaving', 'is-collapsing', 'is-gone');
+      wrap.style.maxHeight = '';
+      state = 'idle';
+    }
+
+    seal.addEventListener('click', playSequence);
+    tickets.push({ reset });
+  });
+
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    tickets.forEach((t) => t.reset());
+  });
+</script>
+</body>
+</html>

@@ -24,6 +24,8 @@ import lockLightUrl from './assets/Lock_Light.svg'
 import lockDarkUrl from './assets/Lock_Dark.svg'
 import warningLightUrl from './assets/Warning_Light.svg'
 import warningDarkUrl from './assets/Warning_Dark.svg'
+import VaultWheelIcon from './components/VaultWheelIcon.vue'
+import VaultAddFolderOverlay from './components/VaultAddFolderOverlay.vue'
 import { sendMessage, requestMessage, resolvePending, rejectAllPending } from './composables/useIpc.js'
 import {
   groupVaultItems,
@@ -204,7 +206,11 @@ function handleGlobalKeydown(event) {
   if (event.key !== 'Escape') {
     return
   }
-  if (confirmDialogState.value) {
+  if (folderGuardOverlayVisible.value) {
+    // 金庫層 z-index 蓋過其他所有彈窗，一定排最優先——跟點外面立即取消是同一套邏輯
+    // （見 onFolderGuardAddOverlayCancel），不再播剩餘的關門動畫。
+    onFolderGuardAddOverlayCancel()
+  } else if (confirmDialogState.value) {
     resolveConfirmDialog(false)
   } else if (choiceDialogState.value) {
     resolveChoiceDialog(null)
@@ -295,6 +301,25 @@ const isTogglingFolderGuardAutoRelock = ref(false)
 const folderGuardItems = ref([])
 const isLoadingFolderGuard = ref(false)
 const folderGuardSetupPassword = ref('')
+
+// ---- 金庫門動畫：見《資料夾防護_金庫門_定案文件.md》。轉輪圖示元件實例用路徑當 key 存放，
+// 這樣才能在解鎖/上鎖/批次解鎖成功時，指名呼叫對應那一列的 spin() 播放完整旋轉動畫。
+// resolveFolderGuardPick 是「新增資料夾」開門儀式專用的輕量 resolver（不套用既有的
+// requestMessage/pendingResolvers 機制——那個以 response-type 字串當 key，同一時間只支援
+// 一個在途請求，會跟其他呼叫 pickFolder 的地方衝突，見定案文件〈新增資料夾的開門儀式〉）。
+const folderGuardWheelRefs = {}
+const folderGuardOverlayVisible = ref(false)
+const folderGuardOverlayRef = ref(null)
+let resolveFolderGuardPick = null
+let folderGuardJustAddedPath = null
+
+function setFolderGuardWheelRef(path, el) {
+  if (el) {
+    folderGuardWheelRefs[path] = el
+  } else {
+    delete folderGuardWheelRefs[path]
+  }
+}
 const folderGuardSetupPasswordConfirm = ref('')
 // 右鍵「上鎖」在整個功能還沒設定過密碼時，會先開主視窗導引完成首次設定（見 App.xaml.cs
 // HandleFolderGuardLockLaunch），這裡暫存那批路徑，設定完成後自動接著上鎖，不用使用者
@@ -919,7 +944,10 @@ const messageHandlers = {
       isChangingVaultPath.value = true
       sendMessage('changeVaultPath', { newPath: data.path })
     } else if (data.purpose === 'folderGuardLock') {
-      sendMessage('lockFolders', { paths: [data.path] })
+      // 選定資料夾只回報結果，實際發 lockFolders 的時機交給 pickFolderGuardFolder 自己收尾
+      // （要等關門動畫播完、懸浮層消失才上鎖，見定案文件〈新增資料夾的開門儀式〉）。
+      resolveFolderGuardPick?.({ path: data.path })
+      resolveFolderGuardPick = null
     } else {
       // 資料夾選擇（單選）走這裡，加到清單裡而不是取代整份清單。
       if (!encryptPaths.value.includes(data.path)) {
@@ -992,6 +1020,11 @@ const messageHandlers = {
     // 使用者在「自己選地方存」流程中途按了取消，把暫存的項目清掉，避免下次選檔誤觸發解密。
     if (data.purpose === 'decryptDestination') {
       pendingDecryptItem.value = null
+    } else if (data.purpose === 'folderGuardLock') {
+      // 取消跟選定走同一套收場（都播完整關門動畫才讓懸浮層消失），path 給 null 讓
+      // pickFolderGuardFolder 知道不用真的呼叫 lockFolders。
+      resolveFolderGuardPick?.({ path: null })
+      resolveFolderGuardPick = null
     }
   },
 
@@ -1149,8 +1182,19 @@ const messageHandlers = {
     if (failedCount > 0) {
       showToast(t('folderGuard.lockPartialFailed', { count: failedCount }))
     }
+    // 剛透過「新增資料夾」開門儀式加進來的那筆，等清單真的刷新完、Vue 也把新的一列渲染出來
+    // 之後，才對那一列的轉輪播一段反向旋轉（呼應信封清單「新列進場、轉盤同時反向旋轉」的
+    // 既有概念，見定案文件〈金庫門分頁的互動細節〉）。
+    const addedPath = folderGuardJustAddedPath
+    folderGuardJustAddedPath = null
     if (activeTab.value === 'folderGuard') {
-      refreshFolderGuardList()
+      refreshFolderGuardList().then(() => {
+        if (addedPath) {
+          nextTick(() => {
+            folderGuardWheelRefs[addedPath]?.spin('lock')
+          })
+        }
+      })
     }
   },
 
@@ -1534,8 +1578,75 @@ async function disableFolderGuardAction() {
   passwordPromptValue.value = ''
 }
 
-function pickFolderGuardFolder() {
+// 「新增資料夾」的開門儀式（定案文件〈新增資料夾的開門儀式〉）：門開完才彈原生選資料夾
+// 對話框，選定／取消都播完整關門動畫才讓懸浮層消失，選定的話不需要密碼、立即自動保護。
+// pickFolder/pathPicked 是廣播式訊息、不是 requestMessage 那種一對一 request/response，
+// 所以用 resolveFolderGuardPick 這個模組層級變數手動接起「使用者選完或取消了」這個時機。
+// folderGuardAddCancelled 是點外面立即取消用的旗標——onFolderGuardAddOverlayCancel 會直接
+// 把懸浮層關掉，這裡只要在每個 await 之後檢查這個旗標，發現已經被取消就直接 return，
+// 不要再繼續發任何後續的 IPC 訊息（懸浮層都已經不在了，繼續做只是白工）。
+let folderGuardAddCancelled = false
+
+async function pickFolderGuardFolder() {
+  folderGuardAddCancelled = false
+  folderGuardOverlayVisible.value = true
+  await nextTick()
+  await folderGuardOverlayRef.value?.playOpen()
+  if (folderGuardAddCancelled) {
+    return
+  }
   sendMessage('pickFolder', { purpose: 'folderGuardLock' })
+  const { path } = await new Promise((resolve) => {
+    resolveFolderGuardPick = resolve
+  })
+  if (folderGuardAddCancelled) {
+    return
+  }
+  await folderGuardOverlayRef.value?.playClose()
+  folderGuardOverlayVisible.value = false
+  if (path) {
+    // 新列進場動畫（轉盤反向旋轉）在 lockFoldersResult 收到成功回應、列表刷新完成後才觸發，
+    // 見 messageHandlers.lockFoldersResult。
+    folderGuardJustAddedPath = path
+    sendMessage('lockFolders', { paths: [path] })
+  }
+}
+
+// 點金庫懸浮層背景（圖示以外的地方）＝立即取消，不管目前播到開門還是關門的哪個階段，
+// 直接把懸浮層關掉（連同還沒播完的轉盤/門扇動畫一起中斷），不再像之前那樣還要等一段完整
+// 的關門動畫播完才收場——這是這個專案「動畫一定播完」慣例的刻意例外，使用者主動要求立刻
+// 關掉時，乾脆俐落比動畫完整度更重要。
+function onFolderGuardAddOverlayCancel() {
+  folderGuardAddCancelled = true
+  folderGuardOverlayVisible.value = false
+  resolveFolderGuardPick?.({ path: null })
+  resolveFolderGuardPick = null
+}
+
+function onFolderGuardWheelIconClick(item) {
+  // 點轉盤：小幅轉動立刻彈回的即時觸感回饋，接著沿用既有「解鎖」按鈕的驗證邏輯，不重寫。
+  folderGuardWheelRefs[item.path]?.wiggle()
+  unlockFolderGuardItem(item)
+}
+
+function playFolderGuardUnlockAnimation(path) {
+  return folderGuardWheelRefs[path]?.spin('unlock') ?? Promise.resolve()
+}
+
+// 「全部解鎖」批次動畫：後端只回單一聚合結果，沒有逐筆事件（見定案文件），這裡前端自己
+// 記住觸發前的鎖定路徑清單，用 setTimeout 錯開 80-120ms 依序播放每列的完整旋轉。
+function playFolderGuardBatchUnlockAnimation(paths) {
+  const STAGGER_MS = 100
+  return Promise.all(
+    paths.map(
+      (path, index) =>
+        new Promise((resolve) => {
+          window.setTimeout(() => {
+            playFolderGuardUnlockAnimation(path).then(resolve)
+          }, index * STAGGER_MS)
+        })
+    )
+  )
 }
 
 async function unlockFolderGuardItem(item) {
@@ -1547,6 +1658,7 @@ async function unlockFolderGuardItem(item) {
     })
     if (result.success) {
       showToast(t('folderGuard.unlockSuccess'), 'success')
+      await playFolderGuardUnlockAnimation(item.path)
       refreshFolderGuardList()
     } else {
       showToast(translateError(result.errorCode, result.errorDetail, t('folderGuard.unlockFailed')))
@@ -1562,18 +1674,20 @@ async function confirmUnlockAllFolderGuard() {
   if (!confirmed) {
     return
   }
+  const lockedPaths = folderGuardItems.value.filter((i) => i.status === 'Locked').map((i) => i.path)
   // Passkey 已設定就只能用 Passkey，失敗/取消不會退回密碼輸入框。
   if (folderGuardPasskeyEnabled.value) {
     const result = await requestMessage('unlockAllFolders', 'unlockAllFoldersResult', {})
     if (result.success) {
       showToast(t('folderGuard.unlockAllSuccess'), 'success')
+      await playFolderGuardBatchUnlockAnimation(lockedPaths)
       refreshFolderGuardList()
     } else {
       showToast(translateError(result.errorCode, result.errorDetail, t('folderGuard.unlockFailed')))
     }
     return
   }
-  passwordPromptContext.value = { mode: 'folderGuardUnlockAll' }
+  passwordPromptContext.value = { mode: 'folderGuardUnlockAll', lockedPaths }
   passwordPromptValue.value = ''
 }
 
@@ -1588,7 +1702,10 @@ function openFolderGuardItemInExplorer(item) {
 
 // 重用「新增資料夾」既有的 lockFolders IPC（見 submitFolderGuardSetup），上鎖本身不需要密碼驗證
 // （規劃文件第 6 節：密碼只用來驗證解鎖身份），這裡也一樣不用先跳確認彈窗或密碼輸入。
+// 轉輪播一段反方向完整旋轉，不等後端回應（後端本來就是 fire-and-forget，見定案文件〈金庫門
+// 分頁的互動細節〉「再次上鎖」那一列）。
 function relockFolderGuardItem(item) {
+  folderGuardWheelRefs[item.path]?.spin('lock')
   sendMessage('lockFolders', { paths: [item.path] })
 }
 
@@ -3079,6 +3196,7 @@ async function submitPasswordPrompt() {
     })
     if (result.success) {
       showToast(t('folderGuard.unlockSuccess'), 'success')
+      await playFolderGuardUnlockAnimation(ctx.item.path)
       refreshFolderGuardList()
     } else {
       showToast(translateError(result.errorCode, result.errorDetail, t('folderGuard.unlockFailed')))
@@ -3087,6 +3205,7 @@ async function submitPasswordPrompt() {
     const result = await requestMessage('unlockAllFolders', 'unlockAllFoldersResult', { password })
     if (result.success) {
       showToast(t('folderGuard.unlockAllSuccess'), 'success')
+      await playFolderGuardBatchUnlockAnimation(ctx.lockedPaths ?? [])
       refreshFolderGuardList()
     } else {
       showToast(translateError(result.errorCode, result.errorDetail, t('folderGuard.unlockFailed')))
@@ -3924,12 +4043,14 @@ function historyDetailText(entry) {
             <div v-if="folderGuardItems.length > 0" class="table-scroll">
               <table class="table table--folder-guard">
                 <colgroup>
-                  <col style="width: 40%;" />
+                  <col style="width: 52px;" />
+                  <col style="width: 37%;" />
                   <col style="width: 15%;" />
                   <col style="width: 45%;" />
                 </colgroup>
                 <thead>
                   <tr>
+                    <th></th>
                     <th>{{ t('folderGuard.colPath') }}</th>
                     <th>{{ t('folderGuard.colStatus') }}</th>
                     <th></th>
@@ -3937,6 +4058,20 @@ function historyDetailText(entry) {
                 </thead>
                 <tbody>
                   <tr v-for="item in folderGuardItems" :key="item.path">
+                    <td>
+                      <VaultWheelIcon
+                        :ref="(el) => setFolderGuardWheelRef(item.path, el)"
+                        :locked="item.status === 'Locked'"
+                        :size="32"
+                        :class="{ 'vault-wheel-icon--clickable': item.status === 'Locked' }"
+                        :aria-label="item.status === 'Locked' ? t('folderGuard.unlock') : undefined"
+                        :role="item.status === 'Locked' ? 'button' : undefined"
+                        :tabindex="item.status === 'Locked' ? 0 : undefined"
+                        @click="item.status === 'Locked' && onFolderGuardWheelIconClick(item)"
+                        @keydown.enter="item.status === 'Locked' && onFolderGuardWheelIconClick(item)"
+                        @keydown.space.prevent="item.status === 'Locked' && onFolderGuardWheelIconClick(item)"
+                      />
+                    </td>
                     <td><div class="cell-name" :title="item.path">{{ item.path }}</div></td>
                     <td>{{ item.status === 'Locked' ? t('folderGuard.statusLocked') : t('folderGuard.statusUnlocked') }}</td>
                     <td>
@@ -3962,6 +4097,14 @@ function historyDetailText(entry) {
               </table>
             </div>
           </template>
+
+          <Transition name="vault-overlay">
+            <VaultAddFolderOverlay
+              v-if="folderGuardOverlayVisible"
+              ref="folderGuardOverlayRef"
+              @cancel="onFolderGuardAddOverlayCancel"
+            />
+          </Transition>
         </div>
 
         <div v-else-if="activeTab === 'passwordLocker'" key="passwordLocker">
@@ -4133,7 +4276,9 @@ function historyDetailText(entry) {
                   <tbody>
                     <tr v-for="item in group.items" :key="item.id">
                       <td>
-                        <input type="checkbox" :checked="passwordLockerSelectedIds.has(item.id)" @change="togglePasswordLockerSelected(item.id)" />
+                        <span class="checkbox-ring">
+                          <input type="checkbox" :checked="passwordLockerSelectedIds.has(item.id)" @change="togglePasswordLockerSelected(item.id)" />
+                        </span>
                       </td>
                       <td>
                         <div
@@ -4676,7 +4821,7 @@ function historyDetailText(entry) {
 
     <!-- 密碼輸入彈窗：取代原本明碼顯示的 prompt()，用遮罩密碼欄位。 -->
     <Transition name="modal">
-      <div v-if="passwordPromptContext" class="modal-overlay">
+      <div v-if="passwordPromptContext" class="modal-overlay" @click.self="cancelPasswordPrompt">
         <div class="modal">
           <h2 class="modal__title">{{ passwordPromptContext.mode === 'delete' ? t('list.delete') : t('passwordPrompt.title') }}</h2>
           <p v-if="passwordPromptContext.mode === 'delete'" class="modal__subtitle">{{ t('confirm.deletePasswordPrompt', { name: passwordPromptContext.item.originalName }) }}</p>
@@ -4727,7 +4872,7 @@ function historyDetailText(entry) {
 
     <!-- 恢復金鑰輸入彈窗：清單頁按「恢復金鑰解鎖」後跳出。 -->
     <Transition name="modal">
-      <div v-if="recoveryKeyPromptItem" class="modal-overlay">
+      <div v-if="recoveryKeyPromptItem" class="modal-overlay" @click.self="cancelRecoveryKeyPrompt">
         <div class="modal">
           <h2 class="modal__title">{{ t('recoveryKeyPrompt.title') }}</h2>
           <p class="modal__subtitle">{{ t('recoveryKeyPrompt.unlock', { name: recoveryKeyPromptItem.originalName }) }}</p>
@@ -4749,7 +4894,7 @@ function historyDetailText(entry) {
     <!-- 密碼庫驗證彈窗：跟共用的 passwordPromptContext 分開，因為這裡多了「改用恢復金鑰」
          的切換（見規劃文件第 11.2 節）。 -->
     <Transition name="modal">
-      <div v-if="passwordLockerVerifyState" class="modal-overlay">
+      <div v-if="passwordLockerVerifyState" class="modal-overlay" @click.self="cancelPasswordLockerVerify">
         <div class="modal">
           <h2 class="modal__title">{{ t('passwordLocker.verifyTitle') }}</h2>
           <p class="modal__subtitle">{{ passwordLockerVerifyState.usingRecoveryKey ? t('passwordLocker.verifyByRecoveryKeyPrompt') : t('passwordLocker.verifyPasswordPrompt') }}</p>
@@ -4825,7 +4970,7 @@ function historyDetailText(entry) {
     <!-- 密碼庫重設密碼：主金鑰不變，只是重新包一次（見 PasswordLockerService.ChangePasswordAsync），
          既有憑證不用重新輸入。跟新增/編輯表單同樣的疊層理由，驗證彈窗開著時暫時藏起來。 -->
     <Transition name="modal">
-      <div v-if="passwordLockerChangePasswordState && !passwordLockerVerifyState" class="modal-overlay">
+      <div v-if="passwordLockerChangePasswordState && !passwordLockerVerifyState" class="modal-overlay" @click.self="closePasswordLockerChangePasswordForm">
         <div class="modal">
           <h2 class="modal__title">{{ t('passwordLocker.changePasswordButton') }}</h2>
           <div class="field">
@@ -4880,7 +5025,7 @@ function historyDetailText(entry) {
          同時顯示的話後面的會蓋住前面的，這裡驗證彈窗在後面，會蓋住這個表單，所以驗證彈窗開著
          的時候暫時把這個表單藏起來（狀態還在，不會遺失已填的內容），驗證完成或取消後再繼續。 -->
     <Transition name="modal">
-      <div v-if="passwordLockerFormState && !passwordLockerVerifyState" class="modal-overlay">
+      <div v-if="passwordLockerFormState && !passwordLockerVerifyState" class="modal-overlay" @click.self="closePasswordLockerForm">
         <div class="modal">
           <h2 class="modal__title">{{ passwordLockerFormState.id ? t('passwordLocker.formEditTitle') : t('passwordLocker.formAddTitle') }}</h2>
 
@@ -5020,7 +5165,7 @@ function historyDetailText(entry) {
          另外呼叫後端。只列「網站」類別——「已加密檔案」沒有瀏覽器情境，關聯網域對它
          沒有意義。 -->
     <Transition name="modal">
-      <div v-if="passwordLockerPickerVisible" class="modal-overlay">
+      <div v-if="passwordLockerPickerVisible" class="modal-overlay" @click.self="passwordLockerPickerVisible = false">
         <div class="modal">
           <h2 class="modal__title">{{ t('passwordLocker.associatePickerTitle') }}</h2>
           <div class="table-scroll" style="max-height: 320px;">
@@ -5051,7 +5196,7 @@ function historyDetailText(entry) {
 
     <!-- 第二步：輸入要新增的網域，標題選填（覆蓋自動組合出來的顯示名稱）。 -->
     <Transition name="modal">
-      <div v-if="passwordLockerAssociateState" class="modal-overlay">
+      <div v-if="passwordLockerAssociateState" class="modal-overlay" @click.self="passwordLockerAssociateState = null">
         <div class="modal">
           <h2 class="modal__title">{{ t('passwordLocker.associateDomainTitle', { title: passwordLockerDisplayTitle(passwordLockerAssociateState.item) }) }}</h2>
           <div class="field">
@@ -5316,6 +5461,19 @@ body {
   background: #28C840;
 }
 
+/* 紅綠燈三顆各自跟自己的顏色一致，不要三顆都套用全域的強調色焦點框。 */
+.traffic-light--close:focus-visible {
+  outline-color: #FF5F57;
+}
+
+.traffic-light--minimize:focus-visible {
+  outline-color: #FEBC2E;
+}
+
+.traffic-light--maximize:focus-visible {
+  outline-color: #28C840;
+}
+
 .traffic-lights:hover .traffic-light {
   color: rgba(0, 0, 0, 0.55);
 }
@@ -5368,6 +5526,20 @@ body {
   padding: 0.9rem 0.75rem;
   cursor: pointer;
   transition: color var(--duration-fast) ease;
+  /* 沒有可見的框，平常看不出差別，但要讓 focus-visible 的焦點框跟著圓角，不是直角。 */
+  border-radius: var(--radius-sm);
+}
+
+/* 這顆按鈕的可點擊範圍（padding）刻意留得比視覺文字大，方便滑鼠點擊，但焦點框貼著整個
+   點擊範圍畫的話看起來會離文字太遠、鬆散。改成負的 outline-offset，把焦點框往內縮到貼近
+   文字本身——`outline` 純粹是視覺繪製，不會改變 `padding`/可點擊範圍，滑鼠可點的區域
+   還是原本那一整塊。用負的 offset 往內縮時，瀏覽器算出來的圓角是「原本的 border-radius
+   加上這個負值」——6px 圓角減掉 8px 內縮會變成負數、直接被砍成 0，圓角就整個消失、
+   焦點框看起來變成直角。這裡連圓角也一起放大到 14px（=6px + 8px），縮進去之後才會
+   剛好留下原本設計的 6px 圓角觀感，不是純粹放大圓角本身。 */
+.tab-bar__item:focus-visible {
+  outline-offset: -8px;
+  border-radius: 14px;
 }
 
 .tab-bar__item:hover:not(.is-active) {
@@ -5402,6 +5574,11 @@ body {
   justify-content: center;
   flex: 1;
   overflow-y: auto;
+  /* `overflow-y: auto` 讓瀏覽器把這個捲動容器本身也算進可鍵盤聚焦的元素（跟鍵盤捲動有關的
+     瀏覽器內建行為，不是我們自己加的 tabindex，所以不會被 [tabindex]:focus-visible 那條
+     規則吃到）——它沒有圓角、範圍又是整個視窗高度，套用全域焦點框樣式看起來會像一個跑版的
+     大方框。這個容器本身不是一個有意義的互動目標，直接關掉它的焦點框。 */
+  outline: none;
 }
 
 .page {
@@ -5657,6 +5834,37 @@ textarea.text-input {
   accent-color: var(--color-accent);
 }
 
+/* 核取方塊本身是瀏覽器原生元件，實測 Chromium 對它的 outline 完全不理會作者設的
+   border-radius（就算直接、無條件地設 border-radius 在 input 本身，算出來的
+   computed style 還是 0px）——這是原生表單元件的限制，不是我們的 CSS 寫錯。焦點框
+   要有圓角，只能畫在外面包一層的容器上，不能畫在 input 自己身上。這裡先把 input
+   自己的原生方形焦點框關掉，改成分別在下面兩種情境的外層容器上畫圓角焦點框：
+   ①已經用 `<label class="checkbox-field">` 包住核取方塊＋文字的地方（多數情況），
+   ②密碼庫清單那種沒有任何包裝、直接放進表格儲存格的裸 `<input>`（唯一一處，另外包了
+   一層 `.checkbox-ring`）。 */
+input[type='checkbox']:focus-visible {
+  outline: none;
+}
+
+.checkbox-field:focus-within {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.checkbox-ring {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+
+.checkbox-ring:focus-within {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 .checkbox-field__icon {
   width: 16px;
   height: 16px;
@@ -5792,6 +6000,32 @@ textarea.text-input {
 .button-row--nowrap {
   flex-wrap: nowrap;
   overflow-x: auto;
+  /* `overflow-x: auto` 依 CSS 規範會連帶把 `overflow-y` 也強制變成非 visible（兩軸只要有
+     一軸不是 visible，另一軸就不能維持 visible），結果把裡面按鈕 focus-visible 那圈往外
+     凸出的 `outline-offset` 裁掉一截，看起來像貼著按鈕邊緣的方形線，不是預期中鬆一點的
+     圓角框。用等量的 padding 撐出裁切緩衝、再用反向 margin 把外觀位置拉回原本的樣子，
+     兩者互相抵銷，視覺上這一列該在哪裡還是在哪裡。 */
+  padding: 4px;
+  margin: -4px;
+}
+
+/* 鍵盤 Tab 導覽的焦點框：不用瀏覽器預設那種貼在元件邊緣的細黑線，統一改成跟元件本身
+   保持一點距離（`outline-offset`）的描邊，顏色用 `--color-accent`——這個變數本來就會依
+   目前作用中的分頁色調自動換色（見 `.theme-*` 那組規則），所以焦點框顏色天生就跟著「目前
+   選擇的按鈕／文字」使用的同一套顏色走，不用每個元件各自寫一次。Chromium（WebView2 底層）
+   繪製 outline 時本來就會貼合元件自己的圓角，不需要額外設定 `outline-radius`。危險動作
+   （刪除／停用等）的按鈕改用 `--color-danger`，呼應這些按鈕平常顯示的紅色，不是隨便套用
+   跟其他按鈕一樣的強調色。 */
+a:focus-visible,
+button:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.button--danger:focus-visible,
+.link-button--danger:focus-visible {
+  outline-color: var(--color-danger);
 }
 
 .button {
@@ -5890,6 +6124,8 @@ textarea.text-input {
   text-decoration: underline;
   text-underline-offset: 2px;
   transition: color var(--duration-fast) ease;
+  /* 沒有可見的框，平常看不出差別，但要讓 focus-visible 的焦點框跟著圓角，不是直角。 */
+  border-radius: var(--radius-sm);
 }
 
 .link-button:hover {
@@ -6307,6 +6543,12 @@ textarea.text-input {
 .table-scroll {
   overflow-x: auto;
   border-radius: var(--radius-md);
+  /* `overflow-x: auto` 會連帶把 `overflow-y` 也強制變成非 visible（同一個 CSS 規範規則，
+     跟 `.button-row--nowrap` 那個焦點框被裁掉的問題一樣），把裡面表單元素/可聚焦儲存格
+     focus-visible 往外凸出的光暈/焦點框裁掉一截。用等量 padding 撐出裁切緩衝、反向 margin
+     把外觀位置拉回來抵銷，視覺上這個區塊該在哪裡還是在哪裡。 */
+  padding: 4px;
+  margin: -4px;
 }
 
 .table {
@@ -6469,9 +6711,25 @@ textarea.text-input {
 }
 
 /* 按鈕本身的 padding 比純文字儲存格深，文字位置本來就比較低，這裡把左側
-   路徑／狀態欄文字稍微往下移，跟右側按鈕裡文字的垂直位置對齊。 */
-.table--folder-guard td:not(:last-child) {
+   路徑／狀態欄文字稍微往下移，跟右側按鈕裡文字的垂直位置對齊。轉輪圖示欄（第一欄）不是
+   文字，排除在外、改用置中對齊。 */
+.table--folder-guard td:not(:last-child):not(:first-child) {
   padding-top: 1rem;
+}
+
+.table--folder-guard td:first-child {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.vault-wheel-icon--clickable {
+  cursor: pointer;
+}
+
+.vault-wheel-icon--clickable:focus-visible {
+  outline: 2px solid var(--color-accent, #a8770f);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm, 6px);
 }
 
 /* 已加密清單：跟資料夾防護同樣的理由，但排除最左邊的永久刪除按鈕欄
@@ -6511,6 +6769,9 @@ textarea.text-input {
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: default;
+  /* 沒有可見的框，平常看不出差別，但要讓 `.cell-clickable` 那種可以 Tab 到、可以點擊的
+     欄位，focus-visible 的焦點框跟著圓角，不是直角。 */
+  border-radius: var(--radius-sm);
 }
 
 /* 密碼庫清單裡「點一下就複製／顯示」的帳號欄位——蓋掉 .cell-name 的 cursor: default，
@@ -6888,7 +7149,12 @@ textarea.text-input {
   justify-content: center;
   padding: 1.5rem;
   z-index: 100;
-  transition: opacity var(--duration-base) var(--ease-out);
+  /* 模糊材質要「materialize」進出場（apple-design〈12. Materials & depth〉），不是只有
+     opacity 淡入淡出、blur 半徑瞬間跳出來——backdrop-filter 也要參與過場，才會有清晰漸變
+     模糊的實體感，而不是背景色淡出、模糊卻硬切。 */
+  transition: opacity var(--duration-base) var(--ease-out),
+    backdrop-filter var(--duration-base) var(--ease-out),
+    -webkit-backdrop-filter var(--duration-base) var(--ease-out);
 }
 
 @media (prefers-reduced-transparency: reduce) {
@@ -6934,6 +7200,10 @@ textarea.text-input {
 .modal-enter-from,
 .modal-leave-to {
   opacity: 0;
+  /* 進出場的模糊起點/終點要明確寫出來，CSS 過場才能內插——不寫的話瀏覽器沒有「起點」
+     可以動畫，backdrop-filter 只會瞬間出現/消失。 */
+  backdrop-filter: blur(0px);
+  -webkit-backdrop-filter: blur(0px);
 }
 
 .modal-leave-active {

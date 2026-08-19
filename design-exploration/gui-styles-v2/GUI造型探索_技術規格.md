@@ -1155,6 +1155,320 @@ setTimeout(() => {
 「撕一小角」的同時，圖示本身也帶一點小幅旋轉（-6deg），呼應撕邊本身的位移方向，讓整個「圖示
 +撕邊」的組合在 peeking 狀態下感覺是同一個物件在被輕輕掀動，不是圖示原地不動、只有旁邊的線在動。
 
+### 2.10 信封加密流程接入側欄殼子：座標與動畫時序
+
+對應〈定案文件〉第 5 節。這節記錄把 `12-file-tab-merged.html`／`8-envelope-assembled.html`
+兩份各自獨立的 mockup 整合進 `13-sidebar-ticket-shell.html` 時，實際踩到的坑跟最終做法。
+
+#### 遺漏的 `--ease-inout` 變數——兩個「動畫看起來完全沒播」的回報，同一個根因
+
+`8-envelope-assembled.html`／`12-file-tab-merged.html` 的 `:root` 都定義了 `--ease-inout`，
+這份檔案的信封開合轉場（`.flap-group`）、寄出飛走動畫也直接抄了 `var(--ease-inout)`，卻沒把
+這個變數本身抄過來。CSS 規則：`var()` 引用一個未定義、又沒有備援值的自訂屬性時，**整條宣告**
+直接失效、退回瀏覽器預設（`transition:all 0s`）——不是變慢或變頓，是根本沒有播。這正是使用者
+回報「寄出動畫完全看不到」「開合動畫感覺卡」兩個表面上不相干的問題的同一個根因，排查過程中
+先誤判過效能問題（懷疑 3D 巢狀結構太多層），後來用 Playwright 量測
+`getComputedStyle().transitionDuration` 才抓到是變數沒接上。修法：在 `:root` 補上
+`--ease-inout:cubic-bezier(0.77,0,0.175,1);`（值跟 `8`/`12` 一致）。
+
+#### `.btn primary` vs `.btn--primary`：全站主要按鈕從未真正上色過
+
+這份檔案的按鈕系統定義的是 `.btn--primary`（BEM 修飾符寫法），但整份 markup 裡所有原本該是
+主按鈕的地方（下一步、加密確認、已存檔/關閉、解鎖、選擇存檔位置……）寫的是 `class="btn
+primary"`（兩個獨立 class，`.primary` 這個 class 從未被定義過）。因為 `.btn` 本身的樣式已經
+是完整可視的白底外框按鈕，沒有拋錯、視覺上不明顯異常（只是「該金色的按鈕都是白色」），這個
+問題存在了好幾輪都沒被抓到，直到這輪整體走查才發現。修法：`sed -i 's/class="btn primary/
+class="btn btn--primary/g'` 全檔案取代。
+
+#### `.sheet` 定位：`negative margin` + `transform` 疊加會讓容器版面失控
+
+Sheet（已選檔案清單卡片／設密碼表單／恢復金鑰揭露／解密驗證，全部共用同一個容器）最初的做法
+是 `margin:-123px auto 0` 把卡片拉近信封、再疊加 `transform:translateY()` 做兩段式滑動。這個
+組合的問題：`margin` 本身會讓 `.envelope-outer` 的版面高度縮水（負邊距讓後面的內容往上吃），
+而動畫過程中的 `transform` 又是「相對於這個已經被 margin 拉近後的靜止點再位移」——兩者疊加、
+再加上整層疊層本身要置中（`align-items:center`），會讓 Sheet 的實際位置在動畫不同階段完全
+不可預期。使用者截圖顯示 Sheet 出場時整個飄到視窗很下面、跟信封脫鉤，就是這個連鎖反應的結果。
+
+最終做法：**Sheet 完全不參與 `.envelope-outer` 的版面排版**——不用 `margin`、不佔版面高度，
+改用 `position:absolute` 釘死在信封本體上一個固定座標（`left:50%;top:245px`，配合
+`transform:translate(-50%, Ny)` 只用來表達動畫位移量，不承擔置中或定位）：
+
+```css
+.sheet{position:absolute;left:50%;top:245px;z-index:2;transform:translate(-50%,0);
+  transition:transform 280ms cubic-bezier(0.32,0.72,0,1),opacity 160ms ease;}
+.sheet--hidden{opacity:0;transform:translate(-50%,0);transition:none;}   /* 起點：不可見，停在基準點 */
+.sheet--reveal{opacity:1;transform:translate(-50%,200px);}                /* 完全清出信封輪廓外 */
+.sheet--settle{opacity:1;transform:translate(-50%,0);}                    /* 收回、疊上信封範圍 */
+```
+
+`top:245px` 是這個 420px 畫布高度的 58% 左右，對應「疊進信封可視範圍（32%~68%）下半段」這個
+使用者用 Affinity Designer 手繪示範過的深度。這樣一來 `.envelope-outer` 的版面高度永遠只由
+信封本體（420px）決定，不會被 Sheet 的位置或動畫狀態牽動，「信封置中」才是真正穩定、可預期
+的置中。
+
+退場動畫額外需要一個 `.sheet--retreat` 中繼狀態（跟 `.sheet--hidden` 最終視覺結果一樣，但
+`--hidden` 本身刻意 `transition:none`，是給「進場前瞬間重置起點」用的，不能拿來播退場——
+拿來播退場會變成「滑下去之後直接瞬間消失」，看不到真正滑回去疊上信封的過程）。
+
+#### 開場信封時序：整段落下過程都是闔著的，落地後才播開封動畫
+
+早期實作假設「落下＋回彈」的回彈力道會順勢帶開封口（跟〈定案文件〉§1.8 原本描述一致），這輪
+使用者明確糾正：信封要**從落下開始到完全定位，全程維持闔著**，只有真正落地、回彈收斂之後，
+才單獨播放開封動畫；不是回彈的一部分。時序：
+
+```js
+rig.classList.add('is-dropping');
+after(DROP_MS + 20, () => {                 // 落下+回彈動畫播完
+  rig.classList.remove('is-dropping');
+  envelope.classList.remove('is-closed');    // 這裡才開始開封
+  envelope.classList.add('is-open');
+});
+after(DROP_MS + FLAP_MS + SETTLE_HOLD_MS, () => playSheetTwoPhaseEntrance(pickedSheet));
+```
+
+（`DROP_MS=820`、`FLAP_MS=420`、`SETTLE_HOLD_MS=500`）——落下動畫本身完全不牽動 `.flap-group`
+的 class，避免兩段動畫時間軸疊在一起造成的視覺混淆。
+
+#### dropzone 提示文字的淡入時機：跟封口實際轉場對齊，不是跟 class 切換對齊
+
+`.dropzone p`（「拖曳檔案，或…」提示文字）原本 class 一切換到 `is-open` 就立刻開始淡入，但
+封口本身的 `rotateX` 轉場（`FLAP_MS=420ms`）還在播，文字會在封口都還沒轉完的時候先冒出來，
+看起來很突兀。修法是讓「打開」方向的淡入加上一個對齊 `FLAP_MS` 的 `transition-delay`，「闔上」
+方向則不加 delay、快速淡出（要讓文字在封口剛開始闔上時就趕快藏起來，不能拖到闔上動畫播完）：
+
+```css
+.dropzone p{opacity:1;transition:opacity 160ms ease 420ms;}                 /* 打開：延遲等封口轉完 */
+.envelope-outer.is-closed .dropzone p{opacity:0;transition:opacity 100ms ease;} /* 闔上：立刻淡出 */
+```
+
+#### dropzone 文字被闔上信封「穿幫」：3D 深度疊放不可靠，改用狀態驅動的 opacity
+
+`.dropzone p` 疊在信封裝飾三角形上，闔上信封（封口 `rotateX(-180deg)`）之後理論上應該被封口
+擋住看不見，實測卻會透出來。試過的失敗做法：調整 DOM 順序（把 `.dropzone` 搬到 `.flap-group`
+前面）——沒用；用 `translateZ`（正值、負值都試過）製造真正的深度差——量測後發現
+`flap-group` 旋轉軸心在自己中心，轉滿 180 度後整個平面其實還是回到 Z=0，跟同樣停在 Z=0 附近
+的扁平文字沒有真正拉開夠明顯的深度差，瀏覽器的 3D 排序在這個情境下不可靠。最終改用最直接、
+保證有效的做法：不靠 3D 疊放猜測，直接用「信封開／關」這個狀態本身控制文字透明度（即上一節
+的 `.envelope-outer.is-closed .dropzone p{opacity:0}`），跟封口實際轉到哪個角度、疊放算得
+準不準完全無關。
+
+#### 「選擇檔案」按鈕搬進 Sheet
+
+按鈕原本放在信封畫布裡（`top:50%`），跟深疊進來的 Sheet 搶位置，早期用「往上挪」硬閃過去。
+使用者直接指出根本解法：按鈕不屬於信封這個純展示/拖放目標，應該收進 Sheet（Sheet 本來就是
+操作面板的角色，取消/下一步/繼續新增都在那裡）。信封現在只剩純文字提示，不再放任何互動元素，
+不用再閃避 Sheet 的疊入範圍。按鈕本體是 `#fakePickBtn`，`display:block;width:268px`，用
+`.btn--primary` 給它「空狀態下唯一有意義的動作」該有的視覺份量。
+
+#### Sheet 高度統一：只套用在真正會交叉切換的兩個狀態
+
+「已選檔案清單」跟「設密碼」這兩張卡片會透過縮放交叉淡化（見下方液態轉場一節）直接切換，高度
+不一樣的話中途還是感覺得到「這張卡片突然變矮/變高」，不夠像同一塊東西在變形，所以統一套
+`min-height:224px`。但「還沒選檔案、只有一顆『選擇檔案』按鈕」的空狀態刻意不套這個最小高度
+——那個狀態不會直接跟設密碼畫面交叉切換（要先選了檔案、「下一步」才會啟用），沒有「兩者要看
+起來像同一塊東西」的理由，維持自己原本緊湊的高度即可：
+
+```css
+#pickedSheet.has-files, #step2Sheet{min-height:224px;display:flex;flex-direction:column;justify-content:space-between;}
+```
+
+用 JS 依「有沒有選檔案」切換 `.has-files` 這個 class 決定要不要套用（見 `renderPickedList`）。
+
+#### 輸入框聚焦色：跟信封本體邊緣線同色，脫鉤瀏覽器預設色
+
+```css
+.step2-form input[type="password"]:focus,
+.decrypt-sheet input[type="password"]:focus,
+.decrypt-sheet input[type="text"]:focus{
+  outline:none;border-color:#DCC289;box-shadow:0 0 0 3px rgba(220,194,137,.35);}
+```
+
+`outline` 拿掉、改用 `border-color`+`box-shadow` 做聚焦樣式，是因為圓角矩形的外框光暈要跟著
+input 本身 6px 圓角走，不能被瀏覽器預設的方形 `outline` 破壞圓角視覺。`#DCC289` 這個顏色數值
+跟信封本體邊緣線同一色，讓「聚焦中的輸入框」在視覺上跟信封素材本身的線條掛勾。
+
+#### Sheet 之間切換：液態縮放轉場，明確不用模糊遮蓋
+
+使用者明確要求：Sheet 內容切換（選檔案→設密碼、按鈕→已選清單）不要用 `filter:blur()`
+模糊遮蓋轉場取巧帶過，要用「一整套真正的縮放動畫」把過渡本身做完整——縮放才是真正在講「這塊
+東西在變形」這件事，模糊是靠糊掉細節騙眼睛。做法：退場先縮小到 `scale(0.88)` 淡出（一般
+`ease`，200ms），進場再從 `scale(0.88)` 長回 `scale(1)`（強 `ease-out`
+`cubic-bezier(0.23,1,0.32,1)`，260ms，emil-design-eng skill 的 `--ease-out` token）：
+
+```css
+.sheet--fade-out{opacity:0;transform:translate(-50%,0) scale(0.88);transition:opacity 200ms ease,transform 200ms ease;}
+.sheet--fade-in{opacity:1;transform:translate(-50%,0) scale(1);
+  transition:opacity 260ms cubic-bezier(0.23,1,0.32,1),transform 260ms cubic-bezier(0.23,1,0.32,1);}
+```
+
+同一套數值也套用在「選擇檔案」按鈕 ↔ 已選清單這組面板切換（`.panel-morph-out`／
+`.panel-morph-in`），維持整體轉場節奏一致，不是每個切換點各自發明一組數字。
+
+兩張 Sheet 之間（例如「選檔案」→「設密碼」）用的是**原地交叉淡化**（同一個位置淡出淡入），
+不是抽出/收回——那套語言代表「這個東西被收起來、換了一件不相干的事」，但這兩步是同一個連貫
+流程的前後兩頁，連續兩次抽出/收回反而讓人覺得心路歷程被打斷。判斷原則：同一段任務裡的步驟
+切換用「原地翻頁/交叉淡化」，一段任務真正結束、要收起來才用「抽出/收回」（`playSheetTwoPhaseExit`
+只用在步驟二送出這個真正的段落結尾）。
+
+#### `backface-visibility:hidden` 的副作用：闔上時封口連同底下的裝飾圖示一起消失
+
+`.flap-group` 曾經加過 `backface-visibility:hidden`，是為了穩定開合過程中的閃爍問題；副作用
+比原本要解決的問題更大——封口闔上時轉滿 `rotateX(-180deg)`，瀏覽器在這個角度會判定「背面
+朝向使用者」，直接把整個封口元素隱藏，底下信封本體烤進去的裝飾三角形圖示（原本該被闔上的
+封口蓋住）就這樣透出來（使用者回報「那個可或動的三角行的圖層似乎跑到後面去了」）。確認封口
+本身沒有靠 `backface` 切換內容（正反兩面的蠟滴/蠟封是另外兩個獨立元素疊上去處理的，不是同一
+個元素的正反面）之後，直接把 `backface-visibility:hidden` 從 `.flap-group` 跟
+`.flap-group img.flap` 都拿掉，不影響原本的蠟封機制。
+
+#### 寄出飛走動畫效能：`filter:blur()` 是最貴的部分，先拿掉
+
+寄出飛走動畫原本照抄 `8-envelope-assembled.html` 完整版（3D rotate + translate +
+`filter:blur()` + opacity 四種屬性疊在一起播），使用者實測反映整個動畫「卡到不行」。
+`filter:blur()` 是這裡面成本最高的一項——模糊是少數沒辦法純靠 GPU 合成層處理的 CSS 效果，
+瀏覽器得每一影格重新計算模糊後的像素，疊加在本來就有 3D perspective／preserve-3d 巢狀結構上
+（多層各自建立獨立合成上下文）成本再往上疊；這不是「CSS 天生比 JS 慢」，同樣效果換 JS 動畫
+函式庫一樣要吃這個合成成本，問題出在效果本身（模糊＋多層 3D），不是實作動畫用的語言。做法：
+先拿掉 `filter:blur()` 這個最貴的部分，只保留 `rotate`＋`translate`＋`opacity`（都是 GPU
+合成友善的屬性），犧牲「越飛越模糊」的視覺細節換取實際流暢度。
+
+### 2.11 獨立解密流程（信封＋Sheet）技術細節
+
+對應〈定案文件〉§1.11。
+
+#### `.decrypt-sheet` 頁面（密碼欄／恢復金鑰欄）左右滑動穿幫：兩層寬度＋兩層 `overflow:hidden`
+
+`.decrypt-sheet__pages` 裡兩「頁」用 flex 並排（各 240px，合計 480px），靠 `translateX`
+切換可視頁面，抓過兩個坑：
+
+1. **外層寬度算錯**：`.decrypt-sheet` 是 `border-box`，含 `.sheet` 基底的左右各 14px
+   padding，裡面的 `.decrypt-sheet__page` 卻也設成跟外層一樣的 240px，內容寬度比實際可用的
+   內距空間多出 28px，往右溢出、被 `overflow:hidden` 硬生生切掉一半（使用者截圖裡密碼欄右緣
+   露出一截圓角就是這個）。修正：外層改成 `240(內容)+28(左右內距)=268px`，內層維持 240px，
+   兩者才對得上。
+2. **`overflow:hidden` 只在 padding 邊界外才真的裁切**：`.decrypt-sheet` 本身左右各 14px 的
+   padding 內距**不算在裁切範圍內**——page2 的左緣剛好卡在這段 padding 裡（緊接在 page1
+   240px 右緣之後），這 14px 縫隙沒被裁到，變成使用者截圖看到的一截穿幫文字。修正：在
+   `.decrypt-sheet__pages` 這一層（緊貼 page1 實際內容寬度、沒有多餘 padding）**另外**設一次
+   `overflow:hidden` + 明確寬度 240px，裁切邊界才會剛好卡在 page1／page2 的交界：
+
+```css
+.decrypt-sheet{width:268px;overflow:hidden;}                 /* 外層：含 padding 的完整卡片寬度 */
+.decrypt-sheet__pages{display:flex;width:240px;overflow:hidden;
+  transition:transform 280ms cubic-bezier(0.32,0.72,0,1);}   /* 內層：緊貼內容寬度，第二層裁切 */
+.decrypt-sheet__pages .decrypt-sheet__page{width:240px;flex-shrink:0;}
+.decrypt-sheet--page2 .decrypt-sheet__pages{transform:translateX(-240px);}
+```
+
+### 2.12 動畫安全重觸發：世代編號機制
+
+Sheet 相關的動畫（進場、退場、交叉淡化、面板切換）原本各自用獨立的 `setTimeout` 鏈驅動，沒有
+被信封那層「取消時清掉所有計時器」的 `clearTimers()` 機制管到。使用者快速連續操作（例如動畫
+播到一半就按取消、然後立刻重新開啟）時，舊動畫的計時器仍然存活、會在之後某個時間點觸發，跟
+新一輪動畫的狀態互相干擾，導致畫面停留在不一致的中間狀態。這輪抓到兩個實際案例：
+
+- **取消後重開，信封有時候會是開著飛下來的**：`resetEncryptState()` 把 `envelope` 切回
+  `is-closed` 時，這個 class 切換本身仍然觸發正常的 420ms 動畫轉場；如果使用者快速重新開啟，
+  新一輪的落下動畫會在舊的闔上轉場都還沒播完時就開始。
+- **第二次開啟，蠟封在飛下來過程中跑到封口三角形下面**：同樣的殘留轉場狀態問題，只是這次牽動
+  的是 `.wax-drip-back`／`.wax-seal` 兩個疊放元素的層序。
+
+兩個案例的共通修法是**瞬間重置**（跟〈技術規格〉其他地方已經驗證過的 `transition:none` +
+強制 reflow + 還原 transition 這套既有手法一致），只是這輪把套用範圍從單一 `flapGroup`
+擴大到「開合動畫牽動的全部三個圖層」（`flapGroup`、`waxDripBackEl`、`waxSealEl`），確保重置
+時「所有圖層狀態都回到最初的排序」，不是只重置其中一個：
+
+```js
+function instantReset(el, className) {
+  el.style.transition = 'none';
+  el.classList.toggle(className, /* 目標狀態 */ true);
+  void el.offsetWidth;              // 強制 reflow，讓上面的 class 切換先套用
+  el.style.transition = '';         // 才恢復 transition，避免這次切換本身被動畫播出來
+}
+[flapGroup, waxDripBackEl, waxSealEl].forEach(el => instantReset(el, 'is-closed'));
+```
+
+但這套瞬間重置只解決「信封開合本身」這一層，**沒有涵蓋 Sheet 自己的動畫**——使用者接著明確
+要求「sheet 的動畫也要跟著重置，不要點第二次的時候還在進行著上一次的動畫」。Sheet 動畫（進場
+`playSheetTwoPhaseEntrance`、退場 `playSheetTwoPhaseExit`、交叉淡化 `playSheetCrossfade`、
+面板切換 `playPanelMorphSwap`）用的是分段 `setTimeout` 鏈，沒辦法用同一套「瞬間 class 切換」
+處理（進行中的 timeout 本身要能被安全丟棄，不能只是重置最終樣式）。改用 **WeakMap 型世代
+編號**：每個會播動畫的元素各自維護一個遞增計數器，每次重新觸發動畫就把計數器加一；所有排定的
+`setTimeout` callback 執行前先確認自己拿到的世代編號還是不是這個元素當下最新的一份，不是的話
+就直接不做任何事（也不 reject/報錯，安全地當沒發生過）：
+
+```js
+const sheetAnimGen = new WeakMap();
+function bumpGen(el) {
+  const g = (sheetAnimGen.get(el) || 0) + 1;
+  sheetAnimGen.set(el, g);
+  return g;
+}
+function isCurrentGen(el, g) {
+  return sheetAnimGen.get(el) === g;
+}
+
+function playSheetTwoPhaseEntrance(sheetEl) {
+  const gen = bumpGen(sheetEl);          // 進場一開始就宣告「這是最新的一輪」
+  sheetEl.classList.add('sheet--reveal');
+  setTimeout(() => {
+    if (!isCurrentGen(sheetEl, gen)) return;   // 這段時間內如果有更新的一輪蓋過來，直接放棄
+    sheetEl.classList.remove('sheet--reveal');
+    sheetEl.classList.add('sheet--settle');
+  }, SHEET_PHASE_MS);
+}
+```
+
+同一套機制套用在 `playSheetTwoPhaseExit`、`hideSheetInstant`（也要 `bumpGen`，代表「瞬間
+重置」本身也算宣告了新的一輪，蓋掉任何舊動畫殘留的 callback）、`playSheetCrossfade`（`from`／
+`to` 兩個元素各自的世代都要檢查）、`playPanelMorphSwap`（同理）。`resetEncryptState()` 額外
+對 `fakePickBtn`／`pickedWrap` 這兩個面板切換元素呼叫 `bumpGen`——因為它們不在
+`hideSheetInstant` 涵蓋的三個 Sheet 層級元素範圍內，需要單獨宣告。
+
+驗證：5 次「開啟→動畫播到一半→立刻取消」的快速重複循環，加上「動畫播到一半按取消、再重新開啟」
+的情境，最終畫面狀態都乾淨一致（`pickedSheet` 停在正確的 `sheet--settle` / 對應面板可見性），
+瀏覽器 console 全程 0 錯誤。
+
+### 2.13 深色模式：表面色 token 化與原生控制項
+
+`13-sidebar-ticket-shell.html` 的深/淺色切換機制（`html[data-theme]`，見〈定案文件〉§5.2）
+上線後，實際走查發現三個元件的背景色寫死 `#fff`、沒有跟著 `--paper` 這個 token 走：
+
+```css
+/* 修正前——深色模式下文字顏色（--ink）已經跟著換成亮色，但背景還是死白，
+   淺色文字疊在白底上幾乎看不見 */
+.btn{background:#fff; ...}
+.actions button{background:#fff; ...}
+.ticket__icon{background:#fff; ...}
+
+/* 修正後 */
+.btn{background:var(--paper); ...}
+.actions button{background:var(--paper); ...}
+.ticket__icon{background:var(--paper); ...}
+```
+
+三處分別是：一般操作按鈕（重新整理、選擇要解密的檔案……）、票根列的動作按鈕（解密／
+Passkey／恢復金鑰／全部解鎖）、票根圖示的圓形底色。同時補上
+`background-color 150ms ease`（`.btn`／`.actions button`）跟同等時長（`.ticket__icon`）
+的過場，讓切換深/淺色時背景色也有漸變，不是跟著其他色彩 token 一起瞬間跳變。
+
+批次加密列的圖示（`#pickedSheet` 那一列，底色是 `--brass-tint` 而不是一般卡片底色）原本用
+inline style 額外覆蓋成 `background:#fff`（因為那一列本身背景已經是暖色調，需要圖示底色跟
+其餘列一致的白色才夠突出）——同樣改成 `background:var(--paper)`，深色模式下這個覆蓋值也會
+跟著換成深色。
+
+**原生控制項（`<input type="checkbox">`）不會跟著 `data-theme` 換色**：瀏覽器只認
+`prefers-color-scheme` 這個系統設定，這份 mockup 的深/淺色切換是自訂的 `data-theme` 機制，
+兩者互不相關，原生控制項在深色模式下維持瀏覽器判定的「系統是淺色」外觀（亮色方塊），對比度差、
+跟旁邊深色系介面格格不入。修法：在 `html[data-theme="dark"]` 裡明確設 `color-scheme:dark`
+（`:root` 對應設 `color-scheme:light`），告訴瀏覽器「這裡現在該用哪一套原生控制項外觀」；
+另外全域補上 `input[type="checkbox"]{accent-color:var(--brass);}`，讓打勾方塊的勾選色跟
+整體強調色一致，不是瀏覽器預設藍色。
+
+**票根圖示識別色的色輪一致性**：壓縮檔（zip）圖示原本用 `#7B4FE0`（飽和紫），跟其餘圖示色
+（PDF 的紅棕、憑證檔的藍、資料夾/批次的金）放在同一份暖色調為主的清單裡顯得突兀、不像同一個
+色彩體系挑出來的。改成 `#4F7A52`（墨綠），跟既有的棕/金/紅/藍色票协調，維持整份清單「同一組
+色票挑出來的、只是各自代表不同類型」的觀感，不是每個顏色各自隨機選取。
+
 ---
 
 ## 3. 密碼庫筆記本

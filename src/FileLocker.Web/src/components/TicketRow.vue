@@ -305,9 +305,19 @@ onUnmounted(clearAllTimers)
   opacity: 1;
 }
 
+/* 回饋抓到的問題：完整撕開時籤頭（左半邊那一小截）外框消失、顏色跟背景幾乎一樣分不出來——
+   之前這裡把 border-color 設成 transparent，想讓兩個半邊看起來「本來就是同一張卡片裂開」，
+   結果 --color-surface 本身跟頁面背景 --color-bg 的明暗差很小，少了邊框之後籤頭直接融進
+   背景看不見。改回保留邊框，籤頭本身的底色也明確換成比 --color-surface 更深一階的
+   --color-bg（這個 token 在深色/淺色模式下都確定比 --color-surface 深，不是碰運氣），
+   撕開之後籤頭才有實在的存在感，不會像消失了一樣。 */
 .ticket__half .ticket {
   width: 100%;
-  border-color: transparent;
+  background: var(--color-bg);
+}
+
+.ticket__half--left .ticket {
+  border-color: var(--color-border-strong);
 }
 
 /* 支點：左半邊（撕線左側那一小截，貼著 seal）從自己的左下角轉開，右半邊（其餘

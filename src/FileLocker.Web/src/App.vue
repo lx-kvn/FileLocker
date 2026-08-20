@@ -148,7 +148,7 @@ const activeListSubTab = ref('files') // 'files' | 'history'
 // 覆蓋規則；原本 list 專屬的藍色改分給「資料夾防護」（回饋：金銅黃色是加密頁的主題色，
 // 藍色挪去資料夾防護頁）——class 名稱維持 theme-list 不改，只是 key 從 'list' 換成
 // 'folderGuard'，避免連帶要改 CSS 自訂屬性命名跟 .theme-list 選擇器本身。
-const THEME_CLASS_BY_TAB = { decrypt: 'theme-decrypt', folderGuard: 'theme-list', passwordLocker: 'theme-vault' }
+const THEME_CLASS_BY_TAB = { decrypt: 'theme-decrypt', folderGuard: 'theme-list', passwordLocker: 'theme-vault', settings: 'theme-settings' }
 const themeTab = ref(activeTab.value)
 // 信封疊層開著時不跟著底下分頁的主題色（例如清單頁的藍色）走——疊層本身是獨立的任務層，
 // 視覺上應該維持加密／資料夾防護共用的預設金色，不是「因為底下剛好是清單頁所以變藍」這種
@@ -4614,6 +4614,7 @@ function historyDetailText(entry) {
           :phase="encryptPhase"
           :progress-percent="encryptRealProgressPercent"
           :pending-summary="encryptPendingSummary"
+          :recovery-key-modal-open="!!recoveryKeyDisplay"
           @pick-file="pickFile"
           @pick-folder="pickFolder"
           @remove-path="removeEncryptPath"
@@ -5164,6 +5165,34 @@ function historyDetailText(entry) {
 </template>
 
 <style>
+/* 回饋：側欄切換分頁時，強調色（金→藍之類）是瞬間跳色，不是連續漸變——側欄本身的
+   .app-sidebar__nav-highlight／.app-sidebar__nav-item 早就寫了 background-color／color
+   的 transition，但那些其實從來沒真的生效過：CSS 自訂屬性（--color-accent 這些）預設
+   不是「可動畫」的型別，瀏覽器換算引用它的屬性值時是直接重新取值、不會在新舊兩個顏色
+   之間內插，所以就算宣告了 transition，畫面上看到的還是瞬間切換。用 @property 把這幾個
+   會隨分頁主題色切換的自訂屬性註冊成 <color> 型別，瀏覽器才知道「這是一個顏色，換值時
+   要內插」，下面既有的 transition 才會真的對顏色本身生效，不只是對色塊的位移生效。 */
+@property --color-accent {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #A8770F;
+}
+@property --color-accent-hover {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #8C630C;
+}
+@property --color-accent-soft {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #FBF2DE;
+}
+@property --color-accent-border {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #E4C77E;
+}
+
 :root {
   /* ---- 色彩：扣著「鎖與鑰匙」這個主題發想 ----
      中性色（--color-bg／--color-surface／--color-border*／--color-text*）這輪從原本偏冷灰藍
@@ -5216,7 +5245,9 @@ function historyDetailText(entry) {
   --tint-vault-soft: #FBEDDA;
   --tint-vault-border: #F0C48A;
   --tint-settings: #5B6270;
+  --tint-settings-hover: #454B57;
   --tint-settings-soft: #E7E9ED;
+  --tint-settings-border: #C7CBD3;
 
   --font-ui: 'IBM Plex Sans', -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'IBM Plex Mono', 'Cascadia Code', 'Consolas', monospace;
@@ -5265,8 +5296,11 @@ function historyDetailText(entry) {
   --tint-decrypt-hover: #66C084;
   --tint-decrypt-soft: #1E3327;
   --tint-decrypt-border: #3E6B4D;
-  --tint-list: #7FAEE8;
-  --tint-list-hover: #9CC2EF;
+  /* 回饋：資料夾防護頁按鈕的藍色在深色模式下太亮太刺眼——原本 #7FAEE8 飽和度/明度都偏高，
+     跟深色背景對比過強；調暗、降一點飽和度，維持同一個色相不換色（不然使用者已經記得
+     「資料夾防護＝藍色」這個分頁辨識，換色相會打斷這個既有的心智模型）。 */
+  --tint-list: #6B93C9;
+  --tint-list-hover: #85A9DA;
   --tint-list-soft: #202B3B;
   --tint-list-border: #3C5A80;
   --tint-guard: #A37E2C;
@@ -5278,7 +5312,9 @@ function historyDetailText(entry) {
   --tint-vault-soft: #3B2C1B;
   --tint-vault-border: #6E4E29;
   --tint-settings: #ADB2BC;
+  --tint-settings-hover: #C5C9D1;
   --tint-settings-soft: #2B2D32;
+  --tint-settings-border: #6B7078;
 }
 
 /* 分頁主題色：套在 .app 最外層（見 activeThemeClass），往下覆蓋掉 --color-accent 系列——
@@ -5306,6 +5342,17 @@ function historyDetailText(entry) {
   --color-accent-hover: var(--tint-vault-hover);
   --color-accent-soft: var(--tint-vault-soft);
   --color-accent-border: var(--tint-vault-border);
+}
+
+/* 回饋：側欄「設定」頁的顏色跟加密頁共用同一款金色，容易混淆——設定頁本來就有自己一套
+   低飽和度灰藍色 tint-settings（原本只用在側欄設定圖示本身，見 .app-sidebar__nav-item
+   對應樣式），這裡補上完整一組（含 hover/border）讓整個設定分頁也套用，不再共用加密頁
+   的金色。 */
+.theme-settings {
+  --color-accent: var(--tint-settings);
+  --color-accent-hover: var(--tint-settings-hover);
+  --color-accent-soft: var(--tint-settings-soft);
+  --color-accent-border: var(--tint-settings-border);
 }
 
 * {
@@ -5786,6 +5833,15 @@ input[type='checkbox']:focus-visible {
 .info-tooltip:hover .info-tooltip__icon,
 .info-tooltip:focus-visible .info-tooltip__icon {
   background: var(--color-accent);
+}
+
+/* 「i」用斜體襯線字體是刻意的字體選擇（看起來像印刷體的資訊符號），但同一顆殼子如果放的是
+   「?」，斜體襯線的問號會顯得歪斜、像排版錯誤，不是同一種符號的視覺語言——這個修飾 class
+   給用「?」的場合用（例如 EnvelopeEncrypt.vue 批次加密停用 Passkey/恢復金鑰的提示），
+   退回正常字體/不斜體，問號才會端正。 */
+.info-tooltip__icon--plain {
+  font-style: normal;
+  font-family: inherit;
 }
 
 .info-tooltip__bubble {
@@ -7404,9 +7460,13 @@ button:focus-visible,
 }
 
 .modal--help__section h3 {
-  font-size: 0.95rem;
+  /* 回饋：標題（0.95rem）跟內文（0.85rem）只差 0.1rem，層次不夠明顯——拉大到 1.3rem，
+     跟內文的差距更明確，掃視整份說明時標題才容易被抓出來當導覽用。顏色從強調色改成
+     var(--color-text)（回饋：改成黑色——這裡用文字主色而不是寫死 #000，深色模式下
+     --color-text 是近白色，寫死黑色會在深色背景下看不見）。 */
+  font-size: 1.3rem;
   font-weight: 600;
-  color: var(--color-accent);
+  color: var(--color-text);
   margin: 0 0 0.5rem;
 }
 

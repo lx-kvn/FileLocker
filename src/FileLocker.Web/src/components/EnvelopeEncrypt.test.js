@@ -262,6 +262,47 @@ describe('EnvelopeEncrypt', () => {
     expect(wrapper.find('.sheet--confirm').classes()).toContain('sheet--hidden')
   })
 
+  it('按確認、commit 成功進入 flying：信封本體要等確認 sheet 完全收回才套用 is-flying，不能兩個動畫同時播', async () => {
+    const wrapper = mountEnvelope({ paths: ['C:\\a.pdf'], phase: 'form', pendingSummary: 'a.pdf' })
+    await advanceToConfirmingSheetVisible(wrapper)
+
+    await wrapper.setProps({ phase: 'committing' })
+    await wrapper.setProps({ phase: 'flying' })
+    await wrapper.vm.$nextTick()
+    // 確認 sheet 才剛開始播退場（reveal 階段），信封本體不該提前套用 is-flying。
+    expect(wrapper.find('.mailaway-rig').classes()).not.toContain('is-flying')
+
+    await vi.advanceTimersByTimeAsync(280 + 280) // 確認 sheet 兩段式退場播完
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.mailaway-rig').classes()).toContain('is-flying')
+  })
+
+  it('勾了恢復金鑰：confirming 時確認 sheet 先不出現，要等 recovery-key-modal-open 變 false（使用者關掉彈窗）才播抽出動畫', async () => {
+    const wrapper = mountEnvelope({ paths: ['C:\\a.pdf'], phase: 'form', pendingSummary: 'a.pdf', recoveryKeyModalOpen: true })
+    await vi.advanceTimersByTimeAsync(2000)
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-action="next"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(500)
+    await wrapper.vm.$nextTick()
+
+    await wrapper.setProps({ phase: 'processing' })
+    await wrapper.setProps({ phase: 'confirming' })
+    await vi.advanceTimersByTimeAsync(280 + 280 + 500) // 密碼頁退場 + 闔上信封蓋章收尾
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.envelope-outer').classes()).toContain('show-mail-info')
+
+    // 恢復金鑰彈窗還開著：就算已經停留超過 SETTLE_HOLD_MS，確認 sheet 也不該冒出來。
+    await vi.advanceTimersByTimeAsync(2000)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.sheet--confirm').classes()).toContain('sheet--hidden')
+
+    // 使用者關掉彈窗（App.vue 把 recoveryKeyDisplay 清空，這個 prop 跟著變 false）
+    await wrapper.setProps({ recoveryKeyModalOpen: false })
+    await vi.advanceTimersByTimeAsync(500) // SETTLE_HOLD_MS
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.sheet--confirm').classes()).not.toContain('sheet--hidden')
+  })
+
   it('phase 是 flying 時，只有 translate 這個 transitionend 播完才 emit fly-away-complete（rotate/opacity 各自的 transitionend 較早播完，不能提早觸發）', async () => {
     const wrapper = mountEnvelope({ phase: 'flying' })
     const rig = wrapper.find('.mailaway-rig')

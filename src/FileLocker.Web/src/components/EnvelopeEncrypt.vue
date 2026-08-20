@@ -35,6 +35,11 @@ const props = defineProps({
   phase: { type: String, default: 'form' },
   progressPercent: { type: Number, default: 0 },
   pendingSummary: { type: String, default: null },
+  // 回饋：勾了恢復金鑰的話，App.vue 的恢復金鑰彈窗（全域 modal-overlay，不是這個元件內部
+  // 的 sheet）會在 confirming 階段自動跳出來——要等使用者關掉那個彈窗，確認 sheet 的抽出
+  // 動畫才能開始播，不能兩邊同時搶著出現。這個 prop 是 App.vue 那邊 recoveryKeyDisplay
+  // 是否非空的即時鏡射，見 playFinalExitAndSeal。
+  recoveryKeyModalOpen: { type: Boolean, default: false },
 })
 
 const emit = defineEmits([
@@ -271,6 +276,21 @@ async function playSheetTwoPhaseExit() {
   sheetTransitionState.value = 'hidden'
 }
 
+// 等某個 prop getter 變成 false（用在等 App.vue 那邊的全域彈窗真的關掉），watch 的
+// stop handle 一拿到就馬上可能被呼叫，所以先存起來、resolve 之後再呼叫，不是定義完
+// 立刻呼叫——避免 watch 內部還沒設好 stop 變數就想呼叫它的時序問題。
+function waitForFalse(getter) {
+  if (!getter()) return Promise.resolve()
+  return new Promise((resolve) => {
+    const stop = watch(getter, (val) => {
+      if (!val) {
+        stop()
+        resolve()
+      }
+    })
+  })
+}
+
 async function playFinalExitAndSeal() {
   await playSheetTwoPhaseExit() // 密碼頁退場
   const gen = bumpGen(animKey)
@@ -279,9 +299,13 @@ async function playFinalExitAndSeal() {
   await new Promise((resolve) => after(FLAP_MS + 40, resolve))
   if (!isCurrentGen(animKey, gen)) return
   showMailInfo.value = true
-  // 回饋：確認/取消畫面原本只是浮在闔上信封下方的一排裸按鈕，沒有 sheet——這裡補上
-  // 一張真正的 sheet，蓋章闔上的收尾動畫播完後停留一下才冒出來，跟 mockup 恢復金鑰卡
-  // 自動出現的節奏一致（定案文件 §5.2）。
+  // 回饋：勾了恢復金鑰的話，這時候 App.vue 的恢復金鑰彈窗已經跳出來了（跟這裡的
+  // showMailInfo 幾乎同時觸發，兩邊各自獨立收到自己那份 IPC 回應）——確認 sheet 的抽出
+  // 動畫要等使用者關掉那個彈窗才能播，不能兩邊同時搶畫面。沒有勾恢復金鑰的話
+  // recoveryKeyModalOpen 一直是 false，這裡等於立刻通過，走原本「停留一下才冒出來」的
+  // 節奏（跟 mockup 恢復金鑰卡自動出現的節奏一致，定案文件 §5.2）。
+  await waitForFalse(() => props.recoveryKeyModalOpen)
+  if (!isCurrentGen(animKey, gen)) return
   await new Promise((resolve) => after(SETTLE_HOLD_MS, resolve))
   if (!isCurrentGen(animKey, gen)) return
   playSheetTwoPhaseEntrance('confirm')
@@ -303,10 +327,16 @@ async function playReopenAfterCancel() {
   })
 }
 
-// 使用者按確認、commit 真的成功、信封本身要開始飛走了——確認 sheet 也要跟著退場（抽出/
-// 收回），不能就這樣留在畫面上不管，眼睜睜看著信封飛走、sheet 卻靜止不動。
-function playConfirmSheetExitForFlyAway() {
-  playSheetTwoPhaseExit()
+// 使用者按確認、commit 真的成功、信封本身要開始飛走了——確認 sheet 要先完全收回退場，
+// 飛走動畫才能開始播（回饋：原本兩個動畫是同時觸發的，看起來像 sheet 卡在半空中沒收好、
+// 信封已經自己飛走了）。readyToFly 是這裡跟 template 的 .mailaway-rig.is-flying 之間的
+// 開關——:class 同時看 phase==='flying' 跟這個旗標，兩者都成立才真的套用飛走的 class。
+const readyToFly = ref(false)
+
+async function playConfirmSheetExitForFlyAway() {
+  readyToFly.value = false
+  await playSheetTwoPhaseExit()
+  readyToFly.value = true
 }
 
 watch(() => props.phase, (newPhase, oldPhase) => {
@@ -392,7 +422,7 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
     class="envelope-outer"
     :class="{ 'is-open': isOpen, 'is-closed': !isOpen, 'is-flying': phase === 'flying', 'show-mail-info': showMailInfo }"
   >
-    <div class="mailaway-rig" :class="{ 'is-dropping': isDropping, 'is-flying': phase === 'flying' }" @transitionend="onMailawayTransitionEnd">
+    <div class="mailaway-rig" :class="{ 'is-dropping': isDropping, 'is-flying': phase === 'flying' && readyToFly }" @transitionend="onMailawayTransitionEnd">
       <div
         class="envelope-canvas"
         :class="{ 'is-drag-hovering': isDragHovering }"
@@ -425,8 +455,8 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
     <div ref="confirmSheetEl" class="sheet sheet--confirm" :class="sheetClass('confirm')">
       <p class="confirm-summary">{{ pendingSummary }}</p>
       <div class="step2-actions">
-        <button class="button button--secondary" type="button" data-action="cancel" :disabled="phase === 'committing'" @click="emit('cancel')">{{ t('encrypt.envelopeCancel') }}</button>
-        <button class="button button--primary" type="button" data-action="confirm" :disabled="phase === 'committing'" @click="emit('confirm')">{{ t('encrypt.envelopeConfirm') }}</button>
+        <button class="button button--secondary" type="button" data-action="cancel" :disabled="phase === 'committing'" @click="emit('cancel')">{{ t('encrypt.confirmSheetBack') }}</button>
+        <button class="button button--primary" type="button" data-action="confirm" :disabled="phase === 'committing'" @click="emit('confirm')">{{ t('encrypt.confirmSheetConfirm') }}</button>
       </div>
     </div>
 
@@ -504,27 +534,35 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
           :placeholder="t('encrypt.hintLabel')"
           @input="emit('update:hint', $event.target.value)"
         />
-        <label :class="{ 'is-disabled': disablePasskeyRecoveryKey }">
-          <input type="checkbox" :checked="enablePasskey" :disabled="disablePasskeyRecoveryKey" @change="emit('update:enablePasskey', $event.target.checked)" />
-          <img v-if="passkeyIconUrl" :src="passkeyIconUrl" alt="" />
-          {{ t('encrypt.passkeyLabel') }}
+        <div class="checkbox-row">
+          <label :class="{ 'is-disabled': disablePasskeyRecoveryKey }">
+            <input type="checkbox" :checked="enablePasskey" :disabled="disablePasskeyRecoveryKey" @change="emit('update:enablePasskey', $event.target.checked)" />
+            <img v-if="passkeyIconUrl" :src="passkeyIconUrl" alt="" />
+            {{ t('encrypt.passkeyLabel') }}
+          </label>
           <!-- 回饋：這裡要跟設定頁「i」提示圖示一樣的框框樣式，不是瀏覽器原生 title 那種
                陽春提示——沿用 App.vue 全域的 .info-tooltip 系列 class（App.vue 的 <style>
-               沒有 scoped，這裡直接共用，不用自己重畫一份深色圓角泡泡）。 -->
+               沒有 scoped，這裡直接共用，不用自己重畫一份深色圓角泡泡）。回饋抓到的問題：
+               這顆提示圖示原本放在 <label> 裡面，被停用的 label 有 opacity:0.5，這個
+               opacity 會套用到整個子樹（就算子元素是 absolute 定位的泡泡也一樣被拖下水），
+               泡泡因此看起來像半透明、後面文字會透出來——搬到 label 外面當手足元素，不再
+               繼承那個透明度。 -->
           <span v-if="disablePasskeyRecoveryKey" class="info-tooltip" tabindex="0">
-            <span class="info-tooltip__icon">?</span>
+            <span class="info-tooltip__icon info-tooltip__icon--plain">?</span>
             <span class="info-tooltip__bubble">{{ t('encrypt.passkeyRecoveryKeyBatchDisabled') }}</span>
           </span>
-        </label>
-        <label :class="{ 'is-disabled': disablePasskeyRecoveryKey }">
-          <input type="checkbox" :checked="enableRecoveryKey" :disabled="disablePasskeyRecoveryKey" @change="emit('update:enableRecoveryKey', $event.target.checked)" />
-          <img v-if="recoveryKeyIconUrl" :src="recoveryKeyIconUrl" alt="" />
-          {{ t('encrypt.recoveryKeyLabel') }}
+        </div>
+        <div class="checkbox-row">
+          <label :class="{ 'is-disabled': disablePasskeyRecoveryKey }">
+            <input type="checkbox" :checked="enableRecoveryKey" :disabled="disablePasskeyRecoveryKey" @change="emit('update:enableRecoveryKey', $event.target.checked)" />
+            <img v-if="recoveryKeyIconUrl" :src="recoveryKeyIconUrl" alt="" />
+            {{ t('encrypt.recoveryKeyLabel') }}
+          </label>
           <span v-if="disablePasskeyRecoveryKey" class="info-tooltip" tabindex="0">
-            <span class="info-tooltip__icon">?</span>
+            <span class="info-tooltip__icon info-tooltip__icon--plain">?</span>
             <span class="info-tooltip__bubble">{{ t('encrypt.passkeyRecoveryKeyBatchDisabled') }}</span>
           </span>
-        </label>
+        </div>
       </div>
 
       <div v-if="phase === 'processing'" class="progress-bar" role="progressbar" :aria-valuenow="Math.round(progressPercent)">
@@ -925,20 +963,15 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
   height: 16px;
 }
 
-/* 回饋：提示框看起來半透明、後面那排勾選欄的文字/圖示會透出來——.info-tooltip__bubble
-   本身的背景色（var(--color-text)）其實是完全不透明的，問題是「疊在誰上面」：這裡的兩顆
-   問號圖示放在 .step2-form 這排勾選欄裡，彼此是普通的 flex 手足元素，沒有各自建立獨立的
-   堆疊環境（stacking context），z-index:20 雖然贏過沒設 z-index 的手足，但為了不要再賭
-   瀏覽器的預設堆疊順序，這裡明確用 isolation:isolate 讓 .info-tooltip 自己形成一個獨立
-   堆疊環境、再給高一點的 z-index，泡泡一定會蓋在同一排其他勾選欄位上面，不會有文字透出來
-   看起來像半透明的錯覺。 */
-.step2-form .info-tooltip {
-  isolation: isolate;
-  z-index: 5;
-}
-
-.step2-form .info-tooltip__bubble {
-  z-index: 50;
+/* 提示框（.info-tooltip）跟勾選欄（<label>）並排的容器——回饋抓到的真正問題：提示圖示
+   原本放在 <label> 裡面，被停用的 label 有 opacity:0.5，這個 opacity 會套用到整個子樹
+   （就算子元素是 absolute 定位的泡泡也一樣被拖下水，opacity 造成的合成半透明不是
+   z-index／堆疊順序能解決的事），泡泡因此看起來半透明、後面文字會透出來。把提示圖示
+   移出 label、當它的手足元素放進這個 row 容器，就不會再繼承 label 的 opacity。 */
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .progress-bar {

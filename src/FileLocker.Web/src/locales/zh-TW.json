@@ -32,6 +32,8 @@
   "encrypt.submit": "加密",
   "encrypt.envelopeConfirm": "確認",
   "encrypt.envelopeCancel": "取消",
+  "encrypt.confirmSheetBack": "回到上一步",
+  "encrypt.confirmSheetConfirm": "加密",
   "encrypt.encrypting": "加密中... ({current}/{total})",
   "encrypt.completeTitle": "加密完成",
   "encrypt.done": "完成",

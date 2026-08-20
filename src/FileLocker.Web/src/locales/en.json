@@ -32,6 +32,8 @@
   "encrypt.submit": "Encrypt",
   "encrypt.envelopeConfirm": "Confirm",
   "encrypt.envelopeCancel": "Cancel",
+  "encrypt.confirmSheetBack": "Back",
+  "encrypt.confirmSheetConfirm": "Encrypt",
   "encrypt.encrypting": "Encrypting... ({current}/{total})",
   "encrypt.completeTitle": "Encryption Complete",
   "encrypt.done": "Done",

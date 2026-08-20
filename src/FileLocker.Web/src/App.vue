@@ -5226,6 +5226,10 @@ function historyDetailText(entry) {
      （--color-accent）數值本來就跟該檔案的 --brass 完全相同，沒有變動。移植前的舊色票記錄在
      design-exploration/gui-styles-v2/App-vue_移植前色彩快照.md，決策細節見
      design-exploration/gui-styles-v2/GUI造型探索_技術規格.md §2.14。 */
+  /* 回饋：拖動條（捲軸）沒有跟著深色模式換色——瀏覽器原生捲軸看的是 color-scheme 這個
+     CSS 屬性，不是看畫面實際顏色，沒宣告的話 Chromium 一律畫淺色捲軸，跟底下已經換成
+     深色的內容格格不入。這裡宣告 light，.app--dark 那邊蓋成 dark，捲軸才會跟著切換。 */
+  color-scheme: light;
   --color-bg: #F4F3F0;
   --color-surface: #FFFDF8;
   --color-border: #E0DDD5;
@@ -5296,10 +5300,15 @@ function historyDetailText(entry) {
 /* ---- 深色模式：色彩變數整組覆蓋，其他所有樣式規則都直接沿用同一套 var()，不用另外寫
    一份深色專用的樣式。強調色（黃銅）在深色背景上調亮一點，不然對比度不夠、看起來髒髒的。 ---- */
 .app--dark {
-  --color-bg: #1E1D1A;
-  --color-surface: #242119;
-  --color-border: #38352D;
-  --color-border-strong: #4A4638;
+  /* 回饋：深色模式底色偏黃偏怪——原本 bg/surface/border 這幾個中性色的 R 通道比 B 通道
+     高出快 10 個色階，大面積鋪開時人眼對這種接近中性但偏一邊的色相特別敏感，讀起來就是
+     「髒黃色」而不是「暖灰」。這裡把 R-B 的落差壓小、整體往中性炭灰靠，保留一點點暖度
+     （不是變成死板的純灰階，跟淺色模式的暖米白調性還是有呼應），但不再讓人覺得是黃色。 */
+  color-scheme: dark;
+  --color-bg: #1D1C1B;
+  --color-surface: #222120;
+  --color-border: #363330;
+  --color-border-strong: #47433D;
   --color-text: #EDEAE0;
   --color-text-secondary: #B7B09B;
   --color-text-tertiary: #847D68;

@@ -50,6 +50,11 @@ const FLAP_MS = 420
 const SETTLE_HOLD_MS = 500
 const SHEET_PHASE_MS = 280
 
+// 密碼欄位小眼睛顯示/隱藏——純展示層狀態，不透過 props 從 App.vue 傳進來（跟密碼本身
+// 的值不一樣，這個狀態沒有任何一邊的業務邏輯需要知道）。
+const showPassword = ref(false)
+const showPasswordConfirm = ref(false)
+
 const isDropping = ref(true)
 const isOpen = ref(false)
 const sheetPage = ref('picker') // 'picker' | 'password'
@@ -61,8 +66,11 @@ const sheetTransitionState = ref('hidden')
 
 const pickerSheetEl = ref(null)
 const passwordSheetEl = ref(null)
+const confirmSheetEl = ref(null)
 function sheetElFor(page) {
-  return page === 'picker' ? pickerSheetEl.value : passwordSheetEl.value
+  if (page === 'picker') return pickerSheetEl.value
+  if (page === 'password') return passwordSheetEl.value
+  return confirmSheetEl.value
 }
 // 兩個 .sheet 各自根據「目前是不是這一頁」＋「共用的過場狀態」算出自己的 class——
 // 兩張卡是互斥的（同時只有一張是 sheetPage 指到的那張），共用同一個 sheetTransitionState
@@ -247,29 +255,43 @@ watch(() => props.paths.length > 0, (hasFiles) => {
 const showMailInfo = ref(false)
 const mailTimestampText = ref('')
 
-function playFinalExitAndSeal() {
+// 通用的兩段式抽出/收回退場——不管現在活躍的是哪一頁 sheet（sheetPage 不變，只是把它
+// 播退場），reveal（完全滑出露出全貌）→ retreat（收回疊上信封並淡出）→ hidden 收尾。
+// 密碼頁送出、確認/取消頁退場（不管是使用者按取消要重開、還是按確認後信封本身開始飛走）
+// 都共用這一個函式，不用各自重寫一份幾乎一樣的邏輯。
+async function playSheetTwoPhaseExit() {
   const gen = bumpGen(animKey)
   sheetTransitionState.value = 'reveal'
-  after(SHEET_PHASE_MS, () => {
-    if (!isCurrentGen(animKey, gen)) return
-    sheetTransitionState.value = 'retreat'
-    after(SHEET_PHASE_MS, () => {
-      if (!isCurrentGen(animKey, gen)) return
-      sheetVisible.value = false
-      sheetTransitionState.value = 'hidden'
-      isOpen.value = false
-      mailTimestampText.value = new Date().toLocaleString()
-      after(FLAP_MS + 40, () => {
-        if (!isCurrentGen(animKey, gen)) return
-        showMailInfo.value = true
-      })
-    })
-  })
+  await new Promise((resolve) => after(SHEET_PHASE_MS, resolve))
+  if (!isCurrentGen(animKey, gen)) return
+  sheetTransitionState.value = 'retreat'
+  await new Promise((resolve) => after(SHEET_PHASE_MS, resolve))
+  if (!isCurrentGen(animKey, gen)) return
+  sheetVisible.value = false
+  sheetTransitionState.value = 'hidden'
 }
 
-// 使用者從「確認/取消」畫面按了取消：闔著蓋章的信封要重新打開，回到密碼頁（定案文件
-// §1.8：取消後密碼欄位/勾選狀態保留，不清空，所以直接回密碼頁而不是選檔頁）。
-function playReopenAfterCancel() {
+async function playFinalExitAndSeal() {
+  await playSheetTwoPhaseExit() // 密碼頁退場
+  const gen = bumpGen(animKey)
+  isOpen.value = false
+  mailTimestampText.value = new Date().toLocaleString()
+  await new Promise((resolve) => after(FLAP_MS + 40, resolve))
+  if (!isCurrentGen(animKey, gen)) return
+  showMailInfo.value = true
+  // 回饋：確認/取消畫面原本只是浮在闔上信封下方的一排裸按鈕，沒有 sheet——這裡補上
+  // 一張真正的 sheet，蓋章闔上的收尾動畫播完後停留一下才冒出來，跟 mockup 恢復金鑰卡
+  // 自動出現的節奏一致（定案文件 §5.2）。
+  await new Promise((resolve) => after(SETTLE_HOLD_MS, resolve))
+  if (!isCurrentGen(animKey, gen)) return
+  playSheetTwoPhaseEntrance('confirm')
+}
+
+// 使用者從「確認/取消」畫面按了取消：確認 sheet 先退場（抽出/收回），闔著蓋章的信封才
+// 重新打開、回到密碼頁（定案文件 §1.8：取消後密碼欄位/勾選狀態保留，不清空，所以直接
+// 回密碼頁而不是選檔頁）。
+async function playReopenAfterCancel() {
+  await playSheetTwoPhaseExit() // 確認 sheet 退場——回饋：按下確認/取消都要跑回去信封後面的動畫，不能瞬間消失
   const gen = bumpGen(animKey)
   showMailInfo.value = false
   isOpen.value = true
@@ -281,9 +303,17 @@ function playReopenAfterCancel() {
   })
 }
 
+// 使用者按確認、commit 真的成功、信封本身要開始飛走了——確認 sheet 也要跟著退場（抽出/
+// 收回），不能就這樣留在畫面上不管，眼睜睜看著信封飛走、sheet 卻靜止不動。
+function playConfirmSheetExitForFlyAway() {
+  playSheetTwoPhaseExit()
+}
+
 watch(() => props.phase, (newPhase, oldPhase) => {
   if (newPhase === 'confirming' && oldPhase === 'processing') {
     playFinalExitAndSeal()
+  } else if (newPhase === 'flying' && (oldPhase === 'committing' || oldPhase === 'confirming')) {
+    playConfirmSheetExitForFlyAway()
   } else if (newPhase === 'form' && (oldPhase === 'confirming' || oldPhase === 'committing')) {
     playReopenAfterCancel()
   }
@@ -303,6 +333,20 @@ function countDraggedFiles(dataTransfer) {
     if (item.kind === 'file') count++
   }
   return count
+}
+
+// 回饋：飛走動畫播完後才該出現的東西（App.vue 的「要不要存進密碼庫」詢問）實際上提早
+// 跳出來了——根本原因是 .mailaway-rig 同時有 rotate／translate／opacity 三個各自獨立
+// 的 transition（見下面 CSS .mailaway-rig.is-flying），每一個播完都各自觸發一次
+// transitionend、而且會冒泡到這裡，原本沒有篩選就直接 emit，撞到最短的 rotate（260ms）
+// 播完那一刻就以為「動畫結束了」，這時 translate（220ms 延遲＋500ms＝720ms 才真的播完）
+// 都還在飛。只在冒泡來源真的是這個元素本身（不是內層子元素自己的 transition 冒泡上來）、
+// 且是三者之中最晚結束的 translate 播完時才真的 emit。
+function onMailawayTransitionEnd(event) {
+  if (event.target !== event.currentTarget) return
+  if (props.phase !== 'flying') return
+  if (event.propertyName !== 'translate') return
+  emit('fly-away-complete')
 }
 
 function onDragEnter(event) {
@@ -348,7 +392,7 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
     class="envelope-outer"
     :class="{ 'is-open': isOpen, 'is-closed': !isOpen, 'is-flying': phase === 'flying', 'show-mail-info': showMailInfo }"
   >
-    <div class="mailaway-rig" :class="{ 'is-dropping': isDropping, 'is-flying': phase === 'flying' }" @transitionend="phase === 'flying' && emit('fly-away-complete')">
+    <div class="mailaway-rig" :class="{ 'is-dropping': isDropping, 'is-flying': phase === 'flying' }" @transitionend="onMailawayTransitionEnd">
       <div
         class="envelope-canvas"
         :class="{ 'is-drag-hovering': isDragHovering }"
@@ -375,11 +419,15 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
       </div>
     </div>
 
-    <!-- 確認/取消：pending 完成，等使用者確認才真的 finalize。不是浮動卡片，是疊在信封蓋章
-         畫面下方的一排按鈕，維持「信封本身就是內容」的觀感，不是內容被另一張卡片蓋住。 -->
-    <div class="mail-confirm-actions" :class="{ 'is-hidden': phase !== 'confirming' && phase !== 'committing' }">
-      <button class="button button--secondary" type="button" data-action="cancel" :disabled="phase === 'committing'" @click="emit('cancel')">{{ t('encrypt.envelopeCancel') }}</button>
-      <button class="button button--primary" type="button" data-action="confirm" :disabled="phase === 'committing'" @click="emit('confirm')">{{ t('encrypt.envelopeConfirm') }}</button>
+    <!-- 頁三：確認/取消。回饋：這裡原本只是浮在闔上信封下方的一排裸按鈕，沒有 sheet——
+         現在補上真正的 sheet，跟選檔案/設密碼共用同一套兩段式抽出/收回機制（見
+         playFinalExitAndSeal／playReopenAfterCancel／playConfirmSheetExitForFlyAway）。 -->
+    <div ref="confirmSheetEl" class="sheet sheet--confirm" :class="sheetClass('confirm')">
+      <p class="confirm-summary">{{ pendingSummary }}</p>
+      <div class="step2-actions">
+        <button class="button button--secondary" type="button" data-action="cancel" :disabled="phase === 'committing'" @click="emit('cancel')">{{ t('encrypt.envelopeCancel') }}</button>
+        <button class="button button--primary" type="button" data-action="confirm" :disabled="phase === 'committing'" @click="emit('confirm')">{{ t('encrypt.envelopeConfirm') }}</button>
+      </div>
     </div>
 
     <!-- 頁一：選檔案。「選擇檔案」空狀態／已選清單這兩塊不用 v-if/v-else 直接切換——那樣
@@ -409,20 +457,46 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
     <!-- 頁二：密碼／Passkey／恢復金鑰 -->
     <div ref="passwordSheetEl" class="sheet sheet--password" :class="sheetClass('password')">
       <div class="step2-form">
-        <input
-          data-field="password"
-          type="password"
-          :value="password"
-          :placeholder="t('encrypt.passwordLabel')"
-          @input="emit('update:password', $event.target.value)"
-        />
-        <input
-          data-field="passwordConfirm"
-          type="password"
-          :value="passwordConfirm"
-          :placeholder="t('encrypt.passwordConfirmLabel')"
-          @input="emit('update:passwordConfirm', $event.target.value)"
-        />
+        <!-- 回饋：密碼欄位漏掉了小眼睛顯示/隱藏切換——沿用 App.vue 全域的 .password-field／
+             .password-field__toggle（App.vue 的 <style> 沒有 scoped，這裡直接共用同一套
+             class 跟圖示，不用自己重畫一份），顯示狀態是這個元件自己的展示層概念，不用
+             透過 props 從 App.vue 傳進來。 -->
+        <div class="password-field">
+          <input
+            data-field="password"
+            :type="showPassword ? 'text' : 'password'"
+            :value="password"
+            :placeholder="t('encrypt.passwordLabel')"
+            @input="emit('update:password', $event.target.value)"
+          />
+          <button
+            type="button"
+            class="password-field__toggle"
+            :aria-label="t(showPassword ? 'common.hidePassword' : 'common.showPassword')"
+            @click="showPassword = !showPassword"
+          >
+            <svg v-if="showPassword" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
+            <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+        <div class="password-field">
+          <input
+            data-field="passwordConfirm"
+            :type="showPasswordConfirm ? 'text' : 'password'"
+            :value="passwordConfirm"
+            :placeholder="t('encrypt.passwordConfirmLabel')"
+            @input="emit('update:passwordConfirm', $event.target.value)"
+          />
+          <button
+            type="button"
+            class="password-field__toggle"
+            :aria-label="t(showPasswordConfirm ? 'common.hidePassword' : 'common.showPassword')"
+            @click="showPasswordConfirm = !showPasswordConfirm"
+          >
+            <svg v-if="showPasswordConfirm" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
+            <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
         <input
           data-field="hint"
           type="text"
@@ -434,11 +508,22 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
           <input type="checkbox" :checked="enablePasskey" :disabled="disablePasskeyRecoveryKey" @change="emit('update:enablePasskey', $event.target.checked)" />
           <img v-if="passkeyIconUrl" :src="passkeyIconUrl" alt="" />
           {{ t('encrypt.passkeyLabel') }}
+          <!-- 回饋：這裡要跟設定頁「i」提示圖示一樣的框框樣式，不是瀏覽器原生 title 那種
+               陽春提示——沿用 App.vue 全域的 .info-tooltip 系列 class（App.vue 的 <style>
+               沒有 scoped，這裡直接共用，不用自己重畫一份深色圓角泡泡）。 -->
+          <span v-if="disablePasskeyRecoveryKey" class="info-tooltip" tabindex="0">
+            <span class="info-tooltip__icon">?</span>
+            <span class="info-tooltip__bubble">{{ t('encrypt.passkeyRecoveryKeyBatchDisabled') }}</span>
+          </span>
         </label>
         <label :class="{ 'is-disabled': disablePasskeyRecoveryKey }">
           <input type="checkbox" :checked="enableRecoveryKey" :disabled="disablePasskeyRecoveryKey" @change="emit('update:enableRecoveryKey', $event.target.checked)" />
           <img v-if="recoveryKeyIconUrl" :src="recoveryKeyIconUrl" alt="" />
           {{ t('encrypt.recoveryKeyLabel') }}
+          <span v-if="disablePasskeyRecoveryKey" class="info-tooltip" tabindex="0">
+            <span class="info-tooltip__icon">?</span>
+            <span class="info-tooltip__bubble">{{ t('encrypt.passkeyRecoveryKeyBatchDisabled') }}</span>
+          </span>
         </label>
       </div>
 
@@ -811,6 +896,12 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
   color: var(--color-text);
 }
 
+/* 密碼欄位右邊留出小眼睛按鈕的空間——只套在 .password-field 包住的兩個密碼欄位，
+   不影響提示文字欄位（那個沒有小眼睛，不需要留白）。 */
+.step2-form .password-field input {
+  padding-right: 2.4rem;
+}
+
 .step2-form input:focus {
   outline: none;
   border-color: #DCC289;
@@ -832,6 +923,22 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
 .step2-form label img {
   width: 16px;
   height: 16px;
+}
+
+/* 回饋：提示框看起來半透明、後面那排勾選欄的文字/圖示會透出來——.info-tooltip__bubble
+   本身的背景色（var(--color-text)）其實是完全不透明的，問題是「疊在誰上面」：這裡的兩顆
+   問號圖示放在 .step2-form 這排勾選欄裡，彼此是普通的 flex 手足元素，沒有各自建立獨立的
+   堆疊環境（stacking context），z-index:20 雖然贏過沒設 z-index 的手足，但為了不要再賭
+   瀏覽器的預設堆疊順序，這裡明確用 isolation:isolate 讓 .info-tooltip 自己形成一個獨立
+   堆疊環境、再給高一點的 z-index，泡泡一定會蓋在同一排其他勾選欄位上面，不會有文字透出來
+   看起來像半透明的錯覺。 */
+.step2-form .info-tooltip {
+  isolation: isolate;
+  z-index: 5;
+}
+
+.step2-form .info-tooltip__bubble {
+  z-index: 50;
 }
 
 .progress-bar {
@@ -908,24 +1015,13 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
   font-variant-numeric: tabular-nums;
 }
 
-/* 確認/取消：不是浮動卡片，是一排疊在信封蓋章畫面下方的按鈕——跟 .sheet 用同一個水平
-   置中邏輯，但不套用卡片背景/陰影，維持「信封本身就是內容」的觀感。 */
-.mail-confirm-actions {
-  position: absolute;
-  left: 50%;
-  top: 340px;
-  /* .mailaway-rig 自己是 z-index:1，這裡沒有明確蓋過去的話，按鈕會被信封圖層擋住點不到
-     （已經真的踩過這個坑——截圖驗證時按鈕點擊被信封本體圖片攔截）。 */
-  z-index: 3;
-  transform: translateX(-50%);
-  display: flex;
-  gap: 8px;
-  opacity: 1;
-  transition: opacity 200ms ease;
-}
-
-.mail-confirm-actions.is-hidden {
-  opacity: 0;
-  pointer-events: none;
+/* 確認/取消 sheet 裡的摘要文字——沿用 .sheet 本身的置中/卡片樣式，這裡只補文字本身的
+   排版，跟按鈕之間留白對齊 .step2-actions 上面那條分隔線的既有節奏。 */
+.confirm-summary {
+  margin: 4px 0 12px;
+  font-size: 13px;
+  color: var(--color-text);
+  text-align: center;
+  word-break: break-word;
 }
 </style>

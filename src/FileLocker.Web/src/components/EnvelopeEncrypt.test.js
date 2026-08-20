@@ -194,8 +194,11 @@ describe('EnvelopeEncrypt', () => {
     expect(canvas.classes()).not.toContain('is-drag-hovering')
   })
 
-  it('phase 從 processing 變成 confirming：sheet 先播兩段式抽出/收回，收回後信封闔上並顯示檔名/郵戳', async () => {
-    const wrapper = mountEnvelope({ paths: ['C:\\a.pdf'], phase: 'form', pendingSummary: 'a.pdf' })
+  // 走到「確認/取消」畫面前的共用步驟：進場→選檔→切到密碼頁→送出→processing→confirming。
+  // 抽出來給下面幾個測試共用，因為現在確認 sheet 的出現是跟著這整條真實過場鏈觸發的
+  // （不像舊版直接用 phase prop 算 class），沒辦法用 mountEnvelope({ phase: 'confirming' })
+  // 這種直接掛載進某個階段的捷徑跳過中間過程。
+  async function advanceToConfirmingSheetVisible(wrapper) {
     await vi.advanceTimersByTimeAsync(2000) // 播完進場，落到選檔頁
     await wrapper.vm.$nextTick()
     await wrapper.find('[data-action="next"]').trigger('click') // 切到密碼頁
@@ -219,22 +222,71 @@ describe('EnvelopeEncrypt', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.find('.envelope-outer').classes()).toContain('show-mail-info')
     expect(wrapper.find('.mail-filename').text()).toBe('a.pdf')
+
+    // 回饋：確認/取消畫面原本沒有 sheet、也沒有抽出動畫——現在蓋章收尾播完停留一下
+    // （SETTLE_HOLD_MS）才會冒出確認 sheet，不是立刻出現。
+    expect(wrapper.find('.sheet--confirm').classes()).toContain('sheet--hidden')
+    await vi.advanceTimersByTimeAsync(500) // SETTLE_HOLD_MS
+    await wrapper.vm.$nextTick()
+  }
+
+  it('phase 從 processing 變成 confirming：密碼頁先播兩段式抽出/收回，信封闔上顯示檔名/郵戳後，停留一下確認 sheet 才冒出來', async () => {
+    const wrapper = mountEnvelope({ paths: ['C:\\a.pdf'], phase: 'form', pendingSummary: 'a.pdf' })
+    await advanceToConfirmingSheetVisible(wrapper)
+
+    expect(wrapper.find('.sheet--confirm').classes()).not.toContain('sheet--hidden')
+    expect(wrapper.find('.confirm-summary').text()).toBe('a.pdf')
   })
 
   it('confirming 時顯示確認/取消按鈕，committing 時兩顆都要 disabled', async () => {
-    const wrapper = mountEnvelope({ phase: 'confirming', pendingSummary: 'a.pdf' })
-    expect(wrapper.find('.mail-confirm-actions').classes()).not.toContain('is-hidden')
+    const wrapper = mountEnvelope({ paths: ['C:\\a.pdf'], phase: 'form', pendingSummary: 'a.pdf' })
+    await advanceToConfirmingSheetVisible(wrapper)
+    expect(wrapper.find('.sheet--confirm').classes()).not.toContain('sheet--hidden')
 
     await wrapper.setProps({ phase: 'committing' })
     expect(wrapper.find('[data-action="confirm"]').attributes('disabled')).toBeDefined()
     expect(wrapper.find('[data-action="cancel"]').attributes('disabled')).toBeDefined()
   })
 
-  it('從 confirming 取消（phase 回到 form）：信封重新打開，回到密碼頁，不是選檔頁（密碼欄位要保留）', async () => {
-    const wrapper = mountEnvelope({ paths: ['C:\\a.pdf'], phase: 'confirming', pendingSummary: 'a.pdf' })
+  it('按確認、commit 成功進入 flying：確認 sheet 播兩段式抽出/收回退場，不會留在畫面上不管信封自己飛走', async () => {
+    const wrapper = mountEnvelope({ paths: ['C:\\a.pdf'], phase: 'form', pendingSummary: 'a.pdf' })
+    await advanceToConfirmingSheetVisible(wrapper)
+
+    await wrapper.setProps({ phase: 'committing' })
+    await wrapper.setProps({ phase: 'flying' })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.sheet--confirm').classes()).toContain('sheet--reveal')
+
+    await vi.advanceTimersByTimeAsync(280 + 280)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.sheet--confirm').classes()).toContain('sheet--hidden')
+  })
+
+  it('phase 是 flying 時，只有 translate 這個 transitionend 播完才 emit fly-away-complete（rotate/opacity 各自的 transitionend 較早播完，不能提早觸發）', async () => {
+    const wrapper = mountEnvelope({ phase: 'flying' })
+    const rig = wrapper.find('.mailaway-rig')
+
+    await rig.trigger('transitionend', { propertyName: 'rotate' })
+    expect(wrapper.emitted('fly-away-complete')).toBeUndefined()
+    await rig.trigger('transitionend', { propertyName: 'opacity' })
+    expect(wrapper.emitted('fly-away-complete')).toBeUndefined()
+
+    await rig.trigger('transitionend', { propertyName: 'translate' })
+    expect(wrapper.emitted('fly-away-complete')).toHaveLength(1)
+  })
+
+  it('從 confirming 取消（phase 回到 form）：確認 sheet 先播兩段式抽出/收回退場，信封才重新打開、回到密碼頁（不是選檔頁，密碼欄位要保留）', async () => {
+    const wrapper = mountEnvelope({ paths: ['C:\\a.pdf'], phase: 'form', pendingSummary: 'a.pdf' })
+    await advanceToConfirmingSheetVisible(wrapper)
+    expect(wrapper.find('.sheet--confirm').classes()).not.toContain('sheet--hidden')
 
     await wrapper.setProps({ phase: 'form' })
-    await vi.advanceTimersByTimeAsync(420) // FLAP_MS
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.sheet--confirm').classes()).toContain('sheet--reveal') // 回饋：按下取消要跑回去信封後面的動畫，不是瞬間消失
+
+    await vi.advanceTimersByTimeAsync(280 + 280) // 確認 sheet 抽出/收回退場播完
+    await wrapper.vm.$nextTick()
+    await vi.advanceTimersByTimeAsync(420) // FLAP_MS，信封重新打開
     await wrapper.vm.$nextTick()
 
     expect(wrapper.find('.envelope-outer').classes()).toContain('is-open')

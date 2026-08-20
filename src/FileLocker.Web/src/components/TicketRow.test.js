@@ -23,9 +23,17 @@ function baseItem(overrides = {}) {
 
 function mountRow(item, extraProps = {}) {
   return mount(TicketRow, {
-    props: { item, t, decrypting: false, ...extraProps },
+    props: { item, t, decrypting: false, tearing: false, ...extraProps },
   })
 }
+
+beforeEach(() => {
+  vi.useFakeTimers()
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('TicketRow', () => {
   it('顯示檔名，一般情況下沒有 warning、沒有 nested-lock 徽章', () => {
@@ -74,40 +82,36 @@ describe('TicketRow', () => {
     const wrapper = mountRow(item)
     await wrapper.find('.ticket__seal').trigger('click')
 
-    expect(wrapper.find('.ticket').classes()).toContain('is-peeking')
+    expect(wrapper.find('.ticket-wrap').classes()).toContain('is-peeking')
     expect(wrapper.emitted('decrypt')).toEqual([[item]])
   })
 
   it('點籤頭後 decrypting 變 true（驗證通過、解密進行中）：維持撕開狀態，不受逾時影響', async () => {
-    vi.useFakeTimers()
     const item = baseItem()
     const wrapper = mountRow(item)
     await wrapper.find('.ticket__seal').trigger('click')
     await wrapper.setProps({ decrypting: true })
 
     await vi.advanceTimersByTimeAsync(3000) // 遠超過撕一小角的逾時保底時間
-    expect(wrapper.find('.ticket').classes()).toContain('is-peeking')
-    vi.useRealTimers()
+    expect(wrapper.find('.ticket-wrap').classes()).toContain('is-peeking')
   })
 
   it('點籤頭後使用者取消密碼驗證（decrypting 沒有變 true）：逾時後自動退回，不會卡在撕開狀態', async () => {
-    vi.useFakeTimers()
     const item = baseItem()
     const wrapper = mountRow(item)
     await wrapper.find('.ticket__seal').trigger('click')
 
     await vi.advanceTimersByTimeAsync(1600)
-    expect(wrapper.find('.ticket').classes()).not.toContain('is-peeking')
-    vi.useRealTimers()
+    expect(wrapper.find('.ticket-wrap').classes()).not.toContain('is-peeking')
   })
 
   it('decrypting 從 true 變回 false（驗證失敗）：立刻還原撕開狀態，不用等逾時', async () => {
     const item = baseItem()
     const wrapper = mountRow(item, { decrypting: true })
-    expect(wrapper.find('.ticket').classes()).toContain('is-peeking') // 掛載當下 decrypting 就是 true，一開始就該是撕開狀態
+    expect(wrapper.find('.ticket-wrap').classes()).toContain('is-peeking') // 掛載當下 decrypting 就是 true，一開始就該是撕開狀態
 
     await wrapper.setProps({ decrypting: false })
-    expect(wrapper.find('.ticket').classes()).not.toContain('is-peeking')
+    expect(wrapper.find('.ticket-wrap').classes()).not.toContain('is-peeking')
   })
 
   it('點 Passkey 按鈕會 emit decrypt-via-passkey', async () => {
@@ -146,5 +150,59 @@ describe('TicketRow', () => {
     const folderColor = folderWrapper.find('.ticket__icon').attributes('style')
     const zipColor = fileWrapper.find('.ticket__icon').attributes('style')
     expect(folderColor).not.toBe(zipColor)
+  })
+
+  // ---- 撕開＋停頓＋飛走完整序列（回饋：先前這裡用單一元素小幅抖動取代 mockup 的兩半
+  // clone 機制，支點、撕開的點、停頓、時長全部對不上，這輪照 mockup 的 playSequence 重做，
+  // 見 TicketRow.vue 檔案開頭的完整時序說明）。----
+
+  it('tearing prop 變 true：兩輪 rAF 後進入 is-tearing + is-open，撕開的半邊套用完整幅度的 transform', async () => {
+    const wrapper = mountRow(baseItem(), { decrypting: true })
+    await wrapper.setProps({ tearing: true })
+
+    // 兩輪 requestAnimationFrame 才會真的切到 is-open——vitest 的 fake timer 預設也會接管
+    // rAF，用 advanceTimersByTimeAsync 就能把兩輪都推進去。
+    await vi.advanceTimersByTimeAsync(50)
+
+    const wrap = wrapper.find('.ticket-wrap')
+    expect(wrap.classes()).toContain('is-tearing')
+    expect(wrap.classes()).toContain('is-open')
+    expect(wrap.classes()).not.toContain('is-peeking') // 真正撕開了，不再是「撕一小角」的狀態
+  })
+
+  it('is-open 之後停頓 TEAR_HOLD_MS（550ms）才進入 is-leaving，不是立刻飛走', async () => {
+    const wrapper = mountRow(baseItem(), { decrypting: true })
+    await wrapper.setProps({ tearing: true })
+    await vi.advanceTimersByTimeAsync(50) // 進入 is-open
+
+    expect(wrapper.find('.ticket-wrap').classes()).not.toContain('is-leaving')
+
+    await vi.advanceTimersByTimeAsync(500) // 還沒到 550ms
+    expect(wrapper.find('.ticket-wrap').classes()).not.toContain('is-leaving')
+
+    await vi.advanceTimersByTimeAsync(60) // 超過 550ms
+    expect(wrapper.find('.ticket-wrap').classes()).toContain('is-leaving')
+  })
+
+  it('is-leaving 之後，.ticket-stage 的 transform transitionend 播完才 emit torn-away（opacity 那個 transitionend 先到也不算數）', async () => {
+    const wrapper = mountRow(baseItem(), { decrypting: true })
+    await wrapper.setProps({ tearing: true })
+    await vi.advanceTimersByTimeAsync(50 + 600) // 進場 + 停頓，進入 is-leaving
+
+    const stage = wrapper.find('.ticket-stage')
+    await stage.trigger('transitionend', { propertyName: 'opacity' })
+    expect(wrapper.emitted('torn-away')).toBeUndefined()
+
+    await stage.trigger('transitionend', { propertyName: 'transform' })
+    expect(wrapper.emitted('torn-away')).toEqual([[wrapper.props('item')]])
+  })
+
+  it('快速連續重新掛載/卸載不會讓舊的 rAF/setTimeout 在新一輪動畫套用過期的狀態', async () => {
+    const wrapper = mountRow(baseItem(), { decrypting: true })
+    await wrapper.setProps({ tearing: true })
+    wrapper.unmount() // 模擬撕開動畫播到一半整個元件就被移除（例如清單被清空）
+
+    const advance = () => vi.advanceTimersByTimeAsync(3000)
+    await expect(advance()).resolves.not.toThrow()
   })
 })

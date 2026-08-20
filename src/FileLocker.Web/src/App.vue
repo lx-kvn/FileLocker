@@ -193,7 +193,7 @@ function handleGlobalKeydown(event) {
     // 只有還在表單階段（選檔案／填密碼）才能用 Esc 快速關掉——pending 已經送出、正在等
     // 使用者確認/取消，或已經在 committing／flying，都是「阻斷式任務」不該被 Esc 意外中斷，
     // 跟點外面關閉是同一套判斷（見 .encrypt-overlay 的 @click.self）。
-    showEncryptOverlay.value = false
+    closeEncryptOverlayAndResetForm()
   } else if (confirmDialogState.value) {
     resolveConfirmDialog(false)
   } else if (passwordPromptContext.value) {
@@ -648,10 +648,6 @@ const decryptItemInfo = ref(null) // { uuid, originalName, hint, passkeyEnabled,
 // ---- 已加密檔案子頁籤 ----
 const vaultItems = ref([])
 const isLoadingList = ref(false)
-// 使用者停在清單頁時，背景 watcher 偵測到 Vault 有變化就把這個設成 true，只顯示「有更新」
-// 提示、不強制整包刷新畫面——vaultList 是整包覆蓋（見下面 vaultList 處理），靜默自動刷新
-// 會讓使用者正在互動的項目突然消失或位移，體驗比多一個小提示更糟。
-const vaultListStale = ref(false)
 // 使用者自己在這個視窗做的加密/解密/刪除，事後 VaultChangeWatcher 一定會偵測到對應的
 // .meta.json 變化並推播 vaultChanged——這其實是自己操作的回音，不是真的「有別的地方
 // 動了 Vault」，不該再跳一次「有更新」提示。收到 vaultChanged 時如果離最近一次本機異動
@@ -663,11 +659,9 @@ function markLocalVaultMutation() {
   lastLocalVaultMutationAt = Date.now()
 }
 const decryptingUuids = ref(new Set())
-// 驗證成功、撕開動畫播完之前，這個項目暫時待在這個集合裡——見下面 removeVaultItem。
+// 驗證成功、TicketRow.vue 播完撕開＋停頓＋飛走序列並 emit torn-away 之前，這個項目暫時
+// 待在這個集合裡——見下面 removeVaultItem／handleTicketTornAway。
 const tearingUuids = ref(new Set())
-// 跟 TicketRow.vue 的 .ticket.is-tearing 過場時間（200ms）留一點餘裕，確保撕開的視覺
-// 真的播完了才把項目從陣列拿掉，不然過場會被硬生生截斷看起來像跳幀。
-const TEAR_ANIMATION_MS = 260
 const expandedGroups = ref(new Set())
 const decryptingBatchIds = ref(new Set())
 
@@ -754,14 +748,22 @@ const isRunningInWebView2 = typeof window.chrome?.webview !== 'undefined'
 // 把成功解密的項目從 vaultItems 篩掉。集中成一個具名函式，之後改「篩掉」的邏輯
 // （例如改成標記狀態、動畫淡出）只需要改一個地方，四個呼叫端都受益。
 function removeVaultItem(uuid) {
-  // 先進入「撕開中」狀態播一小段撕開動畫（TicketRow.vue 的 .is-tearing），播完才真的把
-  // 項目從陣列篩掉——真正的移除動作交給 App.vue 這層的 <TransitionGroup>，它會自動接手
-  // 飛走＋淡出，下面的列也會自動往上補位，不用手動算高度或搬移其餘列。
+  // 進入「撕開中」狀態，交給 TicketRow.vue 自己播完整的撕開→停頓→飛走序列（見那個檔案
+  // 開頭的完整時序說明）。不用固定的 setTimeout 猜測動畫要多久才移除——時長是 TicketRow
+  // 內部的動畫細節，這裡猜一個數字兩邊很容易對不上（之前就是這樣：這裡的計時器跟
+  // TicketRow 實際播的動畫時長脫鉤，導致列被移出陣列、TransitionGroup 開始飛走的時候，
+  // TicketRow 自己的撕開動畫其實還沒播完，兩段動畫互相打架）。改成事件驅動：TicketRow
+  // 播完自己的序列才 emit torn-away，這裡收到才真的把項目從陣列篩掉，見 handleTicketTornAway。
   tearingUuids.value.add(uuid)
-  setTimeout(() => {
-    tearingUuids.value.delete(uuid)
-    vaultItems.value = vaultItems.value.filter((item) => item.uuid !== uuid)
-  }, TEAR_ANIMATION_MS)
+}
+
+// TicketRow.vue 的撕開＋停頓＋飛走序列播完才會 emit 這個事件（見那個檔案的 onStageTransitionEnd）
+// ——這時候這一列在畫面上已經完全飛出去、看不到了，才真的把它從 vaultItems 篩掉，交給
+// App.vue 這層的 <TransitionGroup> 接手「其餘列往上補位」，不會跟 TicketRow 自己的飛走動畫
+// 重疊打架。
+function handleTicketTornAway(item) {
+  tearingUuids.value.delete(item.uuid)
+  vaultItems.value = vaultItems.value.filter((i) => i.uuid !== item.uuid)
 }
 
 // 對應架構審查（2026-07-27）：decryptResult／decryptByUuidResult／decryptByPasskeyResult／
@@ -1097,8 +1099,11 @@ const messageHandlers = {
     }
     // 使用者不在清單頁的話什麼都不用做——之後切換分頁時，既有的 watch(activeTab)/
     // watch(activeListSubTab) 邏輯自然會呼叫 refreshList() 拿到最新資料。
+    // 回饋：有新內容時直接更新清單，不要跳一顆「有新的內容」按鈕要使用者自己點——
+    // 這裡不是使用者自己在編輯中途的內容（清單本身沒有「草稿」概念，重新整理不會弄丟
+    // 使用者輸入），沒有理由讓使用者多按一次才看到新東西。
     if (activeTab.value === 'list' && activeListSubTab.value === 'files') {
-      vaultListStale.value = true
+      refreshList()
     }
   },
 
@@ -1478,7 +1483,6 @@ function applyAfterMinSkeletonDuration(startedAt, applyFn) {
 
 function refreshList() {
   isLoadingList.value = true
-  vaultListStale.value = false
   listLoadStartedAt = Date.now()
   sendMessage('listVault')
 }
@@ -3113,6 +3117,22 @@ function clearEncryptPaths() {
   encryptPaths.value = []
 }
 
+// 使用者在還沒送出 pending（encryptPhase 還是 'form'）的階段就關掉信封疊層——不管是點
+// 取消、點外面、還是按 Esc，都是同一個「整個放棄這次加密」的動作。回饋：關掉之後選過的
+// 檔案清單還留著，下次打開信封又看到上次的舊清單，像是沒有真的取消——這裡把選檔/密碼欄位
+// 一起清乾淨，下次打開一定是全新的空白狀態。密碼欄位順便清掉也是既有慣例（見
+// confirmEncryptPending 等處的既有註解：密碼是敏感資料，不管流程走到哪裡结束都不該留在
+// 畫面上），不是這次才新增的規則。
+function closeEncryptOverlayAndResetForm() {
+  showEncryptOverlay.value = false
+  encryptPaths.value = []
+  encryptPassword.value = ''
+  encryptPasswordConfirm.value = ''
+  hint.value = ''
+  enablePasskey.value = false
+  enableRecoveryKey.value = false
+}
+
 /// 拖放檔案：一般的 postMessage 只能傳可以轉成 JSON 的資料，瀏覽器沙盒化的 File 物件本身
 /// 沒有真正的磁碟路徑可以序列化。WebView2 專門為此開了 postMessageWithAdditionalObjects
 /// 這個管道，讓我們可以把 File 物件原封不動連同訊息一起送到 C# 那邊，C# 端會收到對應的
@@ -3549,7 +3569,12 @@ function historyDetailText(entry) {
     <!-- 自訂標題列：整條都是可拖曳區域（app-region: drag），交給作業系統的視窗管理員
          原生處理拖曳，所以能得到 Aero Snap、雙擊最大化、右鍵系統選單這些原生行為。
          三顆按鈕本身標記成 no-drag，否則點下去只會開始拖視窗、按不到按鈕。 -->
-    <header class="title-bar">
+    <!-- 回饋：加密新檔案疊層開著的時候，Tab 鍵切換仍然會切到疊層背後被模糊暗化的元素——
+         那些元素視覺上已經被 scrim 蓋住、看不清楚，鍵盤使用者卻還是能切過去操作到，是
+         可以感知到但邏輯不通的狀態。用原生 inert 屬性把標題列跟主要頁面內容整個排除在
+         Tab 順序跟互動之外（inert 同時擋掉 focus 跟點擊，比只設 tabindex="-1" 更徹底——
+         後者仍然可以被滑鼠點到），疊層本身（.encrypt-overlay）在這兩個元素外面，不受影響。 -->
+    <header class="title-bar" :inert="showEncryptOverlay">
       <div class="traffic-lights">
         <button
           class="traffic-light traffic-light--close"
@@ -3583,7 +3608,7 @@ function historyDetailText(entry) {
       <span class="title-bar__title">FileLocker</span>
     </header>
 
-    <div class="page-wrapper">
+    <div class="page-wrapper" :inert="showEncryptOverlay">
       <AppSidebar
         :collapsed="sidebarCollapsed"
         :active="sidebarActiveKey"
@@ -3654,9 +3679,6 @@ function historyDetailText(entry) {
           </div>
 
           <div v-if="activeListSubTab === 'files'">
-            <div v-if="vaultListStale" class="update-banner" @click="refreshList">
-              {{ t('list.updateAvailable') }}
-            </div>
             <div class="list-toolbar">
               <button class="button button--secondary refresh-button" @click="refreshList" :disabled="isLoadingList">
                 {{ isLoadingList ? t('list.loading') : t('list.refresh') }}
@@ -3730,6 +3752,7 @@ function historyDetailText(entry) {
                   @decrypt-via-passkey="decryptFromListViaPasskey"
                   @decrypt-via-recovery-key="decryptFromListViaRecoveryKey"
                   @delete="requestDelete"
+                  @torn-away="handleTicketTornAway"
                 />
 
                 <!-- 批次群組：一次選多個項目加密出來的，摺疊成一張摘要票根，展開後每個項目維持獨立操作能力。 -->
@@ -3764,6 +3787,7 @@ function historyDetailText(entry) {
                       @decrypt-via-passkey="decryptFromListViaPasskey"
                       @decrypt-via-recovery-key="decryptFromListViaRecoveryKey"
                       @delete="requestDelete"
+                      @torn-away="handleTicketTornAway"
                     />
                   </div>
                 </div>
@@ -3788,11 +3812,11 @@ function historyDetailText(entry) {
             <div v-if="isLoadingHistory && historyItems.length === 0" class="table-scroll">
               <table class="table">
                 <colgroup>
-                  <col style="width: 22%;" />
-                  <col style="width: 9%;" />
                   <col style="width: 20%;" />
-                  <col style="width: 39%;" />
-                  <col style="width: 10%;" />
+                  <col style="width: 9%;" />
+                  <col style="width: 18%;" />
+                  <col style="width: 34%;" />
+                  <col style="width: 19%;" />
                 </colgroup>
                 <thead>
                   <tr>
@@ -3818,11 +3842,11 @@ function historyDetailText(entry) {
             <div v-if="historyItems.length > 0" class="table-scroll">
               <table class="table">
                 <colgroup>
-                  <col style="width: 22%;" />
-                  <col style="width: 9%;" />
                   <col style="width: 20%;" />
-                  <col style="width: 39%;" />
-                  <col style="width: 10%;" />
+                  <col style="width: 9%;" />
+                  <col style="width: 18%;" />
+                  <col style="width: 34%;" />
+                  <col style="width: 19%;" />
                 </colgroup>
                 <thead>
                   <tr>
@@ -4574,7 +4598,7 @@ function historyDetailText(entry) {
       <div
         v-if="showEncryptOverlay"
         class="encrypt-overlay"
-        @click.self="encryptPhase === 'form' && (showEncryptOverlay = false)"
+        @click.self="encryptPhase === 'form' && closeEncryptOverlayAndResetForm()"
       >
         <EnvelopeEncrypt
           :t="t"
@@ -4602,7 +4626,7 @@ function historyDetailText(entry) {
           @update:enable-recovery-key="enableRecoveryKey = $event"
           @submit="submitEncryptPending"
           @confirm="confirmEncryptPending"
-          @cancel="encryptPhase === 'form' ? (showEncryptOverlay = false) : cancelEncryptPending()"
+          @cancel="encryptPhase === 'form' ? closeEncryptOverlayAndResetForm() : cancelEncryptPending()"
           @fly-away-complete="onEncryptFlyAwayComplete"
         />
       </div>
@@ -6358,22 +6382,6 @@ button:focus-visible,
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-}
-
-.update-banner {
-  display: flex;
-  width: fit-content;
-  align-items: center;
-  gap: 0.4rem;
-  margin-bottom: 0.75rem;
-  padding: 0.5rem 0.85rem;
-  border-radius: var(--radius-sm);
-  background: var(--color-accent-soft);
-  border: 1px solid var(--color-accent-border);
-  color: var(--color-accent);
-  font-size: 0.85rem;
-  cursor: pointer;
-  transition: background-color var(--duration-fast) ease;
 }
 
 /* ---- 表格：外框用陰影而不是描邊，橫向內容過長時整個表格區域自己捲動，

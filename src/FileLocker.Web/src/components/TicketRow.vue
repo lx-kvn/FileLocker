@@ -368,11 +368,19 @@ onUnmounted(clearAllTimers)
   padding: 0;
   border-radius: 8px;
   cursor: pointer;
-  transition: background-color 150ms ease;
+  transition: background-color 150ms ease, transform 120ms ease-out;
 }
 
 button.ticket__seal:hover:not(:disabled) {
   background: rgba(34, 34, 30, 0.035);
+}
+
+/* UI/UX 走查：這顆按鈕（跟下面 .actions button／.ticket__delete）原本只有 :hover，
+   點下去那一刻完全沒有回饋，要等非同步的解密回應回來才有動靜——按下瞬間就該有即時
+   觸覺回饋（apple-design「Respond on pointer-down」），跟全站其他按鈕（.button）
+   統一用 scale(0.97)。 */
+button.ticket__seal:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 button.ticket__seal:disabled {
@@ -492,11 +500,18 @@ button.ticket__seal:focus-visible {
   border-radius: var(--radius-sm);
   cursor: pointer;
   white-space: nowrap;
+  transition: border-color 150ms ease, color 150ms ease, transform 120ms ease-out;
 }
 
 .actions button:hover:not(:disabled) {
   border-color: var(--color-accent);
   color: var(--color-accent);
+}
+
+/* UI/UX 走查：解密/Passkey/恢復金鑰這幾顆按鈕原本點下去沒有立即回饋，見上面
+   .ticket__seal 的同一則說明。 */
+.actions button:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .actions button:disabled {
@@ -515,9 +530,24 @@ button.ticket__seal:focus-visible {
   border-color: var(--color-danger) !important;
 }
 
+.ticket__delete:active {
+  transform: scale(0.97);
+}
+
 .ticket__delete svg {
   width: 14px;
   height: 14px;
   display: block;
+}
+
+/* UI/UX 走查：撕開飛走是這輪動作幅度最大的動畫之一（撐開+90px 位移飛出畫面），跟
+   EnvelopeEncrypt.vue 一樣原本沒有 prefers-reduced-motion 保護——只拿掉「移動很遠的
+   距離」那一段（飛走），撕開本身的小幅度位移（撐開的 9px/3.5deg）保留，讓使用者還是
+   看得出「撕開了」這個狀態變化，只是不會整列飛出畫面外。 */
+@media (prefers-reduced-motion: reduce) {
+  .ticket-wrap.is-leaving .ticket-stage {
+    transition: opacity 200ms ease;
+    transform: none;
+  }
 }
 </style>

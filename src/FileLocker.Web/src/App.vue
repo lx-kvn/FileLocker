@@ -5193,6 +5193,31 @@ function historyDetailText(entry) {
   initial-value: #E4C77E;
 }
 
+/* UI/UX 走查：設定頁切換亮色/深色主題時，整個畫面的底色/文字色是瞬間硬切，不是漸變——
+   apple-design skill 明講「ease dark↔light theme changes」，瞬間切換的明暗跳動容易讓人
+   不舒服。理由跟上面 --color-accent 系列一樣：中性色 token 本身也要註冊成 <color> 型別，
+   .app 下面的 transition 才能真的對顏色內插，不是只是宣告好看。 */
+@property --color-bg {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #F4F3F0;
+}
+@property --color-surface {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #FFFDF8;
+}
+@property --color-text {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #22221E;
+}
+@property --color-border {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #E0DDD5;
+}
+
 :root {
   /* ---- 色彩：扣著「鎖與鑰匙」這個主題發想 ----
      中性色（--color-bg／--color-surface／--color-border*／--color-text*）這輪從原本偏冷灰藍
@@ -5367,6 +5392,9 @@ body {
   font-family: var(--font-ui);
   color: var(--color-text);
   background: var(--color-surface);
+  /* 亮色/深色主題切換時整頁明暗漸變，不是瞬間硬切——搭配上面 --color-text／--color-surface
+     的 @property 註冊才會真的生效。 */
+  transition: background-color 200ms ease, color 200ms ease;
   /* 改成固定滿版高度的 flex 直向排列，標題列跟頁籤列是不會縮的固定項目，
      只有底下的內容區（.page-wrapper）自己捲動——不然內容一多，整個文件（含標題列、
      三顆視窗控制按鈕）會一起被捲走，使用者往下滑就看不到、按不到那些按鈕了。 */

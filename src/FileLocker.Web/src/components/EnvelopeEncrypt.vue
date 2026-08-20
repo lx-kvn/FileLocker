@@ -1057,4 +1057,26 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
   text-align: center;
   word-break: break-word;
 }
+
+/* UI/UX 走查：這個元件全身都是大幅度 3D 位移動畫（信封落下回彈、寄出飛走、sheet 滑出
+   清出畫布），全站其他元件都有 prefers-reduced-motion 保護，這裡（跟 TicketRow.vue）
+   是這輪新增動畫最多、幅度最大，卻唯二沒有這層保護的——大幅度移動正是這個媒體查詢
+   要擋的前庭系統誘發暈眩來源。只拿掉「移動很遠的距離」這幾個（落下回彈、飛走、sheet
+   完全滑出清出畫布），保留原地的縮放/淡化/圖示轉角度這種小幅度回饋——那些本身就在
+   apple-design 建議保留的範圍內（"Keep opacity/color changes that aid comprehension"）。 */
+@media (prefers-reduced-motion: reduce) {
+  .mailaway-rig.is-dropping {
+    animation: none;
+  }
+  .mailaway-rig.is-flying {
+    transition: opacity 200ms ease;
+    rotate: none;
+    translate: none;
+  }
+  .sheet--reveal,
+  .sheet--retreat {
+    transition: opacity 200ms ease;
+    transform: translate(-50%, 0) !important;
+  }
+}
 </style>

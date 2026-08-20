@@ -152,7 +152,7 @@ onUnmounted(() => {
   border-radius: var(--radius-sm);
   cursor: pointer;
   margin-bottom: 14px;
-  transition: background-color 150ms ease, color 150ms ease;
+  transition: background-color 150ms ease, color 150ms ease, transform 120ms ease-out;
   white-space: nowrap;
   width: 100%;
 }
@@ -160,6 +160,13 @@ onUnmounted(() => {
 .app-sidebar__collapse-btn:hover {
   background: var(--color-border);
   color: var(--color-text);
+}
+
+/* UI/UX 走查：這顆按鈕跟下面 .app-sidebar__nav-item 原本只有 :hover，點下去要等
+   側欄收合/展開動畫或高亮色塊滑動完才有反應，按下瞬間本身沒有回饋——補上跟全站其他
+   按鈕一致的即時按壓回饋。 */
+.app-sidebar__collapse-btn:active {
+  transform: scale(0.97);
 }
 
 .app-sidebar__collapse-btn svg {
@@ -239,8 +246,15 @@ nav {
   z-index: 1;
   cursor: pointer;
   /* 文字/圖示顏色跟著色塊同一個時長漸變，不是 class 一切就瞬間換色——色塊還在半路上滑的
-     時候，文字顏色也正在同步往目標色淡入淡出，兩者看起來是同一個過場動作的兩個面向。 */
-  transition: color 350ms var(--ease-out);
+     時候，文字顏色也正在同步往目標色淡入淡出，兩者看起來是同一個過場動作的兩個面向。
+     transform 另外給短時長——按壓回饋要立即，不能跟著顏色漸變一起拖 350ms。 */
+  transition: color 350ms var(--ease-out), transform 120ms ease-out;
+}
+
+/* UI/UX 走查：導覽項目原本只有 :hover，點下去要等高亮色塊滑過去才有反應，按下那一刻
+   是空白的——按壓回饋要獨立於色塊滑動動畫，立即發生。 */
+.app-sidebar__nav-item:active {
+  transform: scale(0.97);
 }
 
 .app-sidebar__nav-item svg {

@@ -479,7 +479,9 @@ App.vue 裡既有的其他動畫（modal 淡入淡出、`table-row-in` 清單進
 
 ### 6.4 獨立解密流程（信封＋Sheet）
 
-- `readLockedFileMetadata`（唯讀中繼資料）這個新訊息的確切欄位／回傳格式（是否包含檔案大小、是否複用既有 metadata 結構）這輪沒有細部設計，只定案了「要有這個訊息、不需要密碼」的概念。
+- ~~`readLockedFileMetadata`（唯讀中繼資料）這個新訊息的確切欄位／回傳格式~~——**已解決**：
+  Phase 2a 查證後發現不需要新訊息，既有 `inspectLockedFile`／`InspectLockedFileResponse`
+  就是這個機制，只補了 `CreatedAtUtc` 欄位。見〈7.6〉對應項目跟《技術規格》§2.15。
 - sheet 內部左右滑動翻頁的精確時長／easing 曲線沒有定案數值，只定了動態概念，比照〈5.2〉抽出動畫傾向的 `cubic-bezier(0.32, 0.72, 0, 1)` 是否也適用於翻頁，還沒驗證過。
 - Passkey 驗證失敗時 sheet 上顯示的提示文案，這輪只定了「要有提示」，確切文字（雙語）沒有寫。
 
@@ -493,11 +495,19 @@ App.vue 裡既有的其他動畫（modal 淡入淡出、`table-row-in` 清單進
 - 「新增檔案」按下後彈出的信封，跟〈1.8「寄出」動畫與加密交易模型〉那節定義的「信封怎麼出現（開場）」是不是同一套動畫——**已解決**：第 5 節接入側欄殼子那輪確認是同一套「垂直落下＋回彈」開場，但行為跟原本文字描述有落差（不是回彈順勢帶開封口，而是落地後才單獨開封），已回頭訂正上方〈1.8〉決策記錄跟對應的技術規格 §2.10，`13-sidebar-ticket-shell.html` 現在是這套時序的完整版實作。
 - 步驟一「取消」按鈕的確切行為（放棄新增退回清單、還是清空已選檔案？）沒有定案，見〈1.6〉決策記錄表最後一列。
 - 分頁名稱暫稱「檔案」的實際文案問題——**已解決**：分頁名稱已在第 3 節定案為「加密」。
-- `pending`/`committed` 狀態欄位的確切 schema（欄位名稱、序列化格式）還沒定案，只定了概念。
+- `pending`/`committed` 狀態欄位的確切 schema——**已解決**：`LockedItemMetadata` 新增 `Status`
+  屬性（`LockStatus` enum，`Pending`/`Committed`，預設 `Committed` 讓既有資料/測試不用遷移）。
+  `LockService` 新增 `EncryptPendingAsync`／`CommitEncryptAsync`／`RollbackPendingEncryptAsync`／
+  `RollbackAllPendingAsync` 四個方法實作這套交易模型，`EncryptAsync` 本身維持原本一次到位的行為
+  不變（CLI／舊版精靈這些不需要中間態的既有呼叫端不用改）。細節見
+  《[GUI造型探索_技術規格.md](GUI造型探索_技術規格.md)》§2.15。
 - 批次加密其中一個檔案 finalize 失敗（例如刪除原始檔失敗）時，其餘檔案要不要繼續 finalize、還是整批一起卡住等使用者處理——這次只定了「整批視為一個交易」的大方向，失敗時的細節行為沒有問到。
 - 清單新項目「滑入＋推擠」動畫的具體方向（從左或從右）、時長、easing 曲線都還沒定案，只定了概念本身。
 - 落下＋回彈的彈簧參數（阻尼、初速、超過定點的幅度）沒有定案數值，只定了動態的概念本身。
-- 加密進度條需要 `LockService.EncryptAsync` 新增進度回報機制（例如 `IProgress<double>` 或類似介面），目前完全沒有這塊——這是後端新增的介面，屬於實作前要先設計清楚的範圍，不是這輪 UI 決策能定案的細節。
+- 加密進度條需要真正的進度回報機制——**已解決**：`ChunkedCipher.EncryptStream` 新增選填的
+  `IProgress<double>`／`totalBytes` 參數，逐 chunk 回報真實寫入位元組數的百分比（不是裝飾性
+  動畫），`LockService` 內部串接到 `EncryptPendingAsync`。前端進度條 UI 本身要接上這個真實數值
+  仍屬於信封動畫階段（2b）的範圍，這裡只解決了後端「有沒有真實進度可以回報」這件事。
 - 批次加密（一疊信封）情境下，「彈出＋回彈＋打開」「進度條」這幾個階段疊在一起時視覺上怎麼呈現（例如只有最上面那個信封打開顯示表單，還是每個都要各自走一次開場動畫）——這次只定案單一檔案的完整流程，批次情境下這幾個新增階段還沒有一併確認過。
 
 ### 7.2 資料夾防護（金庫門）
@@ -527,6 +537,21 @@ App.vue 裡既有的其他動畫（modal 淡入淡出、`table-row-in` 清單進
 
 ### 7.6 獨立解密流程（信封＋Sheet）
 
-- `LockService.EncryptAsync`／對應解密流程需要新增一個唯讀 metadata 的介面（不執行實際解密、不需要密碼），這是後端新增的介面，實作前要先設計清楚，不是這輪 UI 決策能定案的細節。
-- 清單解密拿掉「詢問存到哪裡」之後，既有的 `decryptDestination` 相關 IPC（`pickFolder` purpose、`pathPicked`／`pathPickCancelled` 分支）有一部分會變成獨立信封流程專用，需要在實作時重新梳理哪些程式碼路徑要保留、哪些要改名／收斂，避免兩套解密路徑共用同一個 purpose 字串造成混淆。
-- History 表格要新增「開啟檔案位置」欄位／按鈕，需要確認 `historyItems` 現有資料結構有沒有帶著可以直接用的路徑欄位（解密的還原位置、加密的指標檔位置），如果沒有要回頭補後端資料。
+- 需要一個唯讀 metadata 介面（不執行實際解密、不需要密碼）——**已解決，而且發現不需要新建**：
+  查證 `App.vue`／`VaultProtocolHandlers.InspectLockedFile` 現況後，這個唯讀檢查機制其實
+  已經存在（回傳 `uuid, originalName, hint, passkeyEnabled, recoveryKeyEnabled`），不是這份
+  文件原本以為的「目前沒有」。Phase 2a 只補上這個既有回應缺的 `CreatedAtUtc` 欄位（信封落地後
+  要顯示「檔名＋加密時間」用得到），沒有新增 `readLockedFileMetadata` 這個訊息類型。
+- ~~清單解密拿掉「詢問存到哪裡」之後，既有的 `decryptDestination` 相關 IPC 有一部分會變成
+  獨立信封流程專用~~——**已解決，而且是整段拿掉，不是改名／收斂**：`decryptFromList`／
+  `decryptFromListViaPasskey`／`decryptFromListViaRecoveryKey` 三個函式直接固定
+  `destinationDir: null`（一律還原到原始位置），`askChoice`／`choiceDialogState` 這組原本
+  只服務「還原到哪裡」詢問的三選一對話框基礎設施整套是死碼，一併移除；`decryptDestination`
+  這個 `pickFolder` purpose 字串跟著這批程式碼一起消失，不會留著給獨立信封解密流程
+  （2c）沿用——2c 如果之後真的需要選存檔位置，屬於全新的一段互動，不是重用這裡拿掉的東西。
+- History 表格要新增「開啟檔案位置」欄位／按鈕——**已解決**：`historyItems` 既有的
+  `sourcePath`（Encrypted）／`restoredPath`（Decrypted）欄位就有路徑可用，不需要回頭補後端
+  資料。按鈕只在這兩種動作類型顯示，取路徑的父層目錄呼叫既有 `openFolderInExplorer` IPC
+  （`HandleOpenFolderInExplorer` 實際上是 `explorer.exe "path"`，不是文件先前記錄的
+  `/select,`——這處落差一併訂正）。同一輪順便調整了表格欄寬（動作欄縮小、時間欄放大並改成
+  超出省略號截斷），呼應走查回饋。

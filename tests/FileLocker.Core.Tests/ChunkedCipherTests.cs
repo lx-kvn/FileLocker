@@ -95,4 +95,55 @@ public class ChunkedCipherTests
 
         Assert.Throws<InvalidDataException>(() => ChunkedCipher.DecryptStream(key, truncatedStream, plaintextOutput));
     }
+
+    // ---- 信封加密流程 Phase 2a：真實進度回報 ----
+
+    [Fact]
+    public void EncryptStream_MultipleChunks_ReportsIncreasingProgressEndingAtOne()
+    {
+        var key = RandomNumberGenerator.GetBytes(32);
+        var random = new Random(54321);
+        var original = new byte[10_000];
+        random.NextBytes(original);
+
+        var reported = new List<double>();
+        var progress = new Progress<double>(value => reported.Add(value));
+        // Progress<T> 預設用 SynchronizationContext 非同步排程回呼——測試環境沒有真正的
+        // UI 訊息迴圈可以幫忙把回呼排程執行，這裡直接用 IProgress<double> 介面型別呼叫，
+        // 繞過 Progress<T> 那層排程，讓 .Report() 同步、立刻反映到 reported 清單裡。
+        IProgress<double> syncProgress = new SyncProgress(reported);
+
+        using var plaintextInput = new MemoryStream(original);
+        using var ciphertextStream = new MemoryStream();
+        ChunkedCipher.EncryptStream(key, plaintextInput, ciphertextStream, chunkSizeBytes: 777, progress: syncProgress, totalBytes: original.Length);
+
+        Assert.NotEmpty(reported);
+        Assert.Equal(1.0, reported[^1]);
+        for (var i = 1; i < reported.Count; i++)
+        {
+            Assert.True(reported[i] >= reported[i - 1]); // 單調遞增，不會忽大忽小
+        }
+    }
+
+    [Fact]
+    public void EncryptStream_TotalBytesZeroOrNull_DoesNotReportAndDoesNotThrow()
+    {
+        var key = RandomNumberGenerator.GetBytes(32);
+        var reported = new List<double>();
+        IProgress<double> syncProgress = new SyncProgress(reported);
+
+        using var emptyInput = new MemoryStream(Array.Empty<byte>());
+        using var ciphertextStream = new MemoryStream();
+
+        var exception = Record.Exception(() =>
+            ChunkedCipher.EncryptStream(key, emptyInput, ciphertextStream, progress: syncProgress, totalBytes: 0));
+
+        Assert.Null(exception);
+        Assert.Empty(reported);
+    }
+
+    private sealed class SyncProgress(List<double> sink) : IProgress<double>
+    {
+        public void Report(double value) => sink.Add(value);
+    }
 }

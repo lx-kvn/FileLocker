@@ -38,12 +38,60 @@ public class LockService
     }
 
     /// <summary>
+    /// 維持原本一次到位的行為（成功＝原始檔已刪除、marker 已寫入）——內部其實是依序呼叫
+    /// EncryptPendingAsync 再 CommitEncryptAsync，只是把兩段合併成單一原子操作對外呈現，
+    /// 讓 CLI／舊版精靈這些不需要「取消」中間態的既有呼叫端完全不用改。commit 階段失敗時
+    /// 會自動把剛才寫入的 pending 項目回滾掉，維持「失敗＝什麼都沒發生過」這個既有保證
+    /// （對應舊版 TryCleanupOrphanedVaultEntry 的行為）。信封加密流程（design-exploration/
+    /// gui-styles-v2 定案文件 §1.8）需要在使用者確認前有一個安全的中間態，直接呼叫
+    /// EncryptPendingAsync／CommitEncryptAsync／RollbackPendingEncryptAsync 三個方法，不走這個
+    /// 合併版本。
+    /// </summary>
+    public async Task<LockResult> EncryptAsync(
+        string path, string password, string? hint,
+        bool enablePasskey = false, IntPtr ownerWindowHandle = default,
+        bool enableRecoveryKey = false, string? batchId = null,
+        IProgress<double>? progress = null,
+        Action<bool>? onPasskeyVerifying = null)
+    {
+        var pending = await EncryptPendingAsync(
+            path, password, hint, enablePasskey, ownerWindowHandle, enableRecoveryKey, batchId,
+            progress, onPasskeyVerifying);
+
+        if (!pending.Success)
+        {
+            return pending;
+        }
+
+        var commit = await CommitEncryptAsync(pending.Uuid);
+
+        if (!commit.Success)
+        {
+            // 維持舊版 EncryptAsync「失敗就什麼都不留」的保證——commit 失敗（例如 marker 寫入時
+            // 磁碟滿了）不應該讓呼叫端看到一筆卡在 Pending、既不是成功也不是乾淨失敗的紀錄。
+            await RollbackPendingEncryptAsync(pending.Uuid);
+            return commit;
+        }
+
+        // RecoveryKey 明文只在 pending 階段產生過一次（衍生用的隨機值本身不會被持久化），
+        // commit 階段純粹是收尾動作（寫 marker／刪原始檔／寫 History），不會重新產生，
+        // 所以要沿用 pending 階段算出來的那一份，不能指望 commit 結果自己帶著。
+        return commit with { RecoveryKey = pending.RecoveryKey };
+    }
+
+    /// <summary>
+    /// 對應信封加密流程「取消要能安全回滾」交易模型的第一段：做完壓縮／加密／Passkey／恢復金鑰
+    /// 包裝，metadata 寫入 Vault（Status=Pending），但刻意不寫 marker、不刪原始檔、不寫 History——
+    /// 這個狀態下呼叫端隨時可以安全地整個放棄（見 RollbackPendingEncryptAsync），原始檔案全程
+    /// 沒被動過。真正要完成這筆加密（放 marker、刪原始檔），使用者確認後另外呼叫
+    /// CommitEncryptAsync。
+    ///
     /// 注意：這裡刻意不整個包進 Task.Run——實測發現 Passkey 相關的 WinRT 呼叫如果整個在背景執行緒
     /// 上執行，第二次（簽章）的 Windows Hello 驗證視窗會抓不到正確的視窗焦點/啟用狀態（懷疑跟 WinRT
     /// 的執行緒環境有關）。只有純檔案 I/O／加密運算的部分（EncryptToVault）丟進背景執行緒，
     /// Passkey 相關呼叫留在呼叫端原本的執行緒（通常是 UI 執行緒）上直接 await。
     /// </summary>
-    public async Task<LockResult> EncryptAsync(
+    public async Task<LockResult> EncryptPendingAsync(
         string path, string password, string? hint,
         bool enablePasskey = false, IntPtr ownerWindowHandle = default,
         bool enableRecoveryKey = false, string? batchId = null,
@@ -91,7 +139,7 @@ public class LockService
         EncryptionResult encryptResult;
         try
         {
-            encryptResult = await Task.Run(() => EncryptToVault(path, isFolder, password));
+            encryptResult = await Task.Run(() => EncryptToVault(path, isFolder, password, progress));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -186,8 +234,9 @@ public class LockService
                 }
             }
 
-            var vaultConfig = _vault.LoadOrCreateConfig();
-
+            // 這裡刻意不寫 marker、不刪原始檔、不寫 History——那三件事是「這筆加密真的完成了」
+            // 的宣告，屬於 CommitEncryptAsync 的職責。到這裡為止，加密內容已經安全寫進 Vault，
+            // 原始檔案完全沒被動過，是可以隨時安全放棄的中間態。
             var metadata = new LockedItemMetadata
             {
                 Uuid = encryptResult.Uuid!,
@@ -209,45 +258,12 @@ public class LockService
                 PasskeyWrappedContentKey = passkeyWrappedKeyBase64,
                 RecoveryKeyEnabled = recoveryKeyWrappedBase64 is not null,
                 RecoveryKeyWrappedContentKey = recoveryKeyWrappedBase64,
-                BatchId = batchId
+                BatchId = batchId,
+                Status = LockStatus.Pending
             };
             _vault.SaveMetadata(metadata);
 
-            var signingKey = Convert.FromBase64String(vaultConfig.SigningKeyBase64);
-            var marker = LockedMarkerFile.Create(encryptResult.Uuid!, signingKey);
-            marker.WriteTo(markerPath);
-
-            // 到這裡，加密內容、metadata、marker 都已經成功寫入——資料本身已經安全了。
-            // 清除原始明文是「收尾」動作，這一步就算失敗，也不代表加密本身失敗，
-            // 所以特別包一層自己的 try/catch，不讓它跟著外層的 catch 把整個結果判定成失敗
-            // （否則使用者會看到「加密失敗」，卻不知道其實 Vault 裡已經有一份有效的加密紀錄了）。
-            string? cleanupWarning = null;
-            try
-            {
-                await Task.Run(() =>
-                {
-                    if (isFolder)
-                    {
-                        SecureFileEraser.OverwriteAndDeleteFolder(path);
-                    }
-                    else
-                    {
-                        SecureFileEraser.OverwriteAndDelete(path);
-                    }
-                });
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                cleanupWarning = $"加密已完成，但清除原始檔案時發生錯誤，請手動確認並刪除原始檔案：{ex.Message}";
-            }
-
-            _history?.Append(new HistoryEntry(
-                encryptResult.Uuid!, originalName, HistoryAction.Encrypted, DateTimeOffset.UtcNow, hint,
-                SourcePath: path,
-                PasskeyEnabled: passkeyWrappedKeyBase64 is not null,
-                RecoveryKeyEnabled: recoveryKeyWrappedBase64 is not null));
-
-            return new LockResult(true, encryptResult.Uuid!, markerPath, cleanupWarning, recoveryKeyDisplayText);
+            return new LockResult(true, encryptResult.Uuid!, "", null, recoveryKeyDisplayText);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -273,6 +289,111 @@ public class LockService
                 SecureFileEraser.OverwriteAndDelete(encryptResult.TempZipPath);
             }
         }
+    }
+
+    /// <summary>
+    /// 對應信封加密流程「取消要能安全回滾」交易模型的第二段：把 EncryptPendingAsync 留下的
+    /// Pending 項目真正完成——寫 marker、刪除原始檔、metadata 狀態改成 Committed、寫入 History。
+    /// 呼叫端（信封 UI）要在這一步真的完成之後才播「寄出」動畫，不能先演給使用者看、背地裡
+    /// 還沒做完（design-exploration/gui-styles-v2 定案文件 §1.8：正確性優先於流暢度）。
+    ///
+    /// 只吃 uuid——原始路徑／是不是資料夾這兩件事直接從 pending metadata 本身讀（`OriginalPath`／
+    /// `Type`），不要求呼叫端另外傳一份，避免呼叫端（信封 UI）手上的值跟 pending 記錄本身不一致
+    /// 這種本來不該存在的落差。
+    /// </summary>
+    public async Task<LockResult> CommitEncryptAsync(string uuid)
+    {
+        var metadata = _vault.LoadMetadata(uuid);
+        if (metadata is null || metadata.Status != LockStatus.Pending)
+        {
+            return new LockResult(false, "", "", $"找不到待確認的加密項目：{uuid}", ErrorCode: ErrorCodes.PendingItemNotFound, ErrorDetail: uuid);
+        }
+
+        var originalPath = metadata.OriginalPath;
+        var isFolder = metadata.Type == ItemType.Folder;
+        var markerPath = MarkerStatusChecker.ComputeMarkerPath(originalPath, isFolder);
+
+        try
+        {
+            if (File.Exists(markerPath))
+            {
+                return new LockResult(false, "", "", $"目標位置已經有一個指標檔了：{markerPath}", ErrorCode: ErrorCodes.MarkerAlreadyExists, ErrorDetail: markerPath);
+            }
+
+            var vaultConfig = _vault.LoadOrCreateConfig();
+            var signingKey = Convert.FromBase64String(vaultConfig.SigningKeyBase64);
+            var marker = LockedMarkerFile.Create(uuid, signingKey);
+            marker.WriteTo(markerPath);
+
+            metadata.Status = LockStatus.Committed;
+            _vault.SaveMetadata(metadata);
+
+            // 到這裡，marker 已經寫入、metadata 已經標記完成——資料本身已經安全了。
+            // 清除原始明文是「收尾」動作，這一步就算失敗，也不代表這筆加密失敗，
+            // 所以特別包一層自己的 try/catch，不讓它跟著外層的 catch 把整個結果判定成失敗。
+            string? cleanupWarning = null;
+            try
+            {
+                await Task.Run(() =>
+                {
+                    if (isFolder)
+                    {
+                        SecureFileEraser.OverwriteAndDeleteFolder(originalPath);
+                    }
+                    else
+                    {
+                        SecureFileEraser.OverwriteAndDelete(originalPath);
+                    }
+                });
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                cleanupWarning = $"加密已完成，但清除原始檔案時發生錯誤，請手動確認並刪除原始檔案：{ex.Message}";
+            }
+
+            _history?.Append(new HistoryEntry(
+                uuid, metadata.OriginalName, HistoryAction.Encrypted, DateTimeOffset.UtcNow, metadata.Hint,
+                SourcePath: originalPath,
+                PasskeyEnabled: metadata.PasskeyEnabled,
+                RecoveryKeyEnabled: metadata.RecoveryKeyEnabled));
+
+            return new LockResult(true, uuid, markerPath, cleanupWarning);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // marker 寫到一半失敗（例如磁碟滿了）——項目留在 Pending，不在這裡自動回滾：
+            // 呼叫端（信封 UI）可能想讓使用者重試 commit，而不是連加密內容都一起丟掉。
+            // 舊版 EncryptAsync 那種「失敗就整個回滾」的行為在合併版本的 EncryptAsync 裡處理。
+            return new LockResult(false, "", "", $"完成加密時發生錯誤：{ex.Message}", ErrorCode: ErrorCodes.CommitPendingEncryptFailed, ErrorDetail: ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 對應「按下取消」：整個放棄一筆 Pending 項目，Vault 裡的加密內容／metadata 都會被刪除，
+    /// 原始檔案全程沒被動過（EncryptPendingAsync 本來就沒碰過它）。刻意做成幂等（比照
+    /// VaultManager.DeleteItem 本身的幂等設計）——uuid 不存在或已經被清過都直接視為成功，
+    /// 呼叫端不需要先檢查存不存在才敢呼叫。
+    /// </summary>
+    public Task RollbackPendingEncryptAsync(string uuid)
+        => Task.Run(() => _vault.DeleteItem(uuid));
+
+    /// <summary>
+    /// 對應「中途關閉 App（pending 期間當機/關閉）」：啟動時呼叫一次，把上次留下的孤兒 Pending
+    /// 項目全部安全清掉。刻意只看 metadata 裡的 Status 欄位，不用「marker 存不存在」推斷——
+    /// marker 遺失可能是別的原因（例如使用者手動刪除一份合法的 Committed 紀錄），跟這裡要處理的
+    /// 「使用者從頭到尾沒按過確認」是兩種不同情境，用錯判斷邏輯可能誤刪合法但 marker 遺失的紀錄。
+    /// </summary>
+    public async Task<int> RollbackAllPendingAsync()
+    {
+        var pendingUuids = await Task.Run(() =>
+            _vault.ScanAll().Where(m => m.Status == LockStatus.Pending).Select(m => m.Uuid).ToList());
+
+        foreach (var uuid in pendingUuids)
+        {
+            await RollbackPendingEncryptAsync(uuid);
+        }
+
+        return pendingUuids.Count;
     }
 
     private void TryCleanupOrphanedVaultEntry(string? uuid)
@@ -309,7 +430,7 @@ public class LockService
     /// 回傳的 EncryptionKey 刻意不在這裡清零——呼叫端（EncryptAsync）還要拿它去做 Passkey 包裝，
     /// 用完才會清零，見 EncryptAsync 的 finally 區塊。
     /// </summary>
-    private EncryptionResult EncryptToVault(string path, bool isFolder, string password)
+    private EncryptionResult EncryptToVault(string path, bool isFolder, string password, IProgress<double>? progress = null)
     {
         var nestedUuids = new List<string>();
         string contentPath;
@@ -347,7 +468,7 @@ public class LockService
             using (var plaintextStream = File.OpenRead(contentPath))
             using (var encStream = _vault.OpenEncryptedContentWrite(uuid))
             {
-                ChunkedCipher.EncryptStream(derived.EncryptionKey, plaintextStream, encStream);
+                ChunkedCipher.EncryptStream(derived.EncryptionKey, plaintextStream, encStream, progress: progress, totalBytes: originalSizeBytes);
             }
 
             return new EncryptionResult(

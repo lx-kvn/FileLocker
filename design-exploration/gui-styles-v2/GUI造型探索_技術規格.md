@@ -1469,6 +1469,141 @@ inline style 額外覆蓋成 `background:#fff`（因為那一列本身背景已�
 色彩體系挑出來的。改成 `#4F7A52`（墨綠），跟既有的棕/金/紅/藍色票协調，維持整份清單「同一組
 色票挑出來的、只是各自代表不同類型」的觀感，不是每個顏色各自隨機選取。
 
+### 2.14 Phase 1 正式移植：側欄殼子＋票根清單接進 App.vue
+
+`13-sidebar-ticket-shell.html` 這輪定案版本正式移植進 `src/FileLocker.Web/src/App.vue`，範圍
+明確限定「側欄殼子＋票根清單」，不含信封加密/解密動畫（那部分的世代編號機制見 §2.12，留到
+下一階段）。以下記錄跟 mockup 不同、或 mockup 沒交代的實作決策：
+
+- **Token 對照：完全不用新增 CSS 變數。** 移植前預期要建一張 mockup token（`--brass`／
+  `--paper`／`--vault-steel`...）對到 App.vue 既有 `--color-*` token 的對照表，實測發現
+  App.vue 的 `--color-accent`（`#A8770F`）跟 mockup 的 `--brass` 數值完全相同，`--color-accent-soft`
+  跟 `--brass-tint` 也幾乎一致，連 `--ease-out` 的貝茲曲線都字面相同——這兩套色彩系統原本就是
+  同一輪「鎖與鑰匙」主色發想下的產物。移植時直接把 mockup 樣式裡的 `--brass`/`--paper`/
+  `--vault-steel`/`--vault-line`/`--ink`/`--font-stamp` 等字面換成對應的既有 `--color-*`/
+  `--font-mono` token，沒有新增任何一個變數，也符合定案文件一貫「能重用既有機制就不引入新的」
+  的原則。
+- **`.ticket__seal` 目前是純展示圖示，不是撕開熱區。** mockup 的撕開動畫（tear-line、
+  `is-peeking`/`is-tearing` 狀態機）整套留到動畫階段才做，這階段點擊圖示沒有任何行為，解密
+  一律透過 `.actions` 裡的按鈕觸發。
+- **刪除按鈕：mockup 沒畫，但保留了。** 原本表格版清單每列都有刪除鈕（`row-delete-button`），
+  這是純視覺重新蒙皮、不能連功能一起丟掉，`TicketRow.vue` 補了一顆小的刪除鈕（垃圾桶圖示）
+  併進 `.actions` 排，且刻意不隨 `decrypting` 狀態 disable（照舊行為，跟解密中狀態無關）。
+- **檔案類型圖示：mockup 全部寫死在畫面裡（見該檔案 line 648-655 的 TODO），沒有 fallback。**
+  `src/FileLocker.Web/src/fileTypeVisuals.js` 用副檔名查表（`pdf`/`zip`/`7z`/`rar`/`pfx`/`p12`/
+  `cer`/`doc`/`docx`/`xls`/`xlsx`/`jpg`/`jpeg`/`png`），查不到（含完全沒有副檔名、`.gitignore`
+  這種點在最前面的情況）一律退回 `{ icon: 'file', color: 'var(--color-text-tertiary)' }`——用
+  中性色，不是語意色，避免使用者誤以為是警告。
+- **側欄收合狀態不持久化。** `composables/useSidebar.js` 的 `collapsed` 只存在記憶體裡，重開
+  App 會回到展開狀態。存到後端設定需要新增一個 IPC 訊息類型，這階段的移植範圍明確排除新增
+  後端溝通，之後如果要記住使用者偏好再回頭接。
+- **encrypt／decrypt／list 三個分頁合併成一個「加密」側欄項目**：`list`（票根清單）是這個
+  項目的落地頁，`encrypt`／`decrypt` 精靈維持原本內容不變，只是從清單頁工具列新增的
+  「加密新檔案」／「選擇要解密的檔案」兩顆按鈕進入（切 `activeTab`），不再是各自獨立的頂層
+  分頁。原本頂部分頁列的滑動指示條量測邏輯（`setTabRef`／`tabIndicatorStyle`／
+  `updateTabIndicator`，含綁定的 `window resize` 監聽）隨 `tab-bar` 一起整批移除。
+- **`.page-wrapper` 的捲動責任從外層容器移到 `.page` 自己。** 原本 `.page-wrapper` 本身
+  `overflow-y:auto`，加了側欄之後如果捲動還留在最外層，側欄會跟著主內容一起被捲出視窗；
+  改成 `.page-wrapper` 只負責左右排列（`overflow:hidden`），捲動交給 `.page`（`main`）自己，
+  側欄（`align-items:stretch` 預設撐滿高度）才會維持固定不跟著捲走。原本靠 `justify-content:
+  center` 讓 `.page` 在滿版寬度置中的寫法，換成 `.page` 自己 `margin:0 auto`（flex 主軸方向
+  的 auto margin 一樣能達到置中效果），這樣側欄佔掉的寬度才不會被誤算進置中計算。
+- **元件邊界**：`AppSidebar.vue`（側欄本體）、`TicketRow.vue`（單一票根卡片）兩個新元件，
+  加上 `composables/useSidebar.js`、`fileTypeVisuals.js` 兩個純函式檔案。批次群組摘要票根
+  （摺疊列＋展開後每個項目各自是一張 `TicketRow`）刻意沒有包成獨立元件，直接留在 `App.vue`
+  模板裡——它的資料形狀是「一組項目」而不是單一 `item`，硬包成元件只會多一層不必要的 props
+  轉發。
+- **測試**：`src/FileLocker.Web` 這輪補上 Vitest（`@vue/test-utils` + `jsdom`），是這個前端
+  專案第一次有測試環境。依 CLAUDE.md「先寫測試」規範，`useSidebar.test.js`／
+  `AppSidebar.test.js`／`fileTypeVisuals.test.js`／`TicketRow.test.js` 都是先寫測試、紅了以後
+  才動手刻對應元件/函式讓它轉綠。
+
+### 2.15 Phase 2a：信封加密流程的後端地基（pending/committed 交易模型＋真實進度）
+
+對應定案文件 §1.8「取消要能安全回滾」跟 §1.11「獨立解密流程」。這階段純 C# 後端，不動任何
+Vue/CSS，先寫 xUnit 測試（`tests/FileLocker.Core.Tests/LockServiceTests.cs`／
+`ChunkedCipherTests.cs`／`VaultProtocolHandlersTests.cs`）才動手實作，全部綠燈才算完成。
+
+**跟原計畫的落差——`EncryptAsync` 本身沒有被拆掉**：實作前 grep 了一次 `EncryptAsync` 的呼叫端，
+發現不是只有前端這一條路——`FileLocker.Cli/Program.cs`（CLI 指令）跟
+`VaultProtocolHandlers.cs`（現有前端舊版精靈用的協定層）都直接呼叫 `EncryptAsync` 並預期
+「呼叫完＝原始檔已刪除、marker 已寫入」這個既有的原子行為，既有測試也有一整批斷言這個行為。
+如果照原始構想把 `EncryptAsync` 本身拆成「只做到 Pending」，CLI 跟現有精靈（這階段明確不動的
+東西）都會壞掉。改成**新增三個平行的新方法，`EncryptAsync` 簽章與行為完全不動**：
+
+- `EncryptPendingAsync(...)`：跟 `EncryptAsync` 同樣的參數，做完壓縮＋加密＋Passkey/恢復金鑰
+  包裝＋寫 `metadata`（`Status=LockStatus.Pending`），不寫 marker、不刪原始檔、不寫 History，
+  回傳的 `LockResult.LockedMarkerPath` 是空字串（marker 還沒存在）。
+- `CommitEncryptAsync(uuid, originalPath, isFolder)`：從 `uuid` 讀回 Pending 中的 metadata
+  （找不到，或狀態不是 `Pending`，回傳 `ErrorCodes.PendingItemNotFound`），寫 marker、刪除原始檔、
+  `Status` 改 `Committed`、寫 History。marker 寫入失敗（`ErrorCodes.CommitPendingEncryptFailed`）
+  刻意**不**自動回滾——項目留在 `Pending`，讓呼叫端（信封 UI）決定要重試 commit 還是整個放棄，
+  不是連加密內容都一起丟掉。
+- `RollbackPendingEncryptAsync(uuid)`：直接呼叫既有 `VaultManager.DeleteItem`（本來就是冪等
+  設計），原始檔案全程沒被動過。
+- `RollbackAllPendingAsync()`：`VaultManager.ScanAll()` 找出所有 `Status==Pending` 的項目全部
+  回滾，回傳清掉的筆數。`FileLocker.App/App.xaml.cs` 的 `OnStartup` 用 `Task.Run` 背景呼叫一次
+  （吞掉例外，純粹盡力而為，失敗了下次啟動還會再掃一次），對應定案文件 §1.8「中途關閉 App
+  怎麼處理」。
+
+合併版本的 `EncryptAsync` 內部依序呼叫 `EncryptPendingAsync` 再 `CommitEncryptAsync`，commit
+失敗時自動呼叫 `RollbackPendingEncryptAsync`，維持舊版「失敗＝什麼都沒發生過」的保證；
+`RecoveryKey`（明文只在 pending 階段算過一次，不會被持久化）沿用 `EncryptPendingAsync` 回傳的
+那一份，不指望 `CommitEncryptAsync` 重新產生。
+
+**真實進度**：`ChunkedCipher.EncryptStream` 加了選填的 `IProgress<double>? progress`／
+`long? totalBytes` 參數，在既有的逐 chunk 寫入迴圈裡每寫完一塊回報一次
+`bytesProcessed / totalBytes`（`totalBytes` 是 null 或 0 整段跳過，避免除以零，例如空檔案）。
+`LockService.EncryptToVault` 私有方法多一個 `progress` 參數往下傳，`totalBytes` 直接用
+`originalSizeBytes`（壓縮完成後的實際內容大小，資料夾情境下是暫存 zip 的大小，不是原始資料夾
+大小——跟現有 `originalSizeBytes` 欄位用的是同一個數字，語意一致）。這解決的是「有沒有真實
+進度可以回報」，前端進度條 UI 要接上這個數值仍是信封動畫階段（2b）的範圍。
+
+**metadata 補欄位**：`LockedItemMetadata` 新增 `Status`（`LockStatus` enum，`Pending`/
+`Committed`，預設 `Committed`——讓沒有這個欄位的舊版 `.meta.json` 反序列化時自動補上這個預設值，
+視為「已完成」，不需要遷移邏輯）。`InspectLockedFileResponse`／`VaultProtocolHandlers.InspectLockedFile`
+多回傳 `CreatedAtUtc`（取自 `metadata.CreatedAtUtc`），對應定案文件 §1.11 信封落地後要顯示
+「檔名＋加密時間」——這個唯讀檢查機制（`inspectLockedFile`）查證後發現本來就已經存在
+（`App.vue:907` 送出、`871-875` 接回應），不是定案文件原本以為的「目前沒有」，Phase 2a 沒有
+新增 `readLockedFileMetadata` 這個訊息類型，只補了缺的欄位。
+
+### 2.16 Phase 2b 走查回饋修正：疊層架構、主題色分配、蓋章確認畫面
+
+信封元件實際接進 `App.vue` 之後，走查抓到幾個跟原始規劃有落差的地方，這裡記錄修正後的定案，
+避免之後被舊的文字描述帶偏：
+
+- **信封不是分頁，是懸浮疊層**：`App.vue` 預設進入畫面改回「已加密清單」（`activeTab` 初始值
+  `'list'`），「加密新檔案」不再切換 `activeTab`，改成開一個 `showEncryptOverlay` 疊層（背景
+  模糊+暗化的 scrim，比照 apple-design「Dim to focus」），蓋在目前畫面上面，關閉後回到原本
+  在看的頁面。點疊層外面／按 Esc 都能關閉，但僅限 `encryptPhase === 'form'`（還在選檔案/填
+  密碼）——pending 已送出、正在等確認、或已經在 committing/flying，都是阻斷式任務，不該被
+  意外中斷，要走 `EnvelopeEncrypt.vue` 自己的取消按鈕。
+- **主題色分配對調**：「加密」（含信封疊層＋已加密清單，兩者現在是同一個側欄項目）維持
+  全域預設金銅色；原本 `list` 專屬的藍色（`.theme-list` / `--tint-list`）改分給「資料夾防護」。
+  `THEME_CLASS_BY_TAB` 的 key 從 `list` 換成 `folderGuard`，`.theme-list` 這個 class 名稱／
+  `--tint-list` 這組 CSS 自訂屬性名稱都沒有改（只是換了觸發它的分頁），`.page-title__icon--list`
+  ／`.page-title__icon--guard` 這兩個圖示顏色 class 對調引用的變數，維持視覺跟主題色一致。
+- **z-index 階層**：`.encrypt-overlay` 是 90，刻意低於既有 `.modal-overlay`（100）／
+  `.modal-overlay--confirm`（200）——加密流程進行中還是可能跳出恢復金鑰顯示這類全域彈窗，
+  那些彈窗要蓋在疊層上面，不能反過來被擋住（這是實際踩到的 bug：一開始疊層設 250，
+  恢復金鑰彈窗被信封蓋住看不到）。
+- **確認畫面不是浮動卡片，是闔上蓋章的信封本身**：原本以為技術規格 §2.10「不自動接續，等
+  使用者按確認或取消」跟 mockup（`13-sidebar-ticket-shell.html`）的視覺是一致的，實際核對
+  mockup 才發現：mockup 裡送出密碼表單後，Sheet 先播兩段式抽出/收回退場（`playSheetTwoPhaseExit`，
+  這裡才是真正該用「抽出」動畫的地方，跟選檔案⇄設密碼之間的原地交叉淡化要分開，先前這裡
+  誤用了跟頁面切換一樣的 crossfade），退場播完信封才闔上蓋章，檔名／郵戳／時間戳記淡入疊在
+  信封本體上（左邊檔名標籤 `.mail-filename`、右邊郵戳圖示+時間 `.mail-postmark`，座標數值
+  直接沿用 mockup 已經對 420px 畫布定案的 `right:63%/19%;top:58%`），不是另外浮出一張獨立卡片。
+  mockup 本身這一步驟後面是自動接續（沒有畫確認/取消按鈕），但定案文件 §1.8「正確性優先於
+  流暢度」的決策仍然成立，所以確認/取消是額外補上的一排按鈕（`.mail-confirm-actions`），疊在
+  蓋章畫面下方，不是卡片，維持「信封本身就是內容」的觀感。committing／flying 這兩個階段信封
+  全程維持闔著、蓋章內容全程留著，不會像先前那樣在 committing/flying 期間變回「開著」。
+  `.mail-confirm-actions` 需要明確給 `z-index:3`（蓋過 `.mailaway-rig` 的 `z-index:1`），不然
+  按鈕會被信封本體圖片攔截點擊事件——這也是實際踩到的 bug，截圖走查時按鈕點不到才發現。
+- **拖曳懸停提示文字**：懸停中要立即消失，不能沿用開合信封那種有節奏的淡出動畫
+  （`.dropzone-hint.is-hidden` 明確蓋掉繼承來的 `transition`）；懸停陰影也加重
+  （`drop-shadow(0 22px 30px rgba(34,34,30,.4))`，原本 `0 14px 18px .22` 太淡看不出來）。
+
 ---
 
 ## 3. 密碼庫筆記本

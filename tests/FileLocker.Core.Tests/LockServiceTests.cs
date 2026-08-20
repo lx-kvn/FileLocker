@@ -700,4 +700,111 @@ public class LockServiceTests : IDisposable
         Assert.Equal("LOCKED_OUT", result.ErrorCode);
         Assert.True(int.TryParse(result.ErrorDetail, out var seconds) && seconds > 0);
     }
+
+    // ---- 信封加密流程 Phase 2a：pending/committed 交易模型 ----
+    // 對應 design-exploration/gui-styles-v2 定案文件 §1.8「取消要能安全回滾」。這批新方法
+    // （EncryptPendingAsync／CommitEncryptAsync／RollbackPendingEncryptAsync／RollbackAllPendingAsync）
+    // 刻意不動 EncryptAsync 本身的既有原子行為——上面那一大串既有測試都預期 EncryptAsync 呼叫完
+    // 就是「原始檔已刪除、marker 已寫入」，CLI／舊版精靈也是這樣用，不能因為這次改動而壞掉。
+
+    [Fact]
+    public async Task EncryptPendingAsync_LeavesOriginalFileAndDoesNotWriteMarker()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "待確認的檔案.txt");
+        File.WriteAllText(filePath, "還沒真的加密完成");
+
+        var result = await _service.EncryptPendingAsync(filePath, "pending-password", null);
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(filePath)); // 原始檔案還在
+        var expectedMarkerPath = Path.Combine(_workDir.FullName, "待確認的檔案.locked");
+        Assert.False(File.Exists(expectedMarkerPath)); // marker 還沒寫
+
+        var metadata = new VaultManager(_vaultDir.FullName).LoadMetadata(result.Uuid);
+        Assert.NotNull(metadata);
+        Assert.Equal(LockStatus.Pending, metadata!.Status);
+    }
+
+    [Fact]
+    public async Task CommitEncryptAsync_AfterPending_WritesMarkerDeletesOriginalAndMarksCommitted()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "要提交的檔案.txt");
+        File.WriteAllText(filePath, "內容");
+        var pending = await _service.EncryptPendingAsync(filePath, "commit-password", null);
+        Assert.True(pending.Success);
+
+        var commit = await _service.CommitEncryptAsync(pending.Uuid);
+
+        Assert.True(commit.Success);
+        Assert.False(File.Exists(filePath)); // 原始檔案被刪除
+        Assert.True(File.Exists(commit.LockedMarkerPath)); // marker 寫入
+        var metadata = new VaultManager(_vaultDir.FullName).LoadMetadata(pending.Uuid);
+        Assert.NotNull(metadata);
+        Assert.Equal(LockStatus.Committed, metadata!.Status);
+
+        var historyEntries = _history.ReadAll().ToList();
+        Assert.Contains(historyEntries, e => e.Uuid == pending.Uuid && e.Action == HistoryAction.Encrypted);
+    }
+
+    [Fact]
+    public async Task RollbackPendingEncryptAsync_RemovesVaultEntryAndLeavesOriginalUntouched()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "要取消的檔案.txt");
+        const string originalContent = "使用者按了取消";
+        File.WriteAllText(filePath, originalContent);
+        var pending = await _service.EncryptPendingAsync(filePath, "cancel-password", null);
+        Assert.True(pending.Success);
+
+        await _service.RollbackPendingEncryptAsync(pending.Uuid);
+
+        Assert.True(File.Exists(filePath));
+        Assert.Equal(originalContent, File.ReadAllText(filePath)); // 原始內容完全沒被動過
+        var metadata = new VaultManager(_vaultDir.FullName).LoadMetadata(pending.Uuid);
+        Assert.Null(metadata); // Vault 裡的暫存項目被清掉了
+
+        var historyEntries = _history.ReadAll().ToList();
+        Assert.DoesNotContain(historyEntries, e => e.Uuid == pending.Uuid);
+    }
+
+    [Fact]
+    public async Task RollbackAllPendingAsync_OnlyRemovesPendingItems_CommittedItemsUntouched()
+    {
+        // 模擬「上次 App 意外關閉，留下一筆孤兒 pending 項目」——不透過 EncryptPendingAsync，
+        // 直接組一筆 metadata 存進 Vault，最貼近真實情境（真正的孤兒不是這次測試呼叫產生的）。
+        var vault = new VaultManager(_vaultDir.FullName);
+        var orphanUuid = Guid.NewGuid().ToString();
+        vault.SaveMetadata(new LockedItemMetadata
+        {
+            Uuid = orphanUuid,
+            OriginalName = "孤兒項目.txt",
+            OriginalPath = Path.Combine(_workDir.FullName, "孤兒項目.txt"),
+            PasswordVerificationHash = "不重要",
+            Salt = "不重要",
+            Argon2TimeCost = 1,
+            Argon2MemoryCostKb = 1,
+            Argon2Parallelism = 1,
+            Type = ItemType.File,
+            Status = LockStatus.Pending,
+        });
+
+        // 正常委託完成的一筆，狀態是 Committed，不該被掃描邏輯動到。
+        var normalFilePath = Path.Combine(_workDir.FullName, "正常完成的檔案.txt");
+        File.WriteAllText(normalFilePath, "正常內容");
+        var normalResult = await _service.EncryptAsync(normalFilePath, "normal-password", null);
+        Assert.True(normalResult.Success);
+
+        await _service.RollbackAllPendingAsync();
+
+        Assert.Null(vault.LoadMetadata(orphanUuid)); // 孤兒項目被清掉
+        Assert.NotNull(vault.LoadMetadata(normalResult.Uuid)); // 正常項目不受影響
+    }
+
+    [Fact]
+    public async Task CommitEncryptAsync_WithUnknownUuid_ReturnsPendingItemNotFoundErrorCode()
+    {
+        var result = await _service.CommitEncryptAsync(Guid.NewGuid().ToString());
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCodes.PendingItemNotFound, result.ErrorCode);
+    }
 }

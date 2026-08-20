@@ -20,13 +20,13 @@ import lightModeBlackUrl from './assets/Light_Mode_Black.svg'
 import lightModeWhiteUrl from './assets/Light_Mode_White.svg'
 import darkModeBlackUrl from './assets/Dark_Mode_Black.svg'
 import darkModeWhiteUrl from './assets/Dark_Mode_White.svg'
-import lockLightUrl from './assets/Lock_Light.svg'
-import lockDarkUrl from './assets/Lock_Dark.svg'
-import warningLightUrl from './assets/Warning_Light.svg'
-import warningDarkUrl from './assets/Warning_Dark.svg'
 import VaultWheelIcon from './components/VaultWheelIcon.vue'
 import VaultAddFolderOverlay from './components/VaultAddFolderOverlay.vue'
+import AppSidebar from './components/AppSidebar.vue'
+import TicketRow from './components/TicketRow.vue'
+import EnvelopeEncrypt from './components/EnvelopeEncrypt.vue'
 import { sendMessage, requestMessage, resolvePending, rejectAllPending } from './composables/useIpc.js'
+import { useSidebar } from './composables/useSidebar.js'
 import {
   groupVaultItems,
   batchPreviewText as batchPreviewTextPure,
@@ -126,23 +126,11 @@ function resolveConfirmDialog(result) {
   confirmDialogState.value = null
 }
 
-// ---- 自訂三選一對話框：用在「還原到原始位置」還是「自己選位置」這種情境——
-// 這種情境本質上不是「做／不做同一件事」，硬套用確定/取消的語意會讓「取消」變成
-// 實際上觸發了另一個動作（跳出資料夾選擇器），使用者會搞不清楚「取消」到底取消了什麼。
-// 改成兩個各自標示清楚意圖的按鈕；真正的取消（不做任何事）是點背景或按 Esc，
-// 回傳 null，呼叫端據此判斷什麼都不做。
-const choiceDialogState = ref(null) // { message, choices: [{ value, label, variant }], resolve }
-function askChoice(message, choices) {
-  return new Promise((resolve) => {
-    choiceDialogState.value = { message, choices, resolve }
-  })
-}
-function resolveChoiceDialog(value) {
-  choiceDialogState.value?.resolve(value)
-  choiceDialogState.value = null
-}
-
-const activeTab = ref('encrypt')
+const activeTab = ref('list')
+// 信封加密流程（Phase 2b）：不是獨立分頁，是疊在目前畫面上的懸浮層（背景模糊），
+// 對應定案文件的信封比喻——「加密」這個動作本身是從清單頁彈出來的一個短暫任務，
+// 不該把使用者整個導去另一個頁面，關掉信封退回的地方永遠是原本在看的清單。
+const showEncryptOverlay = ref(false)
 const activeListSubTab = ref('files') // 'files' | 'history'
 
 // 分頁主題色：套在 .app 最外層（不是只套在分頁內容），因為彈窗（新增密碼、驗證、確認
@@ -156,47 +144,38 @@ const activeListSubTab = ref('files') // 'files' | 'history'
 // 使用者會看到「還沒退場完的舊畫面用著新顏色」這種對不上的瞬間。延到 @before-enter（新
 // 內容要進場的前一刻，也就是舊內容已經完全淡出隱形的時間點）才切換，顏色變化就會剛好對齊
 // 舊畫面完全消失的瞬間。
-const THEME_CLASS_BY_TAB = { decrypt: 'theme-decrypt', list: 'theme-list', passwordLocker: 'theme-vault' }
+// 「加密」（原本的清單頁，現在跟加密流程合併，見側欄殼子移植）改用全域預設金色，不需要
+// 覆蓋規則；原本 list 專屬的藍色改分給「資料夾防護」（回饋：金銅黃色是加密頁的主題色，
+// 藍色挪去資料夾防護頁）——class 名稱維持 theme-list 不改，只是 key 從 'list' 換成
+// 'folderGuard'，避免連帶要改 CSS 自訂屬性命名跟 .theme-list 選擇器本身。
+const THEME_CLASS_BY_TAB = { decrypt: 'theme-decrypt', folderGuard: 'theme-list', passwordLocker: 'theme-vault' }
 const themeTab = ref(activeTab.value)
-const activeThemeClass = computed(() => THEME_CLASS_BY_TAB[themeTab.value] || '')
+// 信封疊層開著時不跟著底下分頁的主題色（例如清單頁的藍色）走——疊層本身是獨立的任務層，
+// 視覺上應該維持加密／資料夾防護共用的預設金色，不是「因為底下剛好是清單頁所以變藍」這種
+// 使用者感知不到因果關係的巧合。
+const activeThemeClass = computed(() => showEncryptOverlay.value ? '' : (THEME_CLASS_BY_TAB[themeTab.value] || ''))
 
 // .page 的寬度（page--wide）要延到 tab-page 過渡完全透明的瞬間才切換，
 // 不能直接跟 activeTab 綁在一起——否則點分頁的當下寬度就先跳掉，
 // 舊內容還沒開始淡出就已經被塞進新寬度的容器。
 const pageWidthTab = ref(activeTab.value)
 
-// ---- 頁籤下方會滑動的指示條：量測目前作用中頁籤按鈕的實際位置/寬度，讓指示條動畫過去，
-// 而不是每個按鈕各自套用固定的底線樣式（那樣切換時只會「跳」過去，沒有滑動的感覺）。
-const tabBarRefs = {}
-function setTabRef(key, el) {
-  if (el) {
-    tabBarRefs[key] = el
+// ---- 側欄導覽（design-exploration/gui-styles-v2 §3.3 定案版本，取代原本頂部水平分頁列的
+// 滑動指示條寫法——原本量測按鈕位置/寬度來做滑動底線的那組邏輯，換成側欄之後不再需要，
+// 整批一起移除，見這輪移植計畫「Phase 1：側欄殼子＋票根清單」）。
+// 側欄把 encrypt／decrypt／list 三個分頁合併成一個「加密」導覽項目：list（票根清單）是
+// 這個項目的預設落地頁，encrypt／decrypt 精靈仍是原本內容、只是從清單頁的工具列按鈕進入，
+// 不是各自獨立的頂層分頁。
+const SIDEBAR_KEY_BY_TAB = { encrypt: 'encrypt', decrypt: 'encrypt', list: 'encrypt', folderGuard: 'folderGuard', passwordLocker: 'passwordLocker', settings: 'settings' }
+const sidebarActiveKey = computed(() => SIDEBAR_KEY_BY_TAB[activeTab.value] || 'encrypt')
+const { collapsed: sidebarCollapsed, toggle: toggleSidebar } = useSidebar()
+
+function onSidebarNavigate(key) {
+  if (key === 'encrypt') {
+    activeTab.value = 'list'
+  } else {
+    activeTab.value = key
   }
-}
-
-const tabIndicatorStyle = ref({ transform: 'translateX(0px)', width: '0px' })
-
-function updateTabIndicator() {
-  const el = tabBarRefs[activeTab.value]
-  if (!el) {
-    return
-  }
-  tabIndicatorStyle.value = {
-    transform: `translateX(${el.offsetLeft}px)`,
-    width: `${el.offsetWidth}px`
-  }
-}
-
-watch(activeTab, () => nextTick(updateTabIndicator))
-
-// 切換語言後頁籤文字長度會跟著變（例如中文兩個字 vs 英文一個單字），按鈕實際寬度也會變，
-// 指示條要重新量測，不然會維持舊語言文字的寬度，跟新文字對不上。
-watch(currentLocale, () => nextTick(updateTabIndicator))
-
-// 視窗縮放（尤其這個 App 可以自由調整大小）會改變按鈕實際寬度，指示條要跟著重新對齊，
-// 不然縮放後位置會跟按鈕對不上。
-function handleWindowResize() {
-  updateTabIndicator()
 }
 
 // Esc 關閉目前開啟的彈窗——照優先權由上而下檢查哪個彈窗開著就關掉哪個，正常情況下同時間
@@ -210,10 +189,13 @@ function handleGlobalKeydown(event) {
     // 金庫層 z-index 蓋過其他所有彈窗，一定排最優先——跟點外面立即取消是同一套邏輯
     // （見 onFolderGuardAddOverlayCancel），不再播剩餘的關門動畫。
     onFolderGuardAddOverlayCancel()
+  } else if (showEncryptOverlay.value && encryptPhase.value === 'form') {
+    // 只有還在表單階段（選檔案／填密碼）才能用 Esc 快速關掉——pending 已經送出、正在等
+    // 使用者確認/取消，或已經在 committing／flying，都是「阻斷式任務」不該被 Esc 意外中斷，
+    // 跟點外面關閉是同一套判斷（見 .encrypt-overlay 的 @click.self）。
+    showEncryptOverlay.value = false
   } else if (confirmDialogState.value) {
     resolveConfirmDialog(false)
-  } else if (choiceDialogState.value) {
-    resolveChoiceDialog(null)
   } else if (passwordPromptContext.value) {
     cancelPasswordPrompt()
   } else if (recoveryKeyPromptItem.value) {
@@ -236,13 +218,10 @@ function handleGlobalKeydown(event) {
 }
 
 onMounted(() => {
-  nextTick(updateTabIndicator)
-  window.addEventListener('resize', handleWindowResize)
   window.addEventListener('keydown', handleGlobalKeydown)
 })
 
 onUnmounted(() => {
-  window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('keydown', handleGlobalKeydown)
   if (passwordLockerTotpRefreshTimer) {
     clearInterval(passwordLockerTotpRefreshTimer)
@@ -283,8 +262,6 @@ const lightModeIconUrl = computed(() => settingsTheme.value === 'dark' ? lightMo
 const darkModeIconUrl = computed(() => settingsTheme.value === 'dark' ? darkModeWhiteUrl : darkModeBlackUrl)
 const passkeyIconUrl = computed(() => settingsTheme.value === 'dark' ? passkeyWhiteUrl : passkeyBlackUrl)
 const recoveryKeyIconUrl = computed(() => settingsTheme.value === 'dark' ? recoveryKeyWhiteUrl : recoveryKeyBlackUrl)
-const nestedLockIconUrl = computed(() => settingsTheme.value === 'dark' ? lockDarkUrl : lockLightUrl)
-const warningIconUrl = computed(() => settingsTheme.value === 'dark' ? warningDarkUrl : warningLightUrl)
 const settingsSaveMessage = ref('')
 const isChangingVaultPath = ref(false)
 
@@ -439,6 +416,94 @@ const enablePasskey = ref(false)
 const enableRecoveryKey = ref(false)
 const recoveryKeyDisplay = ref('') // 非空字串時顯示恢復金鑰彈窗
 const recoveryKeySaveState = ref('') // '' | 'saved' | 'acknowledged'
+
+// ---- 信封加密流程（Phase 2b）：全新的一組狀態/函式，刻意不跟下面舊版 isEncrypting／
+// encryptItemResults／假進度那一套共用——那一套目前只剩巢狀資料夾防護重試（見
+// handleNestedGuardedEncrypt）這個邊角案例還在用舊的一次到位 sendMessage('encrypt', ...)，
+// 拆開兩套避免互相污染狀態。已知的落差：重試那個邊角案例目前完成時不會有任何視覺回饋（沒有
+// 進度條、不會播信封動畫），只會安靜地完成、清單頁刷新——這是刻意的範圍縮小，不是遺漏，
+// 之後如果要補這塊視覺一致性再回頭處理。
+const encryptPhase = ref('form') // 'form' | 'processing' | 'confirming' | 'committing' | 'flying'
+const encryptRealProgressPercent = ref(0)
+const encryptPendingItems = ref([]) // 這一輪 pending 完成的逐項結果 { path, uuid, success, errorMessage, note, recoveryKey }
+let encryptCommitsExpected = 0
+let encryptCommitsDone = 0
+
+const encryptPendingSummary = computed(() => {
+  const successItems = encryptPendingItems.value
+    .filter((item) => item.success)
+    .map((item) => ({ originalName: item.path.split(/[\\/]/).pop() }))
+  if (successItems.length === 0) return ''
+  return batchPreviewTextPure(successItems, t)
+})
+
+async function submitEncryptPending() {
+  if (!encryptPassword.value || encryptPassword.value !== encryptPasswordConfirm.value) {
+    showToast(t('encrypt.passwordMismatch'))
+    return
+  }
+
+  const nestedLockCount = await requestNestedLockCount(encryptPaths.value)
+  if (nestedLockCount > 0) {
+    showToast(t('alert.nestedLockNotice', { count: nestedLockCount }), 'info')
+  }
+
+  encryptPhase.value = 'processing'
+  encryptRealProgressPercent.value = 0
+  encryptPendingItems.value = []
+
+  const isBatch = encryptPaths.value.length > 1
+  sendMessage('encryptPending', {
+    paths: encryptPaths.value,
+    password: encryptPassword.value,
+    hint: hint.value,
+    enablePasskey: isBatch ? false : enablePasskey.value,
+    enableRecoveryKey: isBatch ? false : enableRecoveryKey.value
+  })
+}
+
+function confirmEncryptPending() {
+  const successItems = encryptPendingItems.value.filter((item) => item.success)
+  if (successItems.length === 0) {
+    // 全部失敗，沒有東西可以 commit，直接退回表單讓使用者看錯誤訊息重新來過。
+    encryptPhase.value = 'form'
+    return
+  }
+  encryptPhase.value = 'committing'
+  encryptCommitsExpected = successItems.length
+  encryptCommitsDone = 0
+  for (const item of successItems) {
+    sendMessage('commitEncrypt', { uuid: item.uuid })
+  }
+}
+
+function cancelEncryptPending() {
+  if (encryptPhase.value === 'confirming' || encryptPhase.value === 'committing') {
+    for (const item of encryptPendingItems.value.filter((i) => i.success)) {
+      sendMessage('rollbackPendingEncrypt', { uuid: item.uuid })
+    }
+  }
+  // 定案文件 §1.8：取消後密碼欄位／勾選狀態要保留，不清空——這裡刻意不動 encryptPassword
+  // 等欄位，讓使用者可以直接改個地方再送一次，不用整組重打。
+  encryptPhase.value = 'form'
+  encryptPendingItems.value = []
+}
+
+// 寄出飛走動畫播完才呼叫（見 EnvelopeEncrypt.vue 的 fly-away-complete emit）——對應定案文件
+// §1.8「動畫播完之後自動切換到已加密清單分頁」。
+function onEncryptFlyAwayComplete() {
+  encryptPhase.value = 'form'
+  encryptPaths.value = []
+  const passwordUsed = encryptPassword.value
+  const successItems = encryptPendingItems.value.filter((i) => i.success).map((i) => ({ uuid: i.uuid, path: i.path }))
+  encryptPassword.value = ''
+  encryptPasswordConfirm.value = ''
+  hint.value = ''
+  encryptPendingItems.value = []
+  showEncryptOverlay.value = false
+  activeTab.value = 'list'
+  maybeOfferSaveEncryptedFilesToLocker(passwordUsed, successItems)
+}
 const isEncrypting = ref(false)
 
 // ---- 加密進度條：不是真正的加解密進度回報（那需要深入 ChunkedCipher 的每個區塊往外送
@@ -598,6 +663,11 @@ function markLocalVaultMutation() {
   lastLocalVaultMutationAt = Date.now()
 }
 const decryptingUuids = ref(new Set())
+// 驗證成功、撕開動畫播完之前，這個項目暫時待在這個集合裡——見下面 removeVaultItem。
+const tearingUuids = ref(new Set())
+// 跟 TicketRow.vue 的 .ticket.is-tearing 過場時間（200ms）留一點餘裕，確保撕開的視覺
+// 真的播完了才把項目從陣列拿掉，不然過場會被硬生生截斷看起來像跳幀。
+const TEAR_ANIMATION_MS = 260
 const expandedGroups = ref(new Set())
 const decryptingBatchIds = ref(new Set())
 
@@ -605,9 +675,6 @@ const decryptingBatchIds = ref(new Set())
 const historyItems = ref([])
 const isLoadingHistory = ref(false)
 
-// 清單解密：選了自訂位置時，暫存「正在處理哪一筆、要用密碼還是 Passkey」，等資料夾選好之後接著跳下一步。
-const pendingDecryptItem = ref(null)
-const pendingDecryptMode = ref('password')
 
 // 恢復金鑰解鎖：暫存正在處理哪一筆，等使用者輸入恢復金鑰。
 const recoveryKeyPromptItem = ref(null)
@@ -687,7 +754,14 @@ const isRunningInWebView2 = typeof window.chrome?.webview !== 'undefined'
 // 把成功解密的項目從 vaultItems 篩掉。集中成一個具名函式，之後改「篩掉」的邏輯
 // （例如改成標記狀態、動畫淡出）只需要改一個地方，四個呼叫端都受益。
 function removeVaultItem(uuid) {
-  vaultItems.value = vaultItems.value.filter((item) => item.uuid !== uuid)
+  // 先進入「撕開中」狀態播一小段撕開動畫（TicketRow.vue 的 .is-tearing），播完才真的把
+  // 項目從陣列篩掉——真正的移除動作交給 App.vue 這層的 <TransitionGroup>，它會自動接手
+  // 飛走＋淡出，下面的列也會自動往上補位，不用手動算高度或搬移其餘列。
+  tearingUuids.value.add(uuid)
+  setTimeout(() => {
+    tearingUuids.value.delete(uuid)
+    vaultItems.value = vaultItems.value.filter((item) => item.uuid !== uuid)
+  }, TEAR_ANIMATION_MS)
 }
 
 // 對應架構審查（2026-07-27）：decryptResult／decryptByUuidResult／decryptByPasskeyResult／
@@ -771,13 +845,75 @@ const messageHandlers = {
     encryptPassword.value = ''
     encryptPasswordConfirm.value = ''
     hint.value = ''
-    // 切到完成頁讓使用者自己確認結果、按下「完成」才回步驟一——如果這次有恢復金鑰，
-    // 彈窗會疊在完成頁上面，關掉彈窗後畫面還是完成頁，不會像以前一樣底下先跳回步驟一。
-    encryptStepDirection.value = 'forward'
-    encryptStep.value = 3
-    // 不 await：這是加密完成後「順便問一下」的附加流程，不該卡住完成頁本身的顯示——
+    // 這是巢狀資料夾防護重試（handleNestedGuardedEncrypt）唯一還在用的舊路徑，不會被新版
+    // 信封 UI 觸發——沒有完成頁可以切了（那個畫面已經被信封流程取代），直接切到清單頁讓
+    // 使用者自己去看結果，理由跟信封流程 onEncryptFlyAwayComplete 的收尾一致。
+    activeTab.value = 'list'
+    // 不 await：這是加密完成後「順便問一下」的附加流程，不該卡住畫面切換——
     // 使用者已經看得到加密結果，詢問存密碼庫的彈窗晚個幾百毫秒才跳出來沒有關係。
     maybeOfferSaveEncryptedFilesToLocker(passwordUsed, successItems)
+  },
+
+  // ---- 信封加密流程（Phase 2b）：pending/commit/rollback 三兄弟的回應處理，見 2a／2b 後端 ----
+
+  encryptPendingBatchStarted() {
+    encryptPendingItems.value = []
+  },
+
+  encryptProgress(data) {
+    encryptRealProgressPercent.value = data.percent
+  },
+
+  encryptPendingItemResult(data) {
+    // 巢狀防護資料夾這個邊角案例目前仍走舊的 handleNestedGuardedEncrypt／submitEncrypt
+    // 一次到位路徑（見上面「信封加密流程」區塊開頭的說明），這裡不用重複處理。
+    let note = ''
+    if (data.passkeyRequested && !data.passkeyEnabled) {
+      note = t('note.passkeyNotEnabled')
+    } else if (data.passkeyEnabled) {
+      note = t('note.passkeyEnabled')
+    }
+    encryptPendingItems.value.push({
+      path: data.path,
+      uuid: data.uuid,
+      success: data.success,
+      errorMessage: translateError(data.errorCode, data.errorDetail, data.errorMessage),
+      note
+    })
+    if (data.recoveryKey) {
+      recoveryKeyDisplay.value = data.recoveryKey
+      recoveryKeySaveState.value = ''
+    }
+  },
+
+  encryptPendingBatchDone() {
+    const anySuccess = encryptPendingItems.value.some((item) => item.success)
+    if (anySuccess) {
+      encryptPhase.value = 'confirming'
+    } else {
+      const firstError = encryptPendingItems.value[0]
+      showToast(firstError ? firstError.errorMessage : t('alert.genericError', { message: '' }))
+      encryptPhase.value = 'form'
+    }
+  },
+
+  commitEncryptResult(data) {
+    encryptCommitsDone++
+    if (!data.success) {
+      // marker 寫入失敗：維持 committing 狀態，讓使用者看到錯誤，可以手動取消（回滾）或
+      // 之後再想辦法重試——不自動回滾，避免使用者還沒看清楚發生什麼事，資料就已經被清掉了。
+      showToast(translateError(data.errorCode, data.errorDetail, data.errorMessage))
+      return
+    }
+    markLocalVaultMutation()
+    if (encryptCommitsDone >= encryptCommitsExpected) {
+      encryptPhase.value = 'flying'
+    }
+  },
+
+  rollbackPendingEncryptResult() {
+    // App.vue 這端已經在 cancelEncryptPending() 當下就把畫面切回表單了，這裡不用再做什麼，
+    // 純粹是既有慣例「每個請求都有對應回應」，回來確認後端真的清乾淨了。
   },
 
   decryptResult(data) {
@@ -901,25 +1037,18 @@ const messageHandlers = {
     // 那個訊息原本該回的 xxxResult 類型——任何一個 requestMessage() 呼叫如果剛好撞上，
     // 沒有這行會永遠卡住、畫面完全沒反應，見 rejectAllPending 的說明。
     rejectAllPending(data.message)
-    const wasEncrypting = isEncrypting.value
     isEncrypting.value = false
     cancelFakeProgress()
     encryptProgressPercent.value = 0
     isDecrypting.value = false
     isLoadingList.value = false
     isLoadingHistory.value = false
-    if (wasEncrypting) {
-      // 加密進行中途發生嚴重錯誤也要能看到結果——完成頁是結果清單現在唯一會顯示的地方，
-      // 不切過去的話使用者會卡在步驟二，看不到任何錯誤訊息。
-      encryptItemResults.value.push({ path: '', success: false, errorMessage: t('alert.genericError', { message: data.message }), note: '' })
-      encryptStepDirection.value = 'forward'
-      encryptStep.value = 3
-    } else {
-      // 不在加密流程中時，加密結果清單根本不會顯示在畫面上（它只出現在加密完成頁），
-      // 錯誤推進去等於還是沒人看得到——密碼庫、資料夾防護那些分頁發生的後端例外都屬於
-      // 這種情況，改用 toast 才真的看得見。
-      showToast(t('alert.genericError', { message: data.message }))
+    // 信封流程進行中途發生嚴重錯誤，退回表單頁讓使用者看得到 toast、可以重新來過——
+    // 不會卡在「處理中」動畫或確認畫面上不知道發生什麼事。
+    if (encryptPhase.value !== 'form') {
+      encryptPhase.value = 'form'
     }
+    showToast(t('alert.genericError', { message: data.message }))
   },
 
   pathPicked(data) {
@@ -927,19 +1056,6 @@ const messageHandlers = {
       decryptPath.value = data.path
       decryptItemInfo.value = null
       sendMessage('inspectLockedFile', { path: data.path })
-    } else if (data.purpose === 'decryptDestination') {
-      const item = pendingDecryptItem.value
-      const mode = pendingDecryptMode.value
-      pendingDecryptItem.value = null
-      if (item) {
-        if (mode === 'passkey') {
-          startPasskeyDecrypt(item, data.path)
-        } else if (mode === 'recoveryKey') {
-          openRecoveryKeyPrompt(item, data.path)
-        } else {
-          promptPasswordAndDecrypt(item, data.path)
-        }
-      }
     } else if (data.purpose === 'vaultFolder') {
       isChangingVaultPath.value = true
       sendMessage('changeVaultPath', { newPath: data.path })
@@ -1017,10 +1133,7 @@ const messageHandlers = {
   },
 
   pathPickCancelled(data) {
-    // 使用者在「自己選地方存」流程中途按了取消，把暫存的項目清掉，避免下次選檔誤觸發解密。
-    if (data.purpose === 'decryptDestination') {
-      pendingDecryptItem.value = null
-    } else if (data.purpose === 'folderGuardLock') {
+    if (data.purpose === 'folderGuardLock') {
       // 取消跟選定走同一套收場（都播完整關門動畫才讓懸浮層消失），path 給 null 讓
       // pickFolderGuardFolder 知道不用真的呼叫 lockFolders。
       resolveFolderGuardPick?.({ path: null })
@@ -1085,7 +1198,8 @@ const messageHandlers = {
     // 拖放進來的檔案：合併進現有清單（去除重複），不是整份取代——使用者可能已經選了
     // 一些東西，拖放應該是「再加一些」，不是「重新開始」。這則訊息現在來自
     // HandleFilesDroppedFromWebView（見 handleFileDrop 函式），不是原生 WPF 拖放。
-    activeTab.value = 'encrypt'
+    activeTab.value = 'list'
+    showEncryptOverlay.value = true
     for (const path of data.paths) {
       if (!encryptPaths.value.includes(path)) {
         encryptPaths.value.push(path)
@@ -1107,8 +1221,12 @@ const messageHandlers = {
       activeTab.value = data.action
       return
     }
-    activeTab.value = 'encrypt'
+    // 正常啟動（雙擊圖示、系統匣「開啟主視窗」）沒有 action、也沒有 paths，落到這裡——
+    // 只有真的帶著檔案路徑進來（右鍵選單「加密」、拖檔案到程式圖示）才跳信封，不能只要
+    // 沒有 action 欄位就一律跳出來，那樣連正常開啟 App 都會被硬塞一個信封疊層。
+    activeTab.value = 'list'
     if (data.paths && data.paths.length > 0) {
+      showEncryptOverlay.value = true
       encryptPaths.value = [...data.paths]
     }
   },
@@ -1698,6 +1816,26 @@ async function removeFolderGuardListEntry(item) {
 
 function openFolderGuardItemInExplorer(item) {
   sendMessage('openFolderInExplorer', { path: item.path })
+}
+
+// 使用紀錄「開啟檔案位置」：加密紀錄指向留在原位置的 .locked 指標檔所在資料夾
+// （SourcePath 本身只在 Encrypted 這筆才有值），解密紀錄指向還原後檔案所在資料夾
+// （RestoredPath 只在 Decrypted 這筆才有值）——兩種動作類型各自對應不同欄位，
+// 見規劃這輪的決策：加密／解密兩種動作類型的紀錄列都要有這顆按鈕，其餘動作類型不涉及
+// 檔案位置概念，不顯示。HandleOpenFolderInExplorer（MainWindow.xaml.cs）吃的是資料夾
+// 路徑本身（`explorer.exe "path"`，不是 `/select,`），這裡取路徑的父層目錄，不是檔案本身。
+function historyItemPath(entry) {
+  if (entry.action === 'Encrypted') return entry.sourcePath || null
+  if (entry.action === 'Decrypted') return entry.restoredPath || null
+  return null
+}
+
+function openHistoryItemInExplorer(entry) {
+  const path = historyItemPath(entry)
+  if (!path) return
+  const lastSeparator = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'))
+  const folderPath = lastSeparator > 0 ? path.slice(0, lastSeparator) : path
+  sendMessage('openFolderInExplorer', { path: folderPath })
 }
 
 // 重用「新增資料夾」既有的 lockFolders IPC（見 submitFolderGuardSetup），上鎖本身不需要密碼驗證
@@ -3129,11 +3267,6 @@ async function submitEncrypt() {
   })
 }
 
-function finishEncryptBatch() {
-  encryptStepDirection.value = 'backward'
-  encryptStep.value = 1
-}
-
 function submitDecrypt() {
   if (!decryptPath.value || !decryptPassword.value) {
     showToast(t('decrypt.needPathAndPassword'))
@@ -3147,23 +3280,11 @@ function submitDecrypt() {
 }
 
 // 清單頁用密碼解密：先問要還原到原始位置、還是自己選地方存。
-async function decryptFromList(item) {
-  const choice = await askChoice(
-    t('confirm.restoreLocationQuestion', { name: item.originalName, path: item.originalPath }),
-    [
-      { value: 'original', label: t('choice.restoreToOriginal') },
-      { value: 'custom', label: t('choice.chooseLocation') }
-    ]
-  )
-
-  if (choice === 'original') {
-    promptPasswordAndDecrypt(item, null)
-  } else if (choice === 'custom') {
-    pendingDecryptItem.value = item
-    pendingDecryptMode.value = 'password'
-    sendMessage('pickFolder', { purpose: 'decryptDestination' })
-  }
-  // choice 是 null 代表點了背景或按 Esc，真正的取消，什麼都不做。
+// 回饋：清單解密不再詢問要還原到哪裡，一律還原到原始位置——「自己選地方存」那個分支
+// （曾經存在的 pendingDecryptItem／pendingDecryptMode／decryptDestination 這條路徑）整個
+// 拿掉了，不是隱藏起來，destinationDir 直接固定傳 null。
+function decryptFromList(item) {
+  promptPasswordAndDecrypt(item, null)
 }
 
 // destinationDir 為 null 代表還原到原始位置。
@@ -3272,24 +3393,10 @@ function cancelPasswordPrompt() {
   showPasswordPromptValue.value = false
 }
 
-// 清單頁用 Passkey 解密：一樣先問還原到原始位置、還是自己選地方存，不需要輸入密碼，
-// 選完之後直接觸發 Windows Hello 驗證。
-async function decryptFromListViaPasskey(item) {
-  const choice = await askChoice(
-    t('confirm.restoreLocationQuestion', { name: item.originalName, path: item.originalPath }) + t('confirm.passkeyNote'),
-    [
-      { value: 'original', label: t('choice.restoreToOriginal') },
-      { value: 'custom', label: t('choice.chooseLocation') }
-    ]
-  )
-
-  if (choice === 'original') {
-    startPasskeyDecrypt(item, null)
-  } else if (choice === 'custom') {
-    pendingDecryptItem.value = item
-    pendingDecryptMode.value = 'passkey'
-    sendMessage('pickFolder', { purpose: 'decryptDestination' })
-  }
+// 清單頁用 Passkey 解密：不需要輸入密碼，直接觸發 Windows Hello 驗證，一律還原到原始位置
+// （見 decryptFromList 的回饋說明）。
+function decryptFromListViaPasskey(item) {
+  startPasskeyDecrypt(item, null)
 }
 
 function startPasskeyDecrypt(item, destinationDir) {
@@ -3297,23 +3404,9 @@ function startPasskeyDecrypt(item, destinationDir) {
   sendMessage('decryptByPasskey', { uuid: item.uuid, destinationDir })
 }
 
-// 清單頁用恢復金鑰解密：一樣先問還原到原始位置、還是自己選地方存，接著跳出輸入恢復金鑰的畫面。
-async function decryptFromListViaRecoveryKey(item) {
-  const choice = await askChoice(
-    t('confirm.restoreLocationQuestion', { name: item.originalName, path: item.originalPath }),
-    [
-      { value: 'original', label: t('choice.restoreToOriginal') },
-      { value: 'custom', label: t('choice.chooseLocation') }
-    ]
-  )
-
-  if (choice === 'original') {
-    openRecoveryKeyPrompt(item, null)
-  } else if (choice === 'custom') {
-    pendingDecryptItem.value = item
-    pendingDecryptMode.value = 'recoveryKey'
-    sendMessage('pickFolder', { purpose: 'decryptDestination' })
-  }
+// 清單頁用恢復金鑰解密：一律還原到原始位置，直接跳出輸入恢復金鑰的畫面。
+function decryptFromListViaRecoveryKey(item) {
+  openRecoveryKeyPrompt(item, null)
 }
 
 function openRecoveryKeyPrompt(item, destinationDir) {
@@ -3490,180 +3583,17 @@ function historyDetailText(entry) {
       <span class="title-bar__title">FileLocker</span>
     </header>
 
-    <nav class="tab-bar">
-      <button :ref="(el) => setTabRef('encrypt', el)" class="tab-bar__item" :class="{ 'is-active': activeTab === 'encrypt' }" @click="activeTab = 'encrypt'">{{ t('tab.encrypt') }}</button>
-      <button :ref="(el) => setTabRef('decrypt', el)" class="tab-bar__item" :class="{ 'is-active': activeTab === 'decrypt' }" @click="activeTab = 'decrypt'">{{ t('tab.decrypt') }}</button>
-      <button :ref="(el) => setTabRef('list', el)" class="tab-bar__item" :class="{ 'is-active': activeTab === 'list' }" @click="activeTab = 'list'">{{ t('tab.list') }}</button>
-      <button :ref="(el) => setTabRef('folderGuard', el)" class="tab-bar__item" :class="{ 'is-active': activeTab === 'folderGuard' }" @click="activeTab = 'folderGuard'">{{ t('tab.folderGuard') }}</button>
-      <button :ref="(el) => setTabRef('passwordLocker', el)" class="tab-bar__item" :class="{ 'is-active': activeTab === 'passwordLocker' }" @click="activeTab = 'passwordLocker'">{{ t('tab.passwordLocker') }}</button>
-      <button :ref="(el) => setTabRef('settings', el)" class="tab-bar__item" :class="{ 'is-active': activeTab === 'settings' }" @click="activeTab = 'settings'">{{ t('tab.settings') }}</button>
-      <span class="tab-bar__indicator" :style="tabIndicatorStyle"></span>
-    </nav>
-
     <div class="page-wrapper">
+      <AppSidebar
+        :collapsed="sidebarCollapsed"
+        :active="sidebarActiveKey"
+        :t="t"
+        @toggle-collapse="toggleSidebar"
+        @navigate="onSidebarNavigate"
+      />
       <main class="page" :class="{ 'page--wide': pageWidthTab === 'list' }">
         <Transition name="tab-page" mode="out-in" @before-enter="pageWidthTab = activeTab; themeTab = activeTab">
-        <div v-if="activeTab === 'encrypt'" key="encrypt">
-          <h1 class="page-title">
-            <svg class="page-title__icon" viewBox="0 0 24 24" fill="none"><path d="M6 10V8a6 6 0 1 1 12 0v2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="4" y="10" width="16" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="15" r="1.6" fill="currentColor"/></svg>
-            {{ t('encrypt.title') }}
-          </h1>
-          <p v-if="encryptStep !== 3" class="step-indicator">{{ t('encrypt.stepIndicator', { step: encryptStep, total: 2 }) }}</p>
-
-          <Transition :name="encryptStepDirection === 'forward' ? 'step-forward' : 'step-backward'" mode="out-in">
-          <div v-if="encryptStep === 1" key="step1">
-            <div class="field">
-              <div
-                v-if="encryptPaths.length === 0"
-                class="dropzone"
-                :class="{ 'is-dragging': isDraggingFile }"
-                @dragover.prevent="isDraggingFile = true"
-                @dragleave.prevent="isDraggingFile = false"
-                @drop.prevent="handleFileDrop"
-              >
-                <svg class="dropzone__icon" viewBox="0 0 24 24" fill="none"><path d="M12 4v11m0-11 4 4m-4-4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-                <p class="dropzone__text">{{ t('encrypt.dropHint') }}</p>
-                <div class="dropzone__actions">
-                  <button class="button button--secondary" @click="pickFile" type="button">{{ t('encrypt.pickFiles') }}</button>
-                  <button class="button button--secondary" @click="pickFolder" type="button">{{ t('encrypt.pickFolder') }}</button>
-                </div>
-              </div>
-              <div v-else class="picked-items-card">
-                <TransitionGroup name="item-list-row" tag="ul" class="item-list">
-                  <li v-for="(path, index) in encryptPaths" :key="path" class="item-list__row">
-                    <span class="item-list__path" :title="path">{{ path }}</span>
-                    <button class="link-button" @click="removeEncryptPath(index)" type="button">{{ t('encrypt.remove') }}</button>
-                  </li>
-                </TransitionGroup>
-                <div class="picked-items-card__actions">
-                  <div class="picked-items-card__actions-group">
-                    <button class="link-button" @click="pickFile" type="button">{{ t('encrypt.pickFiles') }}</button>
-                    <button class="link-button" @click="pickFolder" type="button">{{ t('encrypt.pickFolder') }}</button>
-                  </div>
-                  <button v-if="encryptPaths.length > 1" class="link-button link-button--danger" @click="clearEncryptPaths" type="button">{{ t('encrypt.removeAll') }}</button>
-                </div>
-              </div>
-            </div>
-
-            <button class="button button--primary" @click="encryptStepDirection = 'forward'; encryptStep = 2; encryptItemResults = []" :disabled="encryptPaths.length === 0">
-              {{ t('encrypt.next') }}
-            </button>
-          </div>
-
-          <div v-else-if="encryptStep === 2" key="step2">
-            <div class="field">
-              <label class="field__label">{{ t('encrypt.passwordLabel') }}</label>
-              <div class="password-field">
-                <input v-model="encryptPassword" :type="showEncryptPassword ? 'text' : 'password'" class="text-input" />
-                <button
-                  type="button"
-                  class="password-field__toggle"
-                  :aria-label="t(showEncryptPassword ? 'common.hidePassword' : 'common.showPassword')"
-                  @click="showEncryptPassword = !showEncryptPassword"
-                >
-                  <svg v-if="showEncryptPassword" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
-                  <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                </button>
-              </div>
-            </div>
-
-            <div class="field">
-              <label class="field__label">{{ t('encrypt.passwordConfirmLabel') }}</label>
-              <div class="password-field">
-                <input v-model="encryptPasswordConfirm" :type="showEncryptPassword ? 'text' : 'password'" class="text-input" />
-              </div>
-              <!-- 不做強度判斷（強度高低跟好不好記是兩件事，沒辦法從字串本身判斷使用者記不記得住）；
-                   只要恢復金鑰沒開，就用位置接近性提醒兩者的關聯，不對密碼本身評價。 -->
-              <p v-if="!enableRecoveryKey && encryptPaths.length <= 1" class="hint-text">{{ t('encrypt.recoveryKeyReminder') }}</p>
-            </div>
-
-            <div class="field">
-              <label class="field__label">{{ t('encrypt.hintLabel') }}</label>
-              <input v-model="hint" class="text-input" />
-            </div>
-
-            <div class="field">
-              <label class="checkbox-field" :class="{ 'is-disabled': encryptPaths.length > 1 }">
-                <input type="checkbox" v-model="enablePasskey" :disabled="encryptPaths.length > 1" />
-                <img :src="passkeyIconUrl" alt="" class="checkbox-field__icon" />
-                <span>{{ t('encrypt.passkeyLabel') }}</span>
-                <span class="info-tooltip" tabindex="0">
-                  <span class="info-tooltip__icon">i</span>
-                  <span class="info-tooltip__bubble">{{ t('encrypt.passkeyLabelDetail') }}</span>
-                </span>
-              </label>
-              <p v-if="encryptPaths.length > 1" class="hint-text hint-text--indented">
-                {{ t('encrypt.passkeyBatchDisabled') }}
-              </p>
-            </div>
-
-            <div class="field">
-              <label class="checkbox-field" :class="{ 'is-disabled': encryptPaths.length > 1 }">
-                <input type="checkbox" v-model="enableRecoveryKey" :disabled="encryptPaths.length > 1" />
-                <img :src="recoveryKeyIconUrl" alt="" class="checkbox-field__icon" />
-                <span>{{ t('encrypt.recoveryKeyLabel') }}</span>
-                <span class="info-tooltip" tabindex="0">
-                  <span class="info-tooltip__icon">i</span>
-                  <span class="info-tooltip__bubble">{{ t('encrypt.recoveryKeyLabelDetail') }}</span>
-                </span>
-              </label>
-              <p v-if="encryptPaths.length > 1" class="hint-text hint-text--indented">
-                {{ t('encrypt.recoveryKeyBatchDisabled') }}
-              </p>
-            </div>
-
-            <div class="button-row">
-              <button class="button button--secondary" @click="encryptStepDirection = 'backward'; encryptStep = 1" :disabled="isEncrypting" type="button">
-                {{ t('encrypt.back') }}
-              </button>
-              <button class="button button--primary" @click="submitEncrypt" :disabled="isEncrypting">
-                {{ isEncrypting
-                  ? t(encryptPhaseLabel === 'waitingPasskey' ? 'encrypt.waitingPasskey' : (encryptPhaseLabel === 'compressing' ? 'encrypt.compressing' : 'encrypt.encrypting'), { current: encryptItemResults.length, total: encryptBatchTotal })
-                  : t('encrypt.submit') }}
-              </button>
-            </div>
-
-            <div v-if="isEncrypting" class="progress-bar" role="progressbar" :aria-valuenow="Math.round(encryptProgressPercent)" aria-valuemin="0" aria-valuemax="100">
-              <div class="progress-bar__fill" :style="{ transform: `scaleX(${encryptProgressPercent / 100})` }"></div>
-            </div>
-
-            <TransitionGroup name="result-row" tag="div" class="result-list">
-              <div v-for="(item, index) in encryptItemResults" :key="index" class="result-row" :class="item.success ? 'result-row--success' : 'result-row--error'">
-                <span class="result-row__icon">{{ item.success ? '✓' : '✕' }}</span>
-                <span>
-                  <template v-if="item.path">{{ item.path }}</template>
-                  <span v-if="item.errorMessage"> — {{ item.errorMessage }}</span>
-                  <span v-if="item.note"> — {{ item.note }}</span>
-                </span>
-              </div>
-            </TransitionGroup>
-          </div>
-
-          <div v-else key="step3">
-            <div class="encrypt-complete">
-              <svg class="encrypt-complete__icon" viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              <p class="encrypt-complete__title">{{ t('encrypt.completeTitle') }}</p>
-            </div>
-
-            <TransitionGroup name="result-row" tag="div" class="result-list">
-              <div v-for="(item, index) in encryptItemResults" :key="index" class="result-row" :class="item.success ? 'result-row--success' : 'result-row--error'">
-                <span class="result-row__icon">{{ item.success ? '✓' : '✕' }}</span>
-                <span>
-                  <template v-if="item.path">{{ item.path }}</template>
-                  <span v-if="item.errorMessage"> — {{ item.errorMessage }}</span>
-                  <span v-if="item.note"> — {{ item.note }}</span>
-                </span>
-              </div>
-            </TransitionGroup>
-
-            <button class="button button--primary" @click="finishEncryptBatch" type="button">
-              {{ t('encrypt.done') }}
-            </button>
-          </div>
-          </Transition>
-        </div>
-
-        <div v-else-if="activeTab === 'decrypt'" key="decrypt">
+        <div v-if="activeTab === 'decrypt'" key="decrypt">
           <h1 class="page-title">
             <svg class="page-title__icon page-title__icon--decrypt" viewBox="0 0 24 24" fill="none"><path d="M6 10V8a6 6 0 0 1 11.2-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="4" y="10" width="16" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="15" r="1.6" fill="currentColor"/></svg>
             {{ t('decrypt.title') }}
@@ -3727,9 +3657,17 @@ function historyDetailText(entry) {
             <div v-if="vaultListStale" class="update-banner" @click="refreshList">
               {{ t('list.updateAvailable') }}
             </div>
-            <button class="button button--secondary refresh-button" @click="refreshList" :disabled="isLoadingList">
-              {{ isLoadingList ? t('list.loading') : t('list.refresh') }}
-            </button>
+            <div class="list-toolbar">
+              <button class="button button--secondary refresh-button" @click="refreshList" :disabled="isLoadingList">
+                {{ isLoadingList ? t('list.loading') : t('list.refresh') }}
+              </button>
+              <div class="list-toolbar__spacer"></div>
+              <!-- 這兩顆按鈕是側欄殼子把 encrypt／decrypt／list 三個分頁合併成一個「加密」導覽項目
+                   之後補上的入口——原本各自是獨立頂層分頁，現在要從清單頁的工具列進去。信封動畫
+                   （這兩個按鈕點下去之後的視覺）留到下一階段，這裡先切到原本沒改過的精靈內容。 -->
+              <button class="button button--secondary" type="button" @click="activeTab = 'decrypt'">{{ t('list.openDecryptWizard') }}</button>
+              <button class="button button--primary" type="button" @click="showEncryptOverlay = true">{{ t('list.openEncryptWizard') }}</button>
+            </div>
             <div v-if="!isLoadingList && vaultItems.length === 0" class="empty-state-block">
               <svg class="empty-state-block__icon" viewBox="0 0 24 24" fill="none"><rect x="4" y="10" width="16" height="11" rx="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M8 10V8a4 4 0 1 1 8 0v2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
               <p class="empty-state-block__text">{{ t('list.noItems') }}</p>
@@ -3766,136 +3704,71 @@ function historyDetailText(entry) {
               </table>
             </div>
 
-            <div v-if="vaultItems.length > 0" class="table-scroll">
-              <table class="table table--auto">
-                <thead>
-                  <tr>
-                    <th></th>
-                    <th>{{ t('list.colName') }}</th>
-                    <th>{{ t('list.colType') }}</th>
-                    <th>{{ t('list.colSize') }}</th>
-                    <th>{{ t('list.colHint') }}</th>
-                    <th>{{ t('list.colTime') }}</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <template v-for="group in groupedVaultItems" :key="group.isGroup ? group.batchId : group.item.uuid">
-                    <!-- 獨立項目（沒有 batchId）：跟之前一樣直接顯示一列。 -->
-                    <tr v-if="!group.isGroup">
-                      <td class="table__delete-cell">
-                        <button class="row-delete-button" @click="requestDelete(group.item)" type="button" :aria-label="t('list.delete')" :title="t('list.delete')">
-                          <svg viewBox="0 0 24 24" fill="none"><path d="M5 7h14M10 11v6M14 11v6M7 7l1-3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1l1 3M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                        </button>
-                      </td>
-                      <td>
-                        <div class="cell-name" :title="group.item.originalName">{{ group.item.originalName }}</div>
-                        <span v-if="group.item.hasNestedLocks" class="badge badge--nested-lock" :title="nestedLockPreviewText(group.item)"><img :src="nestedLockIconUrl" alt="" class="badge__icon" />×{{ group.item.nestedLockCount }}</span>
-                        <div v-if="!group.item.markerFound" class="status-warning"><img :src="warningIconUrl" alt="" class="status-warning__icon" />{{ translateError(group.item.markerStatusCode, group.item.markerStatusDetail, group.item.markerStatusMessage) }}</div>
-                      </td>
-                      <td>{{ typeLabel(group.item.type) }}</td>
-                      <td>{{ formatSize(group.item.originalSizeBytes) }}</td>
-                      <td><div class="cell-hint" :title="group.item.hint || ''">{{ group.item.hint || t('list.hintNone') }}</div></td>
-                      <td>{{ formatDate(group.item.createdAtUtc) }}</td>
-                      <td>
-                        <div class="table__actions">
-                          <button class="button button--tiny" @click="decryptFromList(group.item)" type="button" :disabled="decryptingUuids.has(group.item.uuid)">
-                            {{ decryptingUuids.has(group.item.uuid) ? t('list.decrypting') : t('list.decrypt') }}
-                          </button>
-                          <button
-                            v-if="group.item.passkeyEnabled"
-                            class="button button--tiny"
-                            @click="decryptFromListViaPasskey(group.item)"
-                            type="button"
-                            :disabled="decryptingUuids.has(group.item.uuid)"
-                          >
-                            <img :src="passkeyIconUrl" alt="" class="button__icon" />
-                            {{ t('decrypt.passkeyUnlock') }}
-                          </button>
-                          <button
-                            v-if="group.item.recoveryKeyEnabled"
-                            class="button button--tiny"
-                            @click="decryptFromListViaRecoveryKey(group.item)"
-                            type="button"
-                            :disabled="decryptingUuids.has(group.item.uuid)"
-                          >
-                            <img :src="recoveryKeyIconUrl" alt="" class="button__icon" />
-                            {{ t('decrypt.recoveryKeyUnlock') }}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
+            <!-- 票根樣式清單（design-exploration/gui-styles-v2/13-sidebar-ticket-shell.html 定案版本，
+                 定案文件 §3.4）——純視覺重新蒙皮，資料欄位跟按鈕觸發的行為跟舊版表格列一模一樣
+                 （原本這裡是 <table>，見這輪移植前的版本），只是換成 TicketRow.vue。撕開動畫
+                 （mockup 的 tear-line／世代編號機制）留到下一階段，這裡的 TicketRow 是靜態卡片。 -->
+            <!-- name="ticket-fly"：撕開驗證通過後從 vaultItems 陣列移除時，Vue 內建的 leave
+                 過場機制接手飛走＋淡出，其餘列自動用 move 過場往上補位——不用手動量高度、
+                 手動搬移其餘列（見 TicketRow.vue 開頭的說明跟下面 .ticket-fly-* 的 CSS）。
+                 初始載入／切換分頁不會誤觸發飛走動畫，因為 TransitionGroup 預設只對「之後
+                 才被加入/移除」的項目套用過場，第一次掛載時的項目不算。 -->
+            <TransitionGroup v-if="vaultItems.length > 0" name="ticket-fly" tag="div" class="ticket-list">
+              <template v-for="group in groupedVaultItems" :key="group.isGroup ? group.batchId : group.item.uuid">
+                <!-- 獨立項目（沒有 batchId）：跟之前一樣直接顯示一張票根。 -->
+                <TicketRow
+                  v-if="!group.isGroup"
+                  :item="group.item"
+                  :t="t"
+                  :decrypting="decryptingUuids.has(group.item.uuid)"
+                  :tearing="tearingUuids.has(group.item.uuid)"
+                  :translate-error="translateError"
+                  :format-size="formatSize"
+                  :format-date="formatDate"
+                  :type-label="typeLabel"
+                  @decrypt="decryptFromList"
+                  @decrypt-via-passkey="decryptFromListViaPasskey"
+                  @decrypt-via-recovery-key="decryptFromListViaRecoveryKey"
+                  @delete="requestDelete"
+                />
 
-                    <!-- 批次群組：一次選多個項目加密出來的，摺疊成一列，展開後每個項目維持獨立操作能力。 -->
-                    <template v-else>
-                      <tr class="group-row">
-                        <td colspan="7">
-                          <div class="group-row__inner">
-                            <button class="group-row__toggle" @click="toggleGroupExpanded(group.batchId)" type="button">
-                              <span class="group-row__chevron" :class="{ 'is-expanded': expandedGroups.has(group.batchId) }">▸</span>
-                              {{ batchPreviewText(group.items) }}
-                            </button>
-                            <button
-                              class="button button--tiny"
-                              @click="decryptGroupViaPassword(group)"
-                              type="button"
-                              :disabled="decryptingBatchIds.has(group.batchId)"
-                            >
-                              {{ decryptingBatchIds.has(group.batchId) ? t('list.unlockAllInProgress') : t('list.unlockAll') }}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                      <template v-if="expandedGroups.has(group.batchId)">
-                        <tr v-for="item in group.items" :key="item.uuid" class="table__row--nested">
-                          <td class="table__delete-cell">
-                            <button class="row-delete-button" @click="requestDelete(item)" type="button" :aria-label="t('list.delete')" :title="t('list.delete')">
-                              <svg viewBox="0 0 24 24" fill="none"><path d="M5 7h14M10 11v6M14 11v6M7 7l1-3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1l1 3M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                            </button>
-                          </td>
-                          <td>
-                            <div class="cell-name" :title="item.originalName">{{ item.originalName }}</div>
-                            <span v-if="item.hasNestedLocks" class="badge badge--nested-lock" :title="nestedLockPreviewText(item)"><img :src="nestedLockIconUrl" alt="" class="badge__icon" />×{{ item.nestedLockCount }}</span>
-                            <div v-if="!item.markerFound" class="status-warning"><img :src="warningIconUrl" alt="" class="status-warning__icon" />{{ translateError(item.markerStatusCode, item.markerStatusDetail, item.markerStatusMessage) }}</div>
-                          </td>
-                          <td>{{ typeLabel(item.type) }}</td>
-                          <td>{{ formatSize(item.originalSizeBytes) }}</td>
-                          <td><div class="cell-hint" :title="item.hint || ''">{{ item.hint || t('list.hintNone') }}</div></td>
-                          <td>{{ formatDate(item.createdAtUtc) }}</td>
-                          <td>
-                            <div class="table__actions">
-                              <button class="button button--tiny" @click="decryptFromList(item)" type="button" :disabled="decryptingUuids.has(item.uuid)">
-                                {{ decryptingUuids.has(item.uuid) ? t('list.decrypting') : t('list.decrypt') }}
-                              </button>
-                              <button
-                                v-if="item.passkeyEnabled"
-                                class="button button--tiny"
-                                @click="decryptFromListViaPasskey(item)"
-                                type="button"
-                                :disabled="decryptingUuids.has(item.uuid)"
-                              >
-                                <img :src="passkeyIconUrl" alt="" class="button__icon" />
-                                {{ t('decrypt.passkeyUnlock') }}
-                              </button>
-                              <button
-                                v-if="item.recoveryKeyEnabled"
-                                class="button button--tiny"
-                                @click="decryptFromListViaRecoveryKey(item)"
-                                type="button"
-                                :disabled="decryptingUuids.has(item.uuid)"
-                              >
-                                <img :src="recoveryKeyIconUrl" alt="" class="button__icon" />
-                                {{ t('decrypt.recoveryKeyUnlock') }}
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      </template>
-                    </template>
-                  </template>
-                </tbody>
-              </table>
-            </div>
+                <!-- 批次群組：一次選多個項目加密出來的，摺疊成一張摘要票根，展開後每個項目維持獨立操作能力。 -->
+                <div v-else class="ticket-group">
+                  <div class="ticket ticket--batch">
+                    <button class="ticket-group__toggle" @click="toggleGroupExpanded(group.batchId)" type="button">
+                      <span class="ticket-group__chevron" :class="{ 'is-expanded': expandedGroups.has(group.batchId) }">▸</span>
+                      {{ batchPreviewText(group.items) }}
+                    </button>
+                    <button
+                      class="button button--tiny"
+                      @click="decryptGroupViaPassword(group)"
+                      type="button"
+                      :disabled="decryptingBatchIds.has(group.batchId)"
+                    >
+                      {{ decryptingBatchIds.has(group.batchId) ? t('list.unlockAllInProgress') : t('list.unlockAll') }}
+                    </button>
+                  </div>
+                  <div v-if="expandedGroups.has(group.batchId)" class="ticket-group__items">
+                    <TicketRow
+                      v-for="item in group.items"
+                      :key="item.uuid"
+                      :item="item"
+                      :t="t"
+                      :decrypting="decryptingUuids.has(item.uuid)"
+                      :tearing="tearingUuids.has(item.uuid)"
+                      :translate-error="translateError"
+                      :format-size="formatSize"
+                      :format-date="formatDate"
+                      :type-label="typeLabel"
+                      @decrypt="decryptFromList"
+                      @decrypt-via-passkey="decryptFromListViaPasskey"
+                      @decrypt-via-recovery-key="decryptFromListViaRecoveryKey"
+                      @delete="requestDelete"
+                    />
+                  </div>
+                </div>
+              </template>
+            </TransitionGroup>
           </div>
 
           <div v-else>
@@ -3915,10 +3788,11 @@ function historyDetailText(entry) {
             <div v-if="isLoadingHistory && historyItems.length === 0" class="table-scroll">
               <table class="table">
                 <colgroup>
-                  <col style="width: 24%;" />
-                  <col style="width: 12%;" />
-                  <col style="width: 16%;" />
-                  <col style="width: 48%;" />
+                  <col style="width: 22%;" />
+                  <col style="width: 9%;" />
+                  <col style="width: 20%;" />
+                  <col style="width: 39%;" />
+                  <col style="width: 10%;" />
                 </colgroup>
                 <thead>
                   <tr>
@@ -3926,6 +3800,7 @@ function historyDetailText(entry) {
                     <th>{{ t('list.historyColAction') }}</th>
                     <th>{{ t('list.historyColTime') }}</th>
                     <th>{{ t('list.historyColDetail') }}</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -3934,6 +3809,7 @@ function historyDetailText(entry) {
                     <td><span class="skeleton-block" style="width: 45%;"></span></td>
                     <td><span class="skeleton-block" style="width: 55%;"></span></td>
                     <td><span class="skeleton-block" style="width: 85%;"></span></td>
+                    <td><span class="skeleton-block" style="width: 60%;"></span></td>
                   </tr>
                 </tbody>
               </table>
@@ -3942,10 +3818,11 @@ function historyDetailText(entry) {
             <div v-if="historyItems.length > 0" class="table-scroll">
               <table class="table">
                 <colgroup>
-                  <col style="width: 24%;" />
-                  <col style="width: 12%;" />
-                  <col style="width: 16%;" />
-                  <col style="width: 48%;" />
+                  <col style="width: 22%;" />
+                  <col style="width: 9%;" />
+                  <col style="width: 20%;" />
+                  <col style="width: 39%;" />
+                  <col style="width: 10%;" />
                 </colgroup>
                 <thead>
                   <tr>
@@ -3953,14 +3830,25 @@ function historyDetailText(entry) {
                     <th>{{ t('list.historyColAction') }}</th>
                     <th>{{ t('list.historyColTime') }}</th>
                     <th>{{ t('list.historyColDetail') }}</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr v-for="(entry, index) in historyItems" :key="index">
                     <td class="table__wrap-cell" :title="entry.originalName">{{ entry.originalName }}</td>
                     <td>{{ actionLabel(entry.action) }}</td>
-                    <td>{{ formatDate(entry.timestampUtc) }}</td>
+                    <td class="table__wrap-cell" :title="formatDate(entry.timestampUtc)">{{ formatDate(entry.timestampUtc) }}</td>
                     <td class="table__detail-cell table__wrap-cell" :title="historyDetailText(entry)">{{ historyDetailText(entry) }}</td>
+                    <td>
+                      <button
+                        v-if="historyItemPath(entry)"
+                        class="button button--tiny"
+                        type="button"
+                        @click="openHistoryItemInExplorer(entry)"
+                      >
+                        {{ t('list.historyOpenLocation') }}
+                      </button>
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -3970,14 +3858,17 @@ function historyDetailText(entry) {
 
         <div v-else-if="activeTab === 'folderGuard'" key="folderGuard">
           <h1 class="page-title">
-            <svg class="page-title__icon page-title__icon--guard" viewBox="0 0 24 24" fill="none"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l1.8 2h7.2a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-10.5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+            <!-- 圖示跟側欄「資料夾防護」nav 項目改用同一份盾牌 path（design-exploration/gui-styles-v2
+                 定案版本新畫的圖示，取代原本的資料夾圖示），跟 AppSidebar.vue 保持一致，不是側欄
+                 換了圖示、頁面內容自己卻還留著舊圖示。 -->
+            <svg class="page-title__icon page-title__icon--guard" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"><path d="M12 3 4 6v6c0 5 3.5 7.7 8 9 4.5-1.3 8-4 8-9V6l-8-3Z"/></svg>
             {{ t('tab.folderGuard') }}
           </h1>
           <p class="hint-text">
             {{ t('folderGuard.pageDescriptionPrefix') }}
             <span class="text-warning-soft">{{ t('folderGuard.pageDescriptionWarning') }}</span>
             {{ t('folderGuard.pageDescriptionSuffix') }}
-            <button class="link-button" @click="activeTab = 'encrypt'" type="button">{{ t('tab.encrypt') }}</button>
+            <button class="link-button" @click="activeTab = 'list'; showEncryptOverlay = true" type="button">{{ t('tab.encrypt') }}</button>
           </p>
 
           <!-- 首次設定：整個功能還沒設定過共用密碼前，只能先設定密碼，不能上鎖任何資料夾
@@ -4674,6 +4565,49 @@ function historyDetailText(entry) {
       </main>
     </div>
 
+    <!-- 信封加密流程（Phase 2b）：不是分頁，是疊在目前畫面上的懸浮層（背景模糊+暗化），
+         比照 apple-design「Dim to focus」——這是一個阻斷式任務（加密進行中不該讓使用者
+         同時去操作底下的清單），所以用會模糊+略微暗化背景的 scrim，不是 VaultAddFolderOverlay
+         那種只模糊不暗化的作法（那個情境使用者隨時可以點外面立即取消，這裡目前 pending/
+         committing 期間點外面不該直接取消，見 EnvelopeEncrypt.vue 內部自己的取消按鈕）。 -->
+    <Transition name="encrypt-overlay">
+      <div
+        v-if="showEncryptOverlay"
+        class="encrypt-overlay"
+        @click.self="encryptPhase === 'form' && (showEncryptOverlay = false)"
+      >
+        <EnvelopeEncrypt
+          :t="t"
+          :paths="encryptPaths"
+          :password="encryptPassword"
+          :password-confirm="encryptPasswordConfirm"
+          :hint="hint"
+          :enable-passkey="enablePasskey"
+          :enable-recovery-key="enableRecoveryKey"
+          :disable-passkey-recovery-key="encryptPaths.length > 1"
+          :passkey-icon-url="passkeyIconUrl"
+          :recovery-key-icon-url="recoveryKeyIconUrl"
+          :phase="encryptPhase"
+          :progress-percent="encryptRealProgressPercent"
+          :pending-summary="encryptPendingSummary"
+          @pick-file="pickFile"
+          @pick-folder="pickFolder"
+          @remove-path="removeEncryptPath"
+          @clear-paths="clearEncryptPaths"
+          @drop="handleFileDrop"
+          @update:password="encryptPassword = $event"
+          @update:password-confirm="encryptPasswordConfirm = $event"
+          @update:hint="hint = $event"
+          @update:enable-passkey="enablePasskey = $event"
+          @update:enable-recovery-key="enableRecoveryKey = $event"
+          @submit="submitEncryptPending"
+          @confirm="confirmEncryptPending"
+          @cancel="encryptPhase === 'form' ? (showEncryptOverlay = false) : cancelEncryptPending()"
+          @fly-away-complete="onEncryptFlyAwayComplete"
+        />
+      </div>
+    </Transition>
+
     <!-- 通知（取代原生 alert()） -->
     <div class="toast-stack">
       <TransitionGroup name="toast">
@@ -4728,27 +4662,6 @@ function historyDetailText(entry) {
               :disabled="isInstallingUpdate"
             >
               {{ isInstallingUpdate ? t('settings.updateDownloading') : t('settings.updateInstallButton') }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </Transition>
-
-    <!-- 三選一對話框：用在「還原到原始位置」還是「自己選位置」這種情境，兩個按鈕各自標示
-         清楚意圖，不套用確定/取消的語意。點背景關閉等同真正的取消，什麼都不做。 -->
-    <Transition name="modal">
-      <div v-if="choiceDialogState" class="modal-overlay" @click.self="resolveChoiceDialog(null)">
-        <div class="modal">
-          <p class="modal__message">{{ choiceDialogState.message }}</p>
-          <div class="modal__footer modal__footer--stacked">
-            <button
-              v-for="choice in choiceDialogState.choices"
-              :key="choice.value"
-              class="button button--secondary"
-              @click="resolveChoiceDialog(choice.value)"
-              type="button"
-            >
-              {{ choice.label }}
             </button>
           </div>
         </div>
@@ -5228,14 +5141,20 @@ function historyDetailText(entry) {
 
 <style>
 :root {
-  /* ---- 色彩：扣著「鎖與鑰匙」這個主題發想 ---- */
-  --color-bg: #EDEEF2;
-  --color-surface: #FFFFFF;
-  --color-border: #E1E4EA;
-  --color-border-strong: #C9CDD6;
-  --color-text: #1B1E24;
-  --color-text-secondary: #454A54;
-  --color-text-tertiary: #6B707A;
+  /* ---- 色彩：扣著「鎖與鑰匙」這個主題發想 ----
+     中性色（--color-bg／--color-surface／--color-border*／--color-text*）這輪從原本偏冷灰藍
+     的配色，換成 design-exploration/gui-styles-v2/13-sidebar-ticket-shell.html 定案的暖米白／
+     牛皮紙調性（對應該檔案的 --vault-steel／--paper／--vault-line*／--ink* token）——強調色
+     （--color-accent）數值本來就跟該檔案的 --brass 完全相同，沒有變動。移植前的舊色票記錄在
+     design-exploration/gui-styles-v2/App-vue_移植前色彩快照.md，決策細節見
+     design-exploration/gui-styles-v2/GUI造型探索_技術規格.md §2.14。 */
+  --color-bg: #F4F3F0;
+  --color-surface: #FFFDF8;
+  --color-border: #E0DDD5;
+  --color-border-strong: #CFCAC0;
+  --color-text: #22221E;
+  --color-text-secondary: #63604F;
+  --color-text-tertiary: #8B8776;
   --color-accent: #A8770F;
   --color-accent-hover: #8C630C;
   --color-accent-soft: #FBF2DE;
@@ -5297,13 +5216,13 @@ function historyDetailText(entry) {
 /* ---- 深色模式：色彩變數整組覆蓋，其他所有樣式規則都直接沿用同一套 var()，不用另外寫
    一份深色專用的樣式。強調色（黃銅）在深色背景上調亮一點，不然對比度不夠、看起來髒髒的。 ---- */
 .app--dark {
-  --color-bg: #1C1D21;
-  --color-surface: #232428;
-  --color-border: #34363C;
-  --color-border-strong: #454850;
-  --color-text: #ECEDEF;
-  --color-text-secondary: #B0B4BC;
-  --color-text-tertiary: #82868F;
+  --color-bg: #1E1D1A;
+  --color-surface: #242119;
+  --color-border: #38352D;
+  --color-border-strong: #4A4638;
+  --color-text: #EDEAE0;
+  --color-text-secondary: #B7B09B;
+  --color-text-tertiary: #847D68;
   /* --color-accent／--color-danger 原本為了在深色背景上維持文字/圖示的可讀性刻意調亮，
      但這組色同時也拿來當 .button--primary／.button--danger 的實心底色（配白色文字）——
      亮度沒收斂的話，整顆按鈕在深色背景裡看起來像在發光，不是「深色模式的強調色」該有的
@@ -5341,7 +5260,9 @@ function historyDetailText(entry) {
 /* 分頁主題色：套在 .app 最外層（見 activeThemeClass），往下覆蓋掉 --color-accent 系列——
    分頁內容、以及跟分頁內容平行的彈窗（新增密碼、驗證彈窗、確認對話框…）裡所有本來就吃
    var(--color-accent*) 的元件（主要按鈕、連結、checkbox、輸入框 focus ring…）會自動跟著
-   換色，不用逐一改元件本身的樣式。加密／資料夾防護跟全域預設同一款金色，不需要覆蓋規則。 */
+   換色，不用逐一改元件本身的樣式。「加密」（含信封疊層、已加密清單）跟全域預設同一款
+   金色，不需要覆蓋規則；「資料夾防護」改套 .theme-list 這組藍色（回饋：金銅黃色留給加密頁，
+   原本 list 專屬的藍色挪去資料夾防護頁，class 名稱沿用歷史命名沒有改）。 */
 .theme-decrypt {
   --color-accent: var(--tint-decrypt);
   --color-accent-hover: var(--tint-decrypt-hover);
@@ -5499,93 +5420,29 @@ body {
   letter-spacing: 0.01em;
 }
 
-/* ---- 頁籤列 ---- */
-.tab-bar {
-  display: flex;
-  gap: 0.25rem;
-  padding: 0 2rem;
-  flex-shrink: 0;
-  background: var(--color-surface);
-  border-bottom: 1px solid var(--color-border);
-  position: relative;
-  z-index: 1;
-}
+/* ---- 側欄殼子取代原本的頂部頁籤列（design-exploration/gui-styles-v2 §3.3 定案版本）----
+   .tab-bar／.tab-bar__item／.tab-bar__indicator 這組樣式連同滑動指示條的量測邏輯一起移除
+   （見 script 區塊「側欄導覽」註解），AppSidebar.vue 自己帶了 scoped 樣式，這裡不用重寫。 */
 
-/* .tab-bar__indicator 是 position: absolute，相對於這個 position: relative 的 .tab-bar 定位——
-   量測到的 offsetLeft/offsetWidth 也是相對 .tab-bar 本身（含 padding），兩者座標系一致，
-   不需要額外做 padding 偏移計算。 */
-
-.tab-bar__item {
-  appearance: none;
-  border: none;
-  background: none;
-  font-family: inherit;
-  font-size: 0.9rem;
-  font-weight: 500;
-  color: var(--color-text-secondary);
-  padding: 0.9rem 0.75rem;
-  cursor: pointer;
-  transition: color var(--duration-fast) ease;
-  /* 沒有可見的框，平常看不出差別，但要讓 focus-visible 的焦點框跟著圓角，不是直角。 */
-  border-radius: var(--radius-sm);
-}
-
-/* 這顆按鈕的可點擊範圍（padding）刻意留得比視覺文字大，方便滑鼠點擊，但焦點框貼著整個
-   點擊範圍畫的話看起來會離文字太遠、鬆散。改成負的 outline-offset，把焦點框往內縮到貼近
-   文字本身——`outline` 純粹是視覺繪製，不會改變 `padding`/可點擊範圍，滑鼠可點的區域
-   還是原本那一整塊。用負的 offset 往內縮時，瀏覽器算出來的圓角是「原本的 border-radius
-   加上這個負值」——6px 圓角減掉 8px 內縮會變成負數、直接被砍成 0，圓角就整個消失、
-   焦點框看起來變成直角。這裡連圓角也一起放大到 14px（=6px + 8px），縮進去之後才會
-   剛好留下原本設計的 6px 圓角觀感，不是純粹放大圓角本身。 */
-.tab-bar__item:focus-visible {
-  outline-offset: -8px;
-  border-radius: 14px;
-}
-
-.tab-bar__item:hover:not(.is-active) {
-  color: var(--color-text);
-}
-
-.tab-bar__item.is-active {
-  color: var(--color-accent);
-}
-
-.tab-bar__indicator {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  height: 2px;
-  background: var(--color-accent);
-  border-radius: 1px;
-  transition: transform 380ms cubic-bezier(0.34, 1.56, 0.64, 1), width 380ms cubic-bezier(0.34, 1.56, 0.64, 1);
-  will-change: transform, width;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .tab-bar__indicator {
-    transition: none;
-  }
-}
-
-/* ---- 主要內容區：貼齊視窗邊緣、只留內距，整個視窗是同一個表面——不做「卡片飄浮在
-     留白背景中」那種網頁排版。內容本身的分組靠留白節奏跟局部的陰影/分隔線，不靠外層包一個框。 ---- */
+/* ---- 主要內容區：側欄固定寬度＋主內容區各自獨立捲動，不讓側欄跟著主內容一起被捲走。
+     .page-wrapper 本身不捲動（只負責左右排列），捲動交給 .page 自己，這樣側欄才會維持
+     固定在畫面上，不會捲出視窗外。 ---- */
 .page-wrapper {
   display: flex;
-  justify-content: center;
   flex: 1;
-  overflow-y: auto;
-  /* `overflow-y: auto` 讓瀏覽器把這個捲動容器本身也算進可鍵盤聚焦的元素（跟鍵盤捲動有關的
-     瀏覽器內建行為，不是我們自己加的 tabindex，所以不會被 [tabindex]:focus-visible 那條
-     規則吃到）——它沒有圓角、範圍又是整個視窗高度，套用全域焦點框樣式看起來會像一個跑版的
-     大方框。這個容器本身不是一個有意義的互動目標，直接關掉它的焦點框。 */
-  outline: none;
+  overflow: hidden;
 }
 
 .page {
   max-width: 760px;
   width: 100%;
+  margin: 0 auto;
   padding: 2rem 2.5rem 3rem;
   text-align: left;
+  overflow-y: auto;
+  /* `overflow-y: auto` 讓瀏覽器把這個捲動容器本身也算進可鍵盤聚焦的元素，套用全域焦點框
+     樣式看起來會像一個跑版的大方框，這個容器本身不是有意義的互動目標，直接關掉焦點框。 */
+  outline: none;
   /* 刻意不對 max-width 做過渡——分頁切換時內容本身已經有 .tab-page 淡入淡出，寬度如果
      也跟著平滑放大/縮小，兩個動畫疊在一起會變成「內容還看得到、框卻在動」的縮放感，
      混亂。讓寬度乾脆瞬間跳過去，切換的那一刻剛好也是內容淡到看不見的時候，感覺不出來。 */
@@ -5635,14 +5492,17 @@ body {
   background: var(--tint-decrypt-soft);
 }
 
+/* 這兩個 class 名稱維持原樣（跟 CSS 自訂屬性名稱一起沿用歷史命名），但實際引用的顏色
+   變數對調了——「加密」（原本的清單頁）現在改用金色，「資料夾防護」改用藍色（原本
+   list 頁的顏色），對應側欄主題色分配（見 THEME_CLASS_BY_TAB 那段註解）。 */
 .page-title__icon--list {
-  color: var(--tint-list);
-  background: var(--tint-list-soft);
+  color: var(--tint-guard);
+  background: var(--tint-guard-soft);
 }
 
 .page-title__icon--guard {
-  color: var(--tint-guard);
-  background: var(--tint-guard-soft);
+  color: var(--tint-list);
+  background: var(--tint-list-soft);
 }
 
 .page-title__icon--vault {
@@ -6983,6 +6843,98 @@ button:focus-visible,
   transform: rotate(90deg);
 }
 
+/* ---- 票根樣式清單（design-exploration/gui-styles-v2/13-sidebar-ticket-shell.html 定案版本，
+     定案文件 §3.4）：取代原本「已加密清單」分頁的 <table>，單一項目的卡片外觀在
+     TicketRow.vue 裡（scoped 樣式），這裡只放清單容器跟批次群組摘要票根的樣式——
+     批次群組刻意不用 TicketRow（它的資料形狀是「一組項目」不是單一 item，且展開後
+     底下每個項目才各自是一張 TicketRow）。 ---- */
+.list-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.list-toolbar__spacer {
+  flex: 1;
+}
+
+.ticket-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: relative; /* 撕開飛走的那一列脫離文件流時（.ticket-fly-leave-active）用絕對定位疊在上面，需要這個當定位基準 */
+}
+
+/* 撕開飛走＋其餘列補位（定案文件〈信封清單虛線的互動〉§4）：name="ticket-fly" 對應到上面
+   <TransitionGroup> 的 name prop，Vue 會自動組出 -move / -leave-active / -leave-to 三組
+   class。飛走的位移／角度數值照抄 mockup（13-sidebar-ticket-shell.html）的
+   `.ticket-wrap.is-leaving .ticket-stage`；「其餘列往上補位」則是 TransitionGroup 內建的
+   FLIP move 過場，不用額外寫位移邏輯。 */
+.ticket-fly-move {
+  transition: transform 360ms var(--ease-out, ease);
+}
+
+.ticket-fly-leave-active {
+  transition: transform 380ms var(--ease-out, ease), opacity 340ms ease;
+  /* 飛走時要蓋在其他還沒補位的列上面，且脫離文件流讓其餘列可以立刻開始往上滑，
+     不然它們得等這一列真的從版面消失才會移動，補位動畫看起來會頓一下。 */
+  position: absolute;
+  width: 100%;
+}
+
+.ticket-fly-leave-to {
+  transform: translateX(90px) rotate(2.5deg);
+  opacity: 0;
+}
+
+.ticket-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ticket--batch {
+  padding-left: 20px;
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent-border);
+  justify-content: space-between;
+}
+
+.ticket-group__toggle {
+  appearance: none;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--color-text);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  text-align: left;
+}
+
+.ticket-group__chevron {
+  display: inline-block;
+  transition: transform var(--duration-fast) var(--ease-out);
+  color: var(--color-accent);
+  flex-shrink: 0;
+}
+
+.ticket-group__chevron.is-expanded {
+  transform: rotate(90deg);
+}
+
+.ticket-group__items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 20px;
+}
+
 /* ---- 設定頁籤 ---- */
 .settings-section {
   margin-bottom: 1.75rem;
@@ -7052,6 +7004,52 @@ button:focus-visible,
   text-overflow: ellipsis;
   cursor: default;
   margin: 0 0 0.65rem;
+}
+
+/* ---- 信封加密流程懸浮層（Phase 2b）：apple-design「Materials & depth」——modal 任務用
+   模糊+暗化的 scrim 把背景往後推，不是輕量、不打斷流程的半透明疊層那種做法。進退場除了
+   opacity 也一起變化 backdrop-filter 的模糊半徑（materialize，不是純粹淡入淡出），讓這個
+   表面讀起來像一塊真的材質浮出來，不是一片突然出現的灰色。 ---- */
+.encrypt-overlay {
+  position: fixed;
+  inset: 0;
+  /* 刻意比 .modal-overlay（100）／.modal-overlay--confirm（200）低——加密流程進行到一半時
+     還是可能跳出恢復金鑰顯示這類全域彈窗（見 recoveryKeyDisplay），那些彈窗要蓋在這層
+     上面，不能反過來被這層擋住。 */
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 18, 12, 0.28);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.encrypt-overlay-enter-active {
+  transition: opacity var(--duration-base, 200ms) var(--ease-out, ease),
+    backdrop-filter var(--duration-base, 200ms) var(--ease-out, ease),
+    -webkit-backdrop-filter var(--duration-base, 200ms) var(--ease-out, ease);
+}
+
+.encrypt-overlay-leave-active {
+  transition: opacity var(--duration-fast, 150ms) var(--ease-out, ease),
+    backdrop-filter var(--duration-fast, 150ms) var(--ease-out, ease),
+    -webkit-backdrop-filter var(--duration-fast, 150ms) var(--ease-out, ease);
+}
+
+.encrypt-overlay-enter-from,
+.encrypt-overlay-leave-to {
+  opacity: 0;
+  backdrop-filter: blur(0px);
+  -webkit-backdrop-filter: blur(0px);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .encrypt-overlay {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: rgba(20, 18, 12, 0.82);
+  }
 }
 
 /* ---- 通知（取代原生 alert）---- */

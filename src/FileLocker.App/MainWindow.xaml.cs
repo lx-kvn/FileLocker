@@ -344,6 +344,18 @@ public partial class MainWindow : Window
                     await HandleEncryptRequestAsync(root);
                     break;
 
+                case "encryptPending":
+                    await HandleEncryptPendingRequestAsync(root);
+                    break;
+
+                case "commitEncrypt":
+                    await HandleCommitEncryptRequestAsync(root);
+                    break;
+
+                case "rollbackPendingEncrypt":
+                    await HandleRollbackPendingEncryptRequestAsync(root);
+                    break;
+
                 case "decrypt":
                     await HandleDecryptRequestAsync(root);
                     break;
@@ -586,6 +598,86 @@ public partial class MainWindow : Window
         SendToFrontend(new { type = "encryptBatchDone", totalCount = paths.Count, successCount });
     }
 
+    /// <summary>
+    /// 對應信封加密流程 Phase 2b：跟 HandleEncryptRequestAsync 平行的版本，走 pending 交易模型
+    /// （只把加密內容安全寫進 Vault，不寫 marker、不刪原始檔），完成後前端會先播「郵戳／確認」
+    /// 畫面，使用者確認才會另外送 commitEncrypt。
+    ///
+    /// encryptProgress 是這裡新增的推播訊息——比照既有 encryptPasskeyVerifying 的做法，用
+    /// IProgress&lt;double&gt; 的 callback 直接呼叫 SendToFrontend，VaultProtocolHandlers／
+    /// LockService 那幾層完全不知道「WebView2 訊息」這件事存在，只負責把百分比 Report 出來。
+    /// </summary>
+    private async Task HandleEncryptPendingRequestAsync(JsonElement request)
+    {
+        var paths = request.GetProperty("paths").EnumerateArray()
+            .Select(p => p.GetString() ?? "")
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .ToList();
+
+        var password = request.GetProperty("password").GetString() ?? "";
+        var hint = request.TryGetProperty("hint", out var hintProp) ? hintProp.GetString() : null;
+        var enablePasskey = request.TryGetProperty("enablePasskey", out var passkeyProp) && passkeyProp.GetBoolean();
+        var enableRecoveryKey = request.TryGetProperty("enableRecoveryKey", out var recoveryProp) && recoveryProp.GetBoolean();
+
+        var ownerWindowHandle = enablePasskey ? new WindowInteropHelper(this).Handle : IntPtr.Zero;
+
+        SendToFrontend(new { type = "encryptPendingBatchStarted", totalCount = paths.Count });
+
+        var successCount = 0;
+        var progress = new Progress<double>(percent => SendToFrontend(new { type = "encryptProgress", percent = percent * 100 }));
+
+        await foreach (var item in _protocolHandlers.EncryptPendingBatchAsync(
+            paths, password, hint, enablePasskey, enableRecoveryKey, ownerWindowHandle, progress,
+            verifying => SendToFrontend(new { type = "encryptPasskeyVerifying", verifying })))
+        {
+            if (item.Success)
+            {
+                successCount++;
+            }
+
+            SendToFrontend(new
+            {
+                type = "encryptPendingItemResult",
+                item.Path,
+                item.Success,
+                item.Uuid,
+                item.ErrorMessage,
+                item.ErrorCode,
+                item.ErrorDetail,
+                item.PasskeyRequested,
+                item.PasskeyEnabled,
+                item.RecoveryKey
+            });
+        }
+
+        SendToFrontend(new { type = "encryptPendingBatchDone", totalCount = paths.Count, successCount });
+    }
+
+    private async Task HandleCommitEncryptRequestAsync(JsonElement request)
+    {
+        var uuid = request.GetProperty("uuid").GetString() ?? "";
+        var result = await _protocolHandlers.CommitEncryptAsync(uuid);
+
+        SendToFrontend(new
+        {
+            type = "commitEncryptResult",
+            result.Success,
+            result.Uuid,
+            result.LockedMarkerPath,
+            result.ErrorMessage,
+            result.ErrorCode,
+            result.ErrorDetail
+        });
+    }
+
+    private async Task HandleRollbackPendingEncryptRequestAsync(JsonElement request)
+    {
+        var uuid = request.GetProperty("uuid").GetString() ?? "";
+        await _protocolHandlers.RollbackPendingEncryptAsync(uuid);
+
+        SendToFrontend(new { type = "rollbackPendingEncryptResult", uuid });
+    }
+
     private async Task HandleDecryptRequestAsync(JsonElement request)
     {
         var lockedMarkerPath = request.GetProperty("path").GetString() ?? "";
@@ -798,7 +890,8 @@ public partial class MainWindow : Window
             result.OriginalName,
             result.Hint,
             result.PasskeyEnabled,
-            result.RecoveryKeyEnabled
+            result.RecoveryKeyEnabled,
+            result.CreatedAtUtc
         });
     }
 

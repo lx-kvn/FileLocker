@@ -13,6 +13,10 @@ public static class ErrorCodes
     public const string EncryptError = "ENCRYPT_ERROR";
     public const string EncryptUnexpectedError = "ENCRYPT_UNEXPECTED_ERROR";
 
+    // 對應信封加密流程的 pending/committed 交易模型（CommitEncryptAsync／RollbackPendingEncryptAsync）。
+    public const string PendingItemNotFound = "PENDING_ITEM_NOT_FOUND";
+    public const string CommitPendingEncryptFailed = "COMMIT_PENDING_ENCRYPT_FAILED";
+
     public const string InvalidMarker = "INVALID_MARKER";
     public const string MarkerSignatureInvalid = "MARKER_SIGNATURE_INVALID";
     public const string VaultContentMissing = "VAULT_CONTENT_MISSING";

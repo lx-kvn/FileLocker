@@ -6,6 +6,24 @@ namespace FileLocker.Core.Tests;
 
 public class VaultChangeWatcherTests : IDisposable
 {
+    // 這個類別的計時測試會跟其他測試專案（尤其是 FileLocker.PasswordLocker.Tests 裡刻意
+    // CPU/記憶體密集的 Argon2id 測試）在整套 `dotnet test` 一起跑時同時執行——實測發現單獨
+    // 跑這個測試檔案穩定通過，但跟其他測試專案一起跑偶爾會斷（BurstOfManyFileChanges_
+    // RaisesChangedEventExactlyOnce 的 raisedCount 忽大忽小，或 WaitForChangedAsync 逾時前
+    // 事件根本沒到）。追下去發現根本原因不是 debounce 視窗或輪詢邏輯（那些已經調過好幾輪，
+    // 見下面 PerFileDebounce/NotifyDebounce 的說明跟 BurstOfManyFileChanges 內的輪詢註解），
+    // 是 .NET ThreadPool 預設的執行緒注入節流——執行緒池忙碌時，新執行緒大約每 500ms 才會
+    // 多開一顆，這裡用的 System.Threading.Timer 回呼排進去的就是 ThreadPool，節流會直接讓
+    // 回呼被延後執行，跟 debounce 視窗設多寬無關。這裡在整個測試類別跑之前，把 ThreadPool
+    // 的最小執行緒數拉高，讓回呼不用等節流慢慢開執行緒——這是純測試環境的緩解措施，不改變
+    // production code（VaultChangeWatcher.cs）本身的計時行為或邏輯。
+    static VaultChangeWatcherTests()
+    {
+        ThreadPool.GetMinThreads(out var minWorker, out var minIo);
+        var desiredMinWorker = Math.Max(minWorker, Environment.ProcessorCount * 4);
+        ThreadPool.SetMinThreads(desiredMinWorker, minIo);
+    }
+
     // 覆寫成比正式環境（300ms／750ms）短的 debounce 值，搭配逾時輪詢斷言而非固定 sleep，
     // 盡量降低機器負載造成的不穩定——這類涉及計時的測試先天比純邏輯測試容易偶爾變慢，是明確
     // 接受的取捨。原本用 30ms／80ms，`dotnet test` 平行跑多個測試組時 CPU 排程延遲偶爾會讓

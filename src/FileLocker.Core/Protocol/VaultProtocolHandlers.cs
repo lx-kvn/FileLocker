@@ -65,6 +65,45 @@ public sealed class VaultProtocolHandlers
         }
     }
 
+    /// <summary>
+    /// 對應信封加密流程 Phase 2b：跟 EncryptBatchAsync 平行的版本，走 2a 做好的
+    /// pending/committed 交易模型（呼叫 LockService.EncryptPendingAsync，不是 EncryptAsync）——
+    /// 完成後只是「安全寫進 Vault」，真正 finalize（寫 marker、刪原始檔）要等呼叫端另外呼叫
+    /// CommitEncryptAsync。progress 這裡只是單純往下傳，不知道也不需要知道呼叫端會怎麼把它變成
+    /// 一個 WebView2 訊息（這一層刻意不依賴任何 WebView2 具體型別，見本檔案開頭的說明）。
+    /// </summary>
+    public async IAsyncEnumerable<EncryptPendingItemResponse> EncryptPendingBatchAsync(
+        IReadOnlyList<string> paths, string password, string? hint,
+        bool enablePasskey, bool enableRecoveryKey, IntPtr ownerWindowHandle,
+        IProgress<double>? progress = null, Action<bool>? onPasskeyVerifying = null)
+    {
+        var batchId = paths.Count > 1 ? Guid.NewGuid().ToString() : null;
+
+        foreach (var path in paths)
+        {
+            var result = await _lockService.EncryptPendingAsync(
+                path, password, string.IsNullOrWhiteSpace(hint) ? null : hint,
+                enablePasskey, ownerWindowHandle, enableRecoveryKey, batchId,
+                progress, onPasskeyVerifying);
+
+            var actuallyPasskeyEnabled = false;
+            if (result.Success)
+            {
+                actuallyPasskeyEnabled = _vaultManager.LoadMetadata(result.Uuid)?.PasskeyEnabled ?? false;
+            }
+
+            yield return new EncryptPendingItemResponse(path, result, enablePasskey, actuallyPasskeyEnabled);
+        }
+    }
+
+    /// <summary>對應「按下最終確認」：薄包裝，直接委派給 LockService（見 2a）。</summary>
+    public Task<LockResult> CommitEncryptAsync(string uuid)
+        => _lockService.CommitEncryptAsync(uuid);
+
+    /// <summary>對應「按下取消」：薄包裝，直接委派給 LockService（見 2a）。</summary>
+    public Task RollbackPendingEncryptAsync(string uuid)
+        => _lockService.RollbackPendingEncryptAsync(uuid);
+
     public Task<UnlockResult> DecryptAsync(string lockedMarkerPath, string password)
         => _lockService.DecryptAsync(lockedMarkerPath, password);
 
@@ -127,7 +166,8 @@ public sealed class VaultProtocolHandlers
         var metadata = _vaultManager.LoadMetadata(marker.Uuid);
         return new InspectLockedFileResponse(
             metadata is not null, marker.Uuid, metadata?.OriginalName, metadata?.Hint,
-            metadata?.PasskeyEnabled ?? false, metadata?.RecoveryKeyEnabled ?? false);
+            metadata?.PasskeyEnabled ?? false, metadata?.RecoveryKeyEnabled ?? false,
+            metadata?.CreatedAtUtc);
     }
 
     /// <summary>

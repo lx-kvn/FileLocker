@@ -23,6 +23,24 @@ public sealed record EncryptItemResponse(
     }
 }
 
+/// <summary>
+/// 對應信封加密流程 Phase 2b 的「pending」訊息：跟 EncryptItemResponse 形狀幾乎一樣，只是
+/// LockedMarkerPath 這階段一定是空字串（EncryptPendingAsync 本來就不寫 marker），前端不該
+/// 依賴這個欄位判斷加密完成與否——真正完成要等對應的 commitEncryptResult。
+/// </summary>
+public sealed record EncryptPendingItemResponse(
+    string Path, bool Success, string Uuid,
+    string? ErrorMessage, string? ErrorCode, string? ErrorDetail,
+    bool PasskeyRequested, bool PasskeyEnabled, string? RecoveryKey)
+{
+    public EncryptPendingItemResponse(string path, LockResult result, bool passkeyRequested, bool actuallyPasskeyEnabled)
+        : this(
+            path, result.Success, result.Uuid, result.ErrorMessage, result.ErrorCode,
+            result.ErrorDetail, passkeyRequested, actuallyPasskeyEnabled, result.RecoveryKey)
+    {
+    }
+}
+
 /// <summary>對應「全部解鎖」批次解密的單筆回報，還原位置固定用各自的原始位置。</summary>
 public sealed record DecryptBatchItemResponse(
     string Uuid, bool Success, string RestoredPath, string? ErrorMessage, string? ErrorCode, string? ErrorDetail)
@@ -33,8 +51,14 @@ public sealed record DecryptBatchItemResponse(
     }
 }
 
+/// <summary>
+/// CreatedAtUtc 是信封加密流程 Phase 2a 補上的欄位（design-exploration/gui-styles-v2 定案文件
+/// §1.11：獨立解密流程的信封落地後要顯示「檔名＋加密時間」）——metadata 找不到（marker 存在但
+/// 沒有對應的 metadata，或根本不是合法的 .locked 檔案）時是 null，呼叫端不需要另外判斷。
+/// </summary>
 public sealed record InspectLockedFileResponse(
-    bool Success, string? Uuid, string? OriginalName, string? Hint, bool PasskeyEnabled, bool RecoveryKeyEnabled);
+    bool Success, string? Uuid, string? OriginalName, string? Hint, bool PasskeyEnabled, bool RecoveryKeyEnabled,
+    DateTimeOffset? CreatedAtUtc = null);
 
 public sealed record PathSizeInfo(long Bytes, bool IsFolder);
 

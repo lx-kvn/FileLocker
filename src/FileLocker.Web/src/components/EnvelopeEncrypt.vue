@@ -7,7 +7,7 @@
 //
 // 時序常數跟座標數值直接照抄技術規格 §2.10 記錄的最終定案版本（不是兩份早期 mockup
 // 8-envelope-assembled.html／12-file-tab-merged.html 裡已經被技術規格記錄推翻的做法）。
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { bumpGen, isCurrentGen } from '../composables/useAnimGen.js'
 import envelopeBodyEmptyUrl from '../assets/Envelope_Body_Empty.svg'
 import envelopeBodyOneUrl from '../assets/Envelope_Body_One.svg'
@@ -54,7 +54,32 @@ const isDropping = ref(true)
 const isOpen = ref(false)
 const sheetPage = ref('picker') // 'picker' | 'password'
 const sheetVisible = ref(false)
-const sheetTransitionState = ref('hidden') // 'hidden' | 'fade-out' | 'fade-in' | 'settled'
+// 'hidden' | 'reveal' | 'settle' | 'fade-out' | 'morph-start' | 'fade-in' | 'retreat'
+// 對應 mockup（13-sidebar-ticket-shell.html）的 .sheet--* 系列 class，命名跟狀態都刻意
+// 照抄，不要自己發明新名字，方便之後對照 mockup 修改時不用先做名詞翻譯。
+const sheetTransitionState = ref('hidden')
+
+const pickerSheetEl = ref(null)
+const passwordSheetEl = ref(null)
+function sheetElFor(page) {
+  return page === 'picker' ? pickerSheetEl.value : passwordSheetEl.value
+}
+// 兩個 .sheet 各自根據「目前是不是這一頁」＋「共用的過場狀態」算出自己的 class——
+// 兩張卡是互斥的（同時只有一張是 sheetPage 指到的那張），共用同一個 sheetTransitionState
+// 沒問題，因為不是目前這頁的卡永遠落在第一個分支（sheet--hidden），不會被過場狀態誤套用。
+function sheetClass(page) {
+  const isActive = sheetPage.value === page && sheetVisible.value
+  const state = sheetTransitionState.value
+  return {
+    'sheet--hidden': !isActive || state === 'hidden',
+    'sheet--reveal': isActive && state === 'reveal',
+    'sheet--settle': isActive && state === 'settle',
+    'sheet--fade-out': isActive && state === 'fade-out',
+    'sheet--morph-start': isActive && state === 'morph-start',
+    'sheet--fade-in': isActive && state === 'fade-in',
+    'sheet--retreat': isActive && state === 'retreat',
+  }
+}
 
 const timers = []
 function after(ms, fn) {
@@ -66,12 +91,41 @@ function clearTimers() {
   timers.forEach(clearTimeout)
   timers.length = 0
 }
+// CSS transition 要真的播出來，瀏覽器必須先把「起點」那個無 transition 的狀態畫出來一次，
+// 才能認得出後面切到的 class 是「新的目標」而不是同一次繪製裡的最終結果——這裡對應 mockup
+// 的 `void el.offsetWidth` 強制 reflow 那幾行（見技術規格 §2.10、13-sidebar-ticket-shell.html
+// playSheetTwoPhaseEntrance／playSheetCrossfade）。Vue 的 class binding 改變不會同步反映到
+// 畫面，要先 await nextTick() 讓「起點」那個 class 真的被瀏覽器畫過一次，再讀一次 offsetWidth
+// 強制瀏覽器把這個瞬間的樣式算完、記下來，下一行才能安全切到會播 transition 的目標 class——
+// 少了這兩步，兩次 class 變化有可能被瀏覽器合併成一次繪製，動畫直接跳過去看不到。
+async function forceReflow(page) {
+  await nextTick()
+  const el = sheetElFor(page)
+  if (el) void el.offsetWidth
+}
 
 // 世代編號：這個元件實例整體共用一個 key（不需要像技術規格那樣分三層 DOM 元素各自的
 // generation，因為這裡沒有原本那套「開合三層各自獨立 class 切換」的 DOM 結構問題——Vue 的
 // class binding 是宣告式的，狀態本身就是唯一事實來源，不會有「舊 class 沒清乾淨」的殘留，
 // 需要世代編號防護的只有 setTimeout 鏈本身排定的「之後要做什麼」）。
 const animKey = {}
+
+// 兩段式進場（mockup playSheetTwoPhaseEntrance）：hidden → reveal（先滑出信封下緣，
+// 完全清出畫布露臉）→ settle（再滑回來疊上信封）。這是「sheet 跳出來」這個手感的唯一
+// 來源——之前這裡直接跳到定住的狀態，完全沒有滑出去那一段，是回饋抓到的問題。
+async function playSheetTwoPhaseEntrance(page) {
+  const gen = bumpGen(animKey)
+  sheetPage.value = page
+  sheetTransitionState.value = 'hidden'
+  sheetVisible.value = true
+  await forceReflow(page)
+  if (!isCurrentGen(animKey, gen)) return
+  sheetTransitionState.value = 'reveal'
+  after(SHEET_PHASE_MS, () => {
+    if (!isCurrentGen(animKey, gen)) return
+    sheetTransitionState.value = 'settle'
+  })
+}
 
 function playEntrance() {
   const gen = bumpGen(animKey)
@@ -83,9 +137,7 @@ function playEntrance() {
     isOpen.value = true
     after(FLAP_MS + SETTLE_HOLD_MS, () => {
       if (!isCurrentGen(animKey, gen)) return
-      sheetPage.value = 'picker'
-      sheetVisible.value = true
-      sheetTransitionState.value = 'settled'
+      playSheetTwoPhaseEntrance('picker')
     })
   })
 }
@@ -93,37 +145,99 @@ function playEntrance() {
 onMounted(playEntrance)
 onUnmounted(() => {
   bumpGen(animKey) // 蓋掉任何還沒執行的 callback
+  bumpGen(panelAnimKey)
   clearTimers()
 })
 
-function goToPasswordPage() {
-  if (props.paths.length === 0) return
+// 兩張 Sheet 之間的「連貫翻頁」（mockup playSheetCrossfade）：選檔案→設密碼是同一段任務
+// 的前後兩頁，不是各自獨立的物件，用原地交叉淡化＋縮放，不用兩段式抽出/收回（那個語言
+// 代表「這個東西被收起來、換了一件不相干的事」）。MORPH_OUT_MS/MORPH_IN_MS 數值跟 mockup
+// 完全一致（200ms 退場、260ms 進場，兩段各自的曲線也不同——退場一般 ease，進場強 ease-out）。
+const MORPH_OUT_MS = 200
+const MORPH_IN_MS = 260
+
+async function playSheetCrossfade(fromPage, toPage) {
   const gen = bumpGen(animKey)
   sheetTransitionState.value = 'fade-out'
-  after(200, () => {
+  await new Promise((resolve) => after(MORPH_OUT_MS, resolve))
+  if (!isCurrentGen(animKey, gen)) return
+  sheetPage.value = toPage
+  sheetTransitionState.value = 'morph-start'
+  await forceReflow(toPage)
+  if (!isCurrentGen(animKey, gen)) return
+  sheetTransitionState.value = 'fade-in'
+  after(MORPH_IN_MS, () => {
     if (!isCurrentGen(animKey, gen)) return
-    sheetPage.value = 'password'
-    sheetTransitionState.value = 'fade-in'
-    after(SHEET_PHASE_MS, () => {
-      if (!isCurrentGen(animKey, gen)) return
-      sheetTransitionState.value = 'settled'
-    })
+    sheetTransitionState.value = 'settle'
   })
 }
 
+function goToPasswordPage() {
+  if (props.paths.length === 0) return
+  playSheetCrossfade('picker', 'password')
+}
+
 function goBackToPicker() {
-  const gen = bumpGen(animKey)
-  sheetTransitionState.value = 'fade-out'
-  after(200, () => {
-    if (!isCurrentGen(animKey, gen)) return
-    sheetPage.value = 'picker'
-    sheetTransitionState.value = 'fade-in'
-    after(SHEET_PHASE_MS, () => {
-      if (!isCurrentGen(animKey, gen)) return
-      sheetTransitionState.value = 'settled'
-    })
+  playSheetCrossfade('password', 'picker')
+}
+
+// 「選擇檔案」按鈕 ↔ 已選檔案清單：同一張 sheet 裡的兩個區塊，套跟上面 sheet 之間轉場
+// 同一套縮放語言（mockup playPanelMorphSwap，共用 MORPH_OUT_MS/MORPH_IN_MS）——先把舊
+// 區塊縮小淡出、真的從版面上消失（display:none）之後，才讓新區塊出現、從縮小狀態長出來，
+// 避免兩個區塊同時佔用版面空間造成排版跳動。只在「有沒有檔案」這條邊界被跨越時才播（見
+// watch(pickerHasFiles) 那段），清單裡增減筆數（一路都還在「有檔案」這個狀態內）不重播。
+const emptyStateEl = ref(null)
+const pickedWrapEl = ref(null)
+const panelAnimKey = {}
+
+function setPanelVisible(el, visible) {
+  if (el) el.style.display = visible ? '' : 'none'
+}
+
+async function playPanelMorphSwap(fromEl, toEl) {
+  const gen = bumpGen(panelAnimKey)
+  if (fromEl) fromEl.classList.add('panel-morph-out')
+  await new Promise((resolve) => after(MORPH_OUT_MS, resolve))
+  if (!isCurrentGen(panelAnimKey, gen)) return
+  if (fromEl) {
+    fromEl.classList.remove('panel-morph-out')
+    setPanelVisible(fromEl, false)
+  }
+  setPanelVisible(toEl, true)
+  if (toEl) {
+    toEl.classList.add('panel-morph-start')
+    await nextTick()
+    void toEl.offsetWidth // 強制 reflow，理由跟 forceReflow() 一樣
+    if (!isCurrentGen(panelAnimKey, gen)) return
+    toEl.classList.remove('panel-morph-start')
+    toEl.classList.add('panel-morph-in')
+  }
+  after(MORPH_IN_MS, () => {
+    if (!isCurrentGen(panelAnimKey, gen) || !toEl) return
+    toEl.classList.remove('panel-morph-in')
   })
 }
+
+// 掛載當下（可能已經帶著預選的檔案，例如從檔案總管右鍵直接進來）要跟目前的 paths 同步，
+// 不能觸發動畫——比照 mockup resetEncryptState 的做法，重置是瞬間完成，不播
+// playPanelMorphSwap。之後 paths 才會跨界變化的才要播動畫，所以用一個獨立旗標記目前
+// 「上一次算出來」的有無檔案狀態，而不是直接比較 watch 的 old/new 值（onMounted 跑的時候
+// watch 的初始 old 值還沒意義）。
+const pickerHadFiles = ref(props.paths.length > 0)
+onMounted(() => {
+  setPanelVisible(emptyStateEl.value, !pickerHadFiles.value)
+  setPanelVisible(pickedWrapEl.value, pickerHadFiles.value)
+})
+
+watch(() => props.paths.length > 0, (hasFiles) => {
+  if (hasFiles === pickerHadFiles.value) return
+  pickerHadFiles.value = hasFiles
+  if (hasFiles) {
+    playPanelMorphSwap(emptyStateEl.value, pickedWrapEl.value)
+  } else {
+    playPanelMorphSwap(pickedWrapEl.value, emptyStateEl.value)
+  }
+})
 
 // ---- 「這段任務真的結束了」的退場：技術規格 §2.10——這裡才用兩段式抽出/收回
 // （sheet--reveal 完全滑出→sheet--retreat 收回並淡出），不是原地交叉淡化那種「翻頁」感，
@@ -161,9 +275,9 @@ function playReopenAfterCancel() {
   isOpen.value = true
   after(FLAP_MS, () => {
     if (!isCurrentGen(animKey, gen)) return
-    sheetPage.value = 'password'
-    sheetVisible.value = true
-    sheetTransitionState.value = 'settled'
+    // 重新打開後 sheet 是「剛從信封裡再度冒出來」，跟第一次打開信封時同一種手感，
+    // 套同一套兩段式進場（不是直接跳到定住的狀態）。
+    playSheetTwoPhaseEntrance('password')
   })
 }
 
@@ -268,20 +382,16 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
       <button class="button button--primary" type="button" data-action="confirm" :disabled="phase === 'committing'" @click="emit('confirm')">{{ t('encrypt.envelopeConfirm') }}</button>
     </div>
 
-    <!-- 頁一：選檔案 -->
-    <div
-      class="sheet sheet--picker"
-      :class="{
-        'sheet--hidden': !sheetVisible || sheetPage !== 'picker',
-        'sheet--fade-out': sheetVisible && sheetPage === 'picker' && sheetTransitionState === 'fade-out',
-        'sheet--fade-in': sheetVisible && sheetPage === 'picker' && sheetTransitionState === 'fade-in',
-      }"
-    >
-      <div v-if="paths.length === 0" class="sheet__empty-state">
+    <!-- 頁一：選檔案。「選擇檔案」空狀態／已選清單這兩塊不用 v-if/v-else 直接切換——那樣
+         沒有任何轉場，兩塊一直都在 DOM 裡，用 ref + style.display 由 playPanelMorphSwap()
+         手動控制可見度，才能在跨越「有沒有檔案」這條邊界時播放縮放淡化動畫（見上面
+         playPanelMorphSwap 的說明）。 -->
+    <div ref="pickerSheetEl" class="sheet sheet--picker" :class="[sheetClass('picker'), { 'has-files': paths.length > 0 }]">
+      <div ref="emptyStateEl" class="sheet__empty-state">
         <button class="button button--primary" type="button" data-action="pick-file" @click="emit('pick-file')">{{ t('encrypt.pickFiles') }}</button>
         <button class="button button--secondary" type="button" data-action="pick-folder" @click="emit('pick-folder')">{{ t('encrypt.pickFolder') }}</button>
       </div>
-      <div v-else class="picked-list-frame">
+      <div ref="pickedWrapEl" class="picked-list-frame">
         <ul class="picked-list">
           <li v-for="(path, index) in paths" :key="path">
             <span :title="path">{{ path }}</span>
@@ -297,16 +407,7 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
     </div>
 
     <!-- 頁二：密碼／Passkey／恢復金鑰 -->
-    <div
-      class="sheet sheet--password"
-      :class="{
-        'sheet--hidden': !sheetVisible || sheetPage !== 'password',
-        'sheet--fade-out': sheetVisible && sheetPage === 'password' && sheetTransitionState === 'fade-out',
-        'sheet--fade-in': sheetVisible && sheetPage === 'password' && sheetTransitionState === 'fade-in',
-        'sheet--reveal': sheetVisible && sheetPage === 'password' && sheetTransitionState === 'reveal',
-        'sheet--retreat': sheetVisible && sheetPage === 'password' && sheetTransitionState === 'retreat',
-      }"
-    >
+    <div ref="passwordSheetEl" class="sheet sheet--password" :class="sheetClass('password')">
       <div class="step2-form">
         <input
           data-field="password"
@@ -507,42 +608,114 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
   border-radius: 9px;
   box-shadow: 0 4px 10px rgba(34, 34, 30, 0.16);
   padding: 12px 14px 13px;
-  transform: translate(-50%, 0) scale(1);
+  transform: translate(-50%, 0);
   opacity: 1;
-  transition: opacity 200ms ease, transform 200ms ease;
+  /* 這個基底 transition 直接照抄 mockup 的 .sheet 預設值（見 13-sidebar-ticket-shell.html），
+     只在沒有任何過場 class 匹配時當保底——正常情況下每個過場階段都有自己明確的 class
+     （下面 --reveal/--settle/--fade-out/--morph-start/--fade-in/--retreat）指定要用的
+     transition，不會真的落到這個保底值。 */
+  transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1), opacity 160ms ease;
 }
 
 .sheet--hidden {
   opacity: 0;
   pointer-events: none;
+  transform: translate(-50%, 0);
   transition: none;
 }
 
+/* 兩段式進場／退場（mockup playSheetTwoPhaseEntrance／playSheetTwoPhaseExit）：
+   進場＝hidden→reveal→settle（先滑出露臉，再收回疊上信封）；退場＝settle→reveal→retreat
+   （反過來播，紙條塞回信封後面，退場最後淡出）。--reveal 是這兩段共用的中繼姿態——完全
+   滑出信封 420px 畫布下緣之外（translateY 200px），不管是正要進場還是正要退場，路過這裡
+   時視覺上都是同一個「完全清出畫布」的姿態。 */
+.sheet--reveal {
+  opacity: 1;
+  pointer-events: none;
+  transform: translate(-50%, 200px);
+  transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1), opacity 160ms ease;
+}
+
+.sheet--settle {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0);
+  transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* 退場專用的第二段——跟 sheet--hidden 最終視覺結果一樣（位置歸零、opacity:0），但這裡
+   要有轉場動畫（sheet--hidden 那個 transition:none 是刻意設計給「進場前瞬間重置起點」
+   用的，不能拿來播退場，播退場會變成「滑下去之後直接瞬間消失」，沒有真的滑回去疊上
+   信封）。退場播完之後 JS 會再切到 sheet--hidden 收尾，兩者最終視覺狀態相同，這個切換
+   不會有任何可見的跳動。 */
+.sheet--retreat {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 0);
+  transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1), opacity 200ms ease;
+}
+
+/* 兩張 Sheet 之間的「連貫翻頁」（mockup playSheetCrossfade）：不是每次換頁都要抽出/收回，
+   那套語言代表「這個東西被收起來、換了一件不相干的事」——選檔案→設密碼是同一段連貫流程
+   的前後兩頁，改用原地縮放淡化。退場／進場各自用不同的曲線：退場用一般 ease，進場用強
+   ease-out cubic-bezier(0.23,1,0.32,1)，讓「長出來」那一下有俐落的起步感，不是兩段共用
+   同一條曲線各退一半。 */
 .sheet--fade-out {
   opacity: 0;
+  pointer-events: none;
   transform: translate(-50%, 0) scale(0.88);
   transition: opacity 200ms ease, transform 200ms ease;
 }
 
+/* 進場前瞬間重置起點（縮小＋透明，無 transition）——對應 JS 裡 forceReflow() 之後才切到
+   --fade-in，確保瀏覽器真的把這個起點畫過一次，接下來的 class 切換才會被認出是「新的
+   過場目標」而真的播 transition，不會被合併成一次繪製直接跳過去看不到動畫。 */
+.sheet--morph-start {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 0) scale(0.88);
+  transition: none;
+}
+
 .sheet--fade-in {
   opacity: 1;
+  pointer-events: auto;
   transform: translate(-50%, 0) scale(1);
   transition: opacity 260ms cubic-bezier(0.23, 1, 0.32, 1), transform 260ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-/* 兩段式抽出/收回——只在「這段任務真的結束了」時播（技術規格 §2.10），跟上面
-   fade-out/fade-in 那組「翻頁」語意分開：抽出先完全滑出露出全貌，收回再滑回疊上信封範圍
-   並淡出，不是單純縮放淡化。 */
-.sheet--reveal {
-  opacity: 1;
-  transform: translate(-50%, 200px) scale(1);
-  transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1), opacity 160ms ease;
+/* 選檔案（已經有選檔案）／設密碼這兩個狀態統一撐到同一個高度——這兩者才是
+   playSheetCrossfade 實際切換的前後兩個畫面，高度不一樣的話中途還是感覺得到「這張卡片
+   突然變矮/變高」，不夠像同一塊東西在變形。一開始還沒選檔案、只有「選擇檔案」按鈕那個
+   空狀態刻意不套這個最小高度——那個狀態本來就不會直接跟設密碼畫面交叉切換（要先選了
+   檔案、「下一步」才會啟用），維持自己原本緊湊的高度就好。 */
+.sheet--picker.has-files,
+.sheet--password {
+  min-height: 224px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
 }
 
-.sheet--retreat {
+/* 「選擇檔案」按鈕 ↔ 已選檔案清單這組切換（mockup playPanelMorphSwap）：套跟上面 Sheet
+   之間轉場同一套縮放語言（0.88 縮放、退場 200ms 一般 ease、進場 260ms 強 ease-out），
+   維持整體節奏一致，不是又另外發明一組數字。 */
+.panel-morph-out {
   opacity: 0;
-  transform: translate(-50%, 0) scale(1);
-  transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1), opacity 200ms ease;
+  transform: scale(0.88);
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+
+.panel-morph-start {
+  opacity: 0;
+  transform: scale(0.88);
+  transition: none;
+}
+
+.panel-morph-in {
+  opacity: 1;
+  transform: scale(1);
+  transition: opacity 260ms cubic-bezier(0.23, 1, 0.32, 1), transform 260ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 .picked-list-frame {

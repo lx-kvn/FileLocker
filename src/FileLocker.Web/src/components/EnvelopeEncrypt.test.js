@@ -58,12 +58,41 @@ describe('EnvelopeEncrypt', () => {
     expect(sheet.classes()).not.toContain('sheet--hidden')
   })
 
+  it('sheet 進場是兩段式（先完全滑出清出信封，才收回疊上信封），不是直接跳到定住的狀態', async () => {
+    const wrapper = mountEnvelope()
+    await vi.advanceTimersByTimeAsync(820 + 20 + 420 + 500 + 10)
+    await wrapper.vm.$nextTick()
+    // 剛進場那一刻先是 --reveal（完全滑出），還不是 --settle
+    expect(wrapper.find('.sheet--picker').classes()).toContain('sheet--reveal')
+    expect(wrapper.find('.sheet--picker').classes()).not.toContain('sheet--settle')
+
+    await vi.advanceTimersByTimeAsync(280) // SHEET_PHASE_MS，reveal 播完換 settle
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.sheet--picker').classes()).toContain('sheet--settle')
+    expect(wrapper.find('.sheet--picker').classes()).not.toContain('sheet--reveal')
+  })
+
   it('沒有選檔案時「下一步」按鈕是 disabled', async () => {
     const wrapper = mountEnvelope({ paths: [] })
     await vi.advanceTimersByTimeAsync(2000)
     await wrapper.vm.$nextTick()
 
     expect(wrapper.find('[data-action="next"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('從空狀態變成有檔案：跨越邊界才播縮放淡化，「選擇檔案」按鈕換成已選清單', async () => {
+    const wrapper = mountEnvelope({ paths: [] })
+    await vi.advanceTimersByTimeAsync(2000)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.sheet__empty-state').element.style.display).not.toBe('none')
+    expect(wrapper.find('.picked-list-frame').element.style.display).toBe('none')
+
+    await wrapper.setProps({ paths: ['C:\\a.txt'] })
+    await vi.advanceTimersByTimeAsync(200 + 260) // MORPH_OUT_MS + MORPH_IN_MS
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.sheet__empty-state').element.style.display).toBe('none')
+    expect(wrapper.find('.picked-list-frame').element.style.display).not.toBe('none')
   })
 
   it('選了檔案後可以點下一步，切到密碼頁，並 emit 對應事件', async () => {

@@ -381,8 +381,6 @@
   "passwordLocker.sortTime": "依時間排序",
   "passwordLocker.noItems": "密碼庫目前是空的",
   "passwordLocker.noSearchResults": "找不到符合搜尋條件的紀錄",
-  "passwordLocker.pagerPrev": "‹ 上一頁",
-  "passwordLocker.pagerNext": "下一頁 ›",
   "passwordLocker.colTitle": "標題",
   "passwordLocker.colFileName": "檔案名稱",
   "passwordLocker.colUsername": "帳號",

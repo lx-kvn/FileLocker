@@ -26,7 +26,6 @@ import AppSidebar from './components/AppSidebar.vue'
 import TicketRow from './components/TicketRow.vue'
 import EnvelopeEncrypt from './components/EnvelopeEncrypt.vue'
 import EnvelopeDecrypt from './components/EnvelopeDecrypt.vue'
-import PasswordLockerNotebook from './components/PasswordLockerNotebook.vue'
 import { sendMessage, requestMessage, resolvePending, rejectAllPending } from './composables/useIpc.js'
 import { useSidebar } from './composables/useSidebar.js'
 import {
@@ -340,10 +339,7 @@ const passwordLockerNotesMatchIds = ref(new Set())
 let passwordLockerSearchDebounceTimer = null
 const passwordLockerWebsiteSort = ref('alphabetical') // 'alphabetical' | 'time'
 const passwordLockerFileSort = ref('time') // 'alphabetical' | 'time'
-// 曾經有「全部」這個第三選項（用 <select> 呈現），改成筆記本分類標籤（兩個互斥切換鈕）之後
-// 拿掉了——標籤設計定案（見《GUI造型探索_定案文件.md》第 4 節）沒有「全部」的位置，兩個標籤
-// 只能二選一。預設 'website' 跟 mockup 一致，剛進頁面就看到網站帳密分類。
-const passwordLockerViewFilter = ref('website') // 'website' | 'file'
+const passwordLockerViewFilter = ref('all') // 'all' | 'website' | 'file'
 // id -> 明文密碼，只存在這個分頁的記憶體裡，不落地；跟後端 session 一樣沒有做「切分頁就清除」，
 // 見規劃文件第 11.2 節的說明。
 const passwordLockerRevealedPasswords = ref({})
@@ -2449,11 +2445,17 @@ const passwordLockerFileItems = computed(() =>
   sortPasswordLockerItems(passwordLockerFilteredItems.value.filter((item) => item.category === 'EncryptedFile'), passwordLockerFileSort.value)
 )
 
-// 空狀態判斷要跟著目前選的分類標籤（網站／已加密檔案）走，不然切到某個分類剛好沒有
-// 任何項目時，畫面會整個空白、看不出「這個分類下沒有資料」還是「還在載入」。
-const passwordLockerVisibleItemCount = computed(() =>
-  passwordLockerViewFilter.value === 'file' ? passwordLockerFileItems.value.length : passwordLockerWebsiteItems.value.length
-)
+// 空狀態判斷要跟著顯示內容篩選（全部／網站／已加密檔案）走，不然篩到某個分類剛好沒有
+// 任何項目時，畫面會整個空白、看不出「篩選條件下沒有資料」還是「還在載入」。
+const passwordLockerVisibleItemCount = computed(() => {
+  if (passwordLockerViewFilter.value === 'website') {
+    return passwordLockerWebsiteItems.value.length
+  }
+  if (passwordLockerViewFilter.value === 'file') {
+    return passwordLockerFileItems.value.length
+  }
+  return passwordLockerFilteredItems.value.length
+})
 
 // 已經解密過就純前端切換遮住/顯示，不用重新驗證、也不用重新呼叫後端解密；還沒解密過的話
 // 走一般的驗證流程，驗證通過、拿到明文後直接切成顯示狀態（showAfterReveal），不用使用者
@@ -3629,6 +3631,34 @@ function historyDetailText(entry) {
   }
   return entry.detail || ''
 }
+
+// 回饋：密碼庫「新增帳密」表單開著的時候，Tab 鍵還是會切到表單背後被模糊暗化的背景元素——
+// 跟 showEncryptOverlay／showDecryptOverlay 那組疊層原本就踩過、也修過的同一個問題（見
+// title-bar／page-wrapper 上 :inert 那段既有註解），只是這次是密碼庫的表單彈窗，不是加密
+// 疊層。這批 .modal-overlay 彈窗（確認對話框、密碼提示、恢復金鑰顯示、密碼庫的驗證/表單/
+// 選取器……）跟資料夾防護的新增資料夾疊層（VaultAddFolderOverlay）當初一個個加的時候都沒有
+// 補上同一道保護，是同一類 bug 在不同地方各自漏掉，不是密碼庫這次才有的新問題。這裡統一
+// 補上：這些彈窗全部是 .page-wrapper 的手足節點（跟 .encrypt-overlay 同一層，不是巢狀在
+// 裡面——VaultAddFolderOverlay 原本巢狀在資料夾防護分頁內容裡，已經搬到 .page-wrapper
+// 外面，見它在模板裡新的掛載位置旁的說明），套 inert 在 page-wrapper／title-bar 上
+// 不會連帶把彈窗本身也弄成不能互動。
+const isAnyBlockingModalOpen = computed(() =>
+  showEncryptOverlay.value
+  || showDecryptOverlay.value
+  || folderGuardOverlayVisible.value
+  || confirmDialogState.value != null
+  || isUpdateModalOpen.value
+  || isHelpOpen.value
+  || recoveryKeyDisplay.value !== ''
+  || passwordPromptContext.value != null
+  || recoveryKeyPromptItem.value != null
+  || passwordLockerVerifyState.value != null
+  || passwordLockerRecoveryKeyDisplay.value !== ''
+  || passwordLockerChangePasswordState.value != null
+  || passwordLockerFormState.value != null
+  || passwordLockerPickerVisible.value
+  || passwordLockerAssociateState.value != null
+)
 </script>
 
 <template>
@@ -3636,12 +3666,13 @@ function historyDetailText(entry) {
     <!-- 自訂標題列：整條都是可拖曳區域（app-region: drag），交給作業系統的視窗管理員
          原生處理拖曳，所以能得到 Aero Snap、雙擊最大化、右鍵系統選單這些原生行為。
          三顆按鈕本身標記成 no-drag，否則點下去只會開始拖視窗、按不到按鈕。 -->
-    <!-- 回饋：加密新檔案疊層開著的時候，Tab 鍵切換仍然會切到疊層背後被模糊暗化的元素——
-         那些元素視覺上已經被 scrim 蓋住、看不清楚，鍵盤使用者卻還是能切過去操作到，是
-         可以感知到但邏輯不通的狀態。用原生 inert 屬性把標題列跟主要頁面內容整個排除在
-         Tab 順序跟互動之外（inert 同時擋掉 focus 跟點擊，比只設 tabindex="-1" 更徹底——
-         後者仍然可以被滑鼠點到），疊層本身（.encrypt-overlay）在這兩個元素外面，不受影響。 -->
-    <header class="title-bar" :inert="showEncryptOverlay || showDecryptOverlay">
+    <!-- 任何一個疊層/彈窗開著的時候，Tab 鍵切換不能切到背後被模糊暗化的元素——那些元素
+         視覺上已經被 scrim 蓋住、看不清楚，鍵盤使用者卻還是能切過去操作到，是可以感知到但
+         邏輯不通的狀態。用原生 inert 屬性把標題列跟主要頁面內容整個排除在 Tab 順序跟互動
+         之外（inert 同時擋掉 focus 跟點擊，比只設 tabindex="-1" 更徹底——後者仍然可以被
+         滑鼠點到）。isAnyBlockingModalOpen 這個判斷式定義在 script 最後面，涵蓋所有
+         .modal-overlay 彈窗、加密/解密疊層，跟資料夾防護的新增資料夾疊層，完整名單見那裡。 -->
+    <header class="title-bar" :inert="isAnyBlockingModalOpen">
       <div class="traffic-lights">
         <button
           class="traffic-light traffic-light--close"
@@ -3675,7 +3706,7 @@ function historyDetailText(entry) {
       <span class="title-bar__title">FileLocker</span>
     </header>
 
-    <div class="page-wrapper" :inert="showEncryptOverlay || showDecryptOverlay">
+    <div class="page-wrapper" :inert="isAnyBlockingModalOpen">
       <AppSidebar
         :collapsed="sidebarCollapsed"
         :active="sidebarActiveKey"
@@ -3683,7 +3714,7 @@ function historyDetailText(entry) {
         @toggle-collapse="toggleSidebar"
         @navigate="onSidebarNavigate"
       />
-      <main class="page" :class="{ 'page--wide': pageWidthTab === 'list' || pageWidthTab === 'passwordLocker', 'page--tight-vertical': pageWidthTab === 'passwordLocker' }">
+      <main class="page" :class="{ 'page--wide': pageWidthTab === 'list' }">
         <Transition name="tab-page" mode="out-in" @before-enter="pageWidthTab = activeTab; themeTab = activeTab">
         <div v-if="activeTab === 'list'" key="list">
           <h1 class="page-title">
@@ -4030,17 +4061,9 @@ function historyDetailText(entry) {
               </table>
             </div>
           </template>
-
-          <Transition name="vault-overlay">
-            <VaultAddFolderOverlay
-              v-if="folderGuardOverlayVisible"
-              ref="folderGuardOverlayRef"
-              @cancel="onFolderGuardAddOverlayCancel"
-            />
-          </Transition>
         </div>
 
-        <div v-else-if="activeTab === 'passwordLocker'" key="passwordLocker" class="password-locker-tab">
+        <div v-else-if="activeTab === 'passwordLocker'" key="passwordLocker">
           <h1 class="page-title">
             <svg class="page-title__icon page-title__icon--vault" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="8" r="4.25" stroke="currentColor" stroke-width="1.8"/><path d="M11 11l9.5 9.5M16.5 15.5l3-3M19 18l2.5-2.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
             {{ t('tab.passwordLocker') }}
@@ -4107,56 +4130,209 @@ function historyDetailText(entry) {
           </section>
 
           <template v-else>
-            <!-- isLoadingPasswordLocker 還沒查完清單前先不渲染筆記本畫布，避免空清單狀態
-                 （noItems 文案）先閃一下才被真正的資料蓋掉——換皮前的舊表格也是同樣的
-                 「載入中不顯示空狀態」處理方式。新增/關聯/重新整理/取消選取/刪除已選取/
-                 排序下拉這些工具列全部搬進畫布內（見 PasswordLockerNotebook.vue 的
-                 toolbar），不再留一份中性風格的副本在畫布外——原本分開兩份是想避免
-                 「畫布內外各一份搜尋框」，但使用者實際看到畫面後回饋「上面那些按鈕都要放進
-                 筆記本裡面」，兩份分開反而更奇怪，所以整組工具列（含選取模式切換）都交給
-                 元件自己管，App.vue 只傳資料跟接 emit。 -->
-            <p v-if="isLoadingPasswordLocker" class="hint-text">{{ t('list.loading') }}</p>
-            <!-- 畫布縮放不要再用猜的 vh 扣除值——.notebook-scale-area 是 flex:1 填滿
-                 .password-locker-tab 扣掉標題/說明文字之後剩下的實際可用高度（真正的邊界，
-                 不是估的），PasswordLockerNotebook.vue 裡的 .notebook-outer 改成
-                 height:100% 直接吃這個邊界，同時維持 aspect-ratio:1 正方形——這樣畫布一定
-                 剛好塞得進可視範圍，不會再讓 .page 出現捲軸，也不用每次縮放行為跑掉就重新
-                 估一次魔術數字。 -->
-            <div v-else class="notebook-scale-area">
-            <PasswordLockerNotebook
-              :website-items="passwordLockerWebsiteItems"
-              :file-items="passwordLockerFileItems"
-              :active-category="passwordLockerViewFilter"
-              :search-query="passwordLockerSearchQuery"
-              :selected-ids="passwordLockerSelectedIds"
-              :visible-ids="passwordLockerVisibleIds"
-              :revealed-passwords="passwordLockerRevealedPasswords"
-              :revealed-totps="passwordLockerRevealedTotps"
-              :username-visible-ids="passwordLockerUsernameVisibleIds"
-              :revealed-usernames="passwordLockerRevealedUsernames"
-              :sort-mode="passwordLockerViewFilter === 'file' ? passwordLockerFileSort : passwordLockerWebsiteSort"
-              :is-dark="settingsTheme === 'dark'"
-              :has-selection="passwordLockerSelectedIds.size > 0"
-              :selected-count="passwordLockerSelectedIds.size"
-              :is-loading="isLoadingPasswordLocker"
-              :display-title-fn="passwordLockerDisplayTitle"
-              :t="t"
-              @update:search="passwordLockerSearchQuery = $event"
-              @update:sort="passwordLockerViewFilter === 'file' ? (passwordLockerFileSort = $event) : (passwordLockerWebsiteSort = $event)"
-              @select-category="passwordLockerViewFilter = $event"
-              @toggle-select="togglePasswordLockerSelected"
-              @toggle-password="togglePasswordLockerVisibility"
-              @toggle-username="togglePasswordLockerUsernameVisibility"
-              @toggle-totp="togglePasswordLockerTotpVisibility"
-              @copy-password="(item) => ensurePasswordLockerVerified({ type: 'copy', id: item.id })"
-              @edit="openPasswordLockerEditForm"
-              @add="openPasswordLockerAddForm"
-              @associate="openPasswordLockerAssociateAction"
-              @refresh="refreshPasswordLockerList"
-              @cancel-selection="cancelPasswordLockerSelection"
-              @delete-selected="deleteSelectedPasswordLockerItems"
-            />
+            <!-- 選取模式下換成「取消選取／刪除選取」這兩顆按鈕。這一列固定不換行
+                 （flex-wrap: nowrap，超出寬度用橫向捲動而不是換行）——按鈕數量在
+                 一般模式（3 顆）跟選取模式（2 顆）之間切換時，如果讓這一列自由換行，
+                 總寬度變化會讓搜尋框跟著換不換行，連帶讓整個表格跟著往上/下掉一列。
+                 篩選下拉獨立放到下一列，不受這一列按鈕數量變化影響。 -->
+            <div class="button-row button-row--nowrap" v-if="passwordLockerSelectedIds.size === 0">
+              <button class="button button--primary" @click="openPasswordLockerAddForm" type="button">{{ t('passwordLocker.addButton') }}</button>
+              <button class="button button--secondary" @click="openPasswordLockerAssociateAction" type="button">{{ t('passwordLocker.associateButton') }}</button>
+              <button class="button button--secondary" @click="refreshPasswordLockerList" :disabled="isLoadingPasswordLocker" type="button">
+                {{ isLoadingPasswordLocker ? t('list.loading') : t('list.refresh') }}
+              </button>
+              <input
+                v-model="passwordLockerSearchQuery"
+                class="text-input"
+                style="margin-left: auto; flex: 1 1 160px; min-width: 120px; max-width: 240px;"
+                :placeholder="t('passwordLocker.searchPlaceholder')"
+              />
             </div>
+            <div class="button-row button-row--nowrap" v-else>
+              <button class="button button--secondary" @click="cancelPasswordLockerSelection" type="button">{{ t('passwordLocker.cancelSelectionButton') }}</button>
+              <button class="button button--danger" @click="deleteSelectedPasswordLockerItems" type="button">
+                {{ t('passwordLocker.deleteSelectedButton') }} ({{ passwordLockerSelectedIds.size }})
+              </button>
+              <input
+                v-model="passwordLockerSearchQuery"
+                class="text-input"
+                style="margin-left: auto; flex: 1 1 160px; min-width: 120px; max-width: 240px;"
+                :placeholder="t('passwordLocker.searchPlaceholder')"
+              />
+            </div>
+            <div class="button-row">
+              <select v-model="passwordLockerViewFilter" class="select-input">
+                <option value="all">{{ t('passwordLocker.viewAll') }}</option>
+                <option value="website">{{ t('passwordLocker.groupWebsite') }}</option>
+                <option value="file">{{ t('passwordLocker.groupEncryptedFile') }}</option>
+              </select>
+            </div>
+
+            <div v-if="!isLoadingPasswordLocker && passwordLockerVisibleItemCount === 0" class="empty-state-block">
+              <svg class="empty-state-block__icon" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="8" r="4.25" stroke="currentColor" stroke-width="1.6"/><path d="M11 11l9.5 9.5M16.5 15.5l3-3M19 18l2.5-2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <p class="empty-state-block__text">{{ passwordLockerSearchQuery ? t('passwordLocker.noSearchResults') : t('passwordLocker.noItems') }}</p>
+            </div>
+
+            <template v-for="group in [
+              { key: 'website', label: t('passwordLocker.groupWebsite'), items: passwordLockerWebsiteItems, sortRef: 'passwordLockerWebsiteSort' },
+              { key: 'file', label: t('passwordLocker.groupEncryptedFile'), items: passwordLockerFileItems, sortRef: 'passwordLockerFileSort' }
+            ].filter((g) => passwordLockerViewFilter === 'all' || passwordLockerViewFilter === g.key)" :key="group.key">
+              <div v-if="group.items.length > 0" class="table-scroll" style="margin-top: 20px; margin-bottom: 24px;">
+                <div style="margin-bottom: 8px;">
+                  <h3 class="settings-section__title" style="margin: 0 0 0.4rem;">{{ group.label }}</h3>
+                  <select
+                    class="select-input select-input--compact"
+                    :value="group.key === 'website' ? passwordLockerWebsiteSort : passwordLockerFileSort"
+                    @change="group.key === 'website' ? (passwordLockerWebsiteSort = $event.target.value) : (passwordLockerFileSort = $event.target.value)"
+                  >
+                    <option value="alphabetical">{{ t('passwordLocker.sortAlphabetical') }}</option>
+                    <option value="time">{{ t('passwordLocker.sortTime') }}</option>
+                  </select>
+                </div>
+                <table class="table table--password-locker">
+                  <template v-if="group.key === 'website'">
+                    <colgroup>
+                      <col style="width: 5%;" />
+                      <col style="width: 10%;" />
+                      <col style="width: 18%;" />
+                      <col style="width: 22%;" />
+                      <col style="width: 18%;" />
+                      <col style="width: 27%;" />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th></th>
+                        <th>{{ t('passwordLocker.colTitle') }}</th>
+                        <th>{{ t('passwordLocker.colUsername') }}</th>
+                        <th>{{ t('passwordLocker.colPassword') }}</th>
+                        <th>{{ t('passwordLocker.colTotp') }}</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                  </template>
+                  <!-- 已加密檔案類別不像 Website 一樣有帳號／TOTP 這兩個概念（見規劃文件——
+                       這個類別純粹是幫已加密檔案存一組密碼，不連結真實登入帳號），欄位跟著砍掉，
+                       「標題」也改標成「檔案名」比較符合這個類別實際存的內容。 -->
+                  <template v-else>
+                    <colgroup>
+                      <col style="width: 5%;" />
+                      <col style="width: 43%;" />
+                      <col style="width: 22%;" />
+                      <col style="width: 30%;" />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th></th>
+                        <th>{{ t('passwordLocker.colFileName') }}</th>
+                        <th>{{ t('passwordLocker.colPassword') }}</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                  </template>
+                  <tbody>
+                    <tr v-for="item in group.items" :key="item.id">
+                      <td>
+                        <span class="checkbox-ring">
+                          <input type="checkbox" :checked="passwordLockerSelectedIds.has(item.id)" @change="togglePasswordLockerSelected(item.id)" />
+                        </span>
+                      </td>
+                      <td>
+                        <div
+                          class="cell-name"
+                          :class="{ 'text-strikethrough': item.sourceDeleted }"
+                          :title="item.sourceDeleted ? t('passwordLocker.sourceDeletedLabel') : passwordLockerDisplayTitle(item)"
+                        >
+                          {{ passwordLockerDisplayTitle(item) }}
+                        </div>
+                      </td>
+                      <td v-if="group.key === 'website'">
+                        <div
+                          v-if="item.usernameHidden && !passwordLockerUsernameVisibleIds.has(item.id)"
+                          class="cell-name cell-clickable"
+                          style="max-width: 100%;"
+                          role="button"
+                          tabindex="0"
+                          :title="t('passwordLocker.usernameHiddenHint')"
+                          @click="togglePasswordLockerUsernameVisibility(item)"
+                          @keydown.enter="togglePasswordLockerUsernameVisibility(item)"
+                        >••••••••</div>
+                        <div
+                          v-else
+                          class="cell-name cell-clickable"
+                          style="max-width: 100%;"
+                          role="button"
+                          tabindex="0"
+                          :title="item.usernameHidden ? passwordLockerRevealedUsernames[item.id] : item.username"
+                          @click="togglePasswordLockerUsernameVisibility(item)"
+                          @keydown.enter="togglePasswordLockerUsernameVisibility(item)"
+                        >{{ item.usernameHidden ? passwordLockerRevealedUsernames[item.id] : item.username }}</div>
+                      </td>
+                      <td>
+                        <div class="totp-cell">
+                          <div
+                            v-if="passwordLockerVisibleIds.has(item.id) && passwordLockerRevealedPasswords[item.id]"
+                            class="cell-name text-input--mono"
+                            style="max-width: calc(100% - 2ch);"
+                            :title="passwordLockerRevealedPasswords[item.id]"
+                          >{{ passwordLockerRevealedPasswords[item.id] }}</div>
+                          <span v-else>••••••••</span>
+                          <button
+                            type="button"
+                            class="password-field__toggle password-field__toggle--inline"
+                            :aria-label="t(passwordLockerVisibleIds.has(item.id) ? 'passwordLocker.hide' : 'passwordLocker.show')"
+                            @click="togglePasswordLockerVisibility(item)"
+                          >
+                            <svg v-if="passwordLockerVisibleIds.has(item.id)" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
+                            <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                          </button>
+                        </div>
+                      </td>
+                      <td v-if="group.key === 'website'">
+                        <div v-if="item.hasTotp" class="totp-cell">
+                          <template v-if="passwordLockerRevealedTotps[item.id]">
+                            <svg viewBox="0 0 36 36" class="totp-ring totp-ring--small">
+                              <circle class="totp-ring__track" cx="18" cy="18" r="16" />
+                              <circle class="totp-ring__progress" cx="18" cy="18" r="16" :style="totpRingStyle(passwordLockerRevealedTotps[item.id].period)" />
+                            </svg>
+                            <span
+                              class="totp-cell__code text-input--mono"
+                              role="button"
+                              tabindex="0"
+                              :title="t('passwordLocker.totpCopyHint')"
+                              @click="copyToClipboardWithAutoClear(passwordLockerRevealedTotps[item.id].code)"
+                              @keydown.enter="copyToClipboardWithAutoClear(passwordLockerRevealedTotps[item.id].code)"
+                            >{{ passwordLockerRevealedTotps[item.id].code }}</span>
+                          </template>
+                          <button
+                            type="button"
+                            class="password-field__toggle password-field__toggle--inline"
+                            :aria-label="t(passwordLockerRevealedTotps[item.id] ? 'passwordLocker.hide' : 'passwordLocker.totpShowButton')"
+                            @click="togglePasswordLockerTotpVisibility(item)"
+                          >
+                            <svg v-if="passwordLockerRevealedTotps[item.id]" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
+                            <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                          </button>
+                        </div>
+                        <span v-else class="cell-empty">—</span>
+                      </td>
+                      <td>
+                        <div class="table__actions">
+                          <button class="button button--tiny" @click="ensurePasswordLockerVerified({ type: 'copy', id: item.id })" type="button">
+                            {{ t('passwordLocker.copy') }}
+                          </button>
+                          <button class="button button--tiny" @click="openPasswordLockerEditForm(item)" type="button">
+                            {{ t('passwordLocker.editButton') }}
+                          </button>
+                          <button class="button button--tiny" @click="ensurePasswordLockerVerified({ type: 'delete', ids: [item.id] })" type="button">
+                            {{ t('passwordLocker.deleteButton') }}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
           </template>
           </template>
         </div>
@@ -4453,6 +4629,21 @@ function historyDetailText(entry) {
         </Transition>
       </main>
     </div>
+
+    <!-- 這顆疊層原本巢狀寫在資料夾防護分頁內容裡面（.page-wrapper 底下），跟其他彈窗不同層——
+         套 :inert="isAnyBlockingModalOpen" 在 page-wrapper 上時，如果這顆疊層還留在裡面，
+         連它自己都會被一起擋掉，開著新增資料夾疊層時反而按不到裡面的輸入框。搬出來跟
+         .encrypt-overlay 同一層（.app 的手足節點），套用同一招保護背景 Tab 順序，也不會誤傷
+         疊層本身——VaultAddFolderOverlay 元件自己用 position:fixed，搬動掛載位置不影響
+         視覺呈現位置，過場動畫用的 class（.vault-overlay-*）定義在元件自己的 scoped style
+         裡，跟 <Transition> 標籤實際寫在哪裡無關，見該元件檔案內的說明。 -->
+    <Transition name="vault-overlay">
+      <VaultAddFolderOverlay
+        v-if="folderGuardOverlayVisible"
+        ref="folderGuardOverlayRef"
+        @cancel="onFolderGuardAddOverlayCancel"
+      />
+    </Transition>
 
     <!-- 信封加密流程（Phase 2b）：不是分頁，是疊在目前畫面上的懸浮層（背景模糊+暗化），
          比照 apple-design「Dim to focus」——這是一個阻斷式任務（加密進行中不該讓使用者
@@ -5457,25 +5648,6 @@ body {
      也跟著平滑放大/縮小，兩個動畫疊在一起會變成「內容還看得到、框卻在動」的縮放感，
      混亂。讓寬度乾脆瞬間跳過去，切換的那一刻剛好也是內容淡到看不見的時候，感覺不出來。 */
 }
-
-/* 密碼庫分頁：標題／說明文字維持正常文件流高度，筆記本畫布區塊 flex:1 吃掉 .page
-   扣掉那些固定高度內容之後剩下的「實際」可用高度——不是用 100vh 扣一個猜的像素數字，
-   那個做法在使用者實測時量出來不是太保守（畫布縮太小）就是不夠保守（還是會出現捲軸），
-   兩次都錯。.page 本身是 .page-wrapper（display:flex）的子層，預設 align-items:stretch
-   會給 .page 一個跟視窗高度綁定的真正邊界，min-height:0 是這裡的關鍵——flex 子層預設
-   min-height:auto 會被內容的自然高度撐開，蓋掉 flex:1 原本該生效的收縮行為，不加這行
-   PasswordLockerNotebook 還是會把 .page 撐出捲軸。 */
-.password-locker-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.notebook-scale-area {
-  flex: 1; min-height: 0; display: flex; align-items: stretch; justify-content: center; overflow: hidden;
-}
-/* 使用者反映畫布還是太小——.page 原本上下各留 2rem/3rem 的 padding，是給一般表單/清單
-   頁面呼吸空間用的，密碼庫這頁大部分空間要留給正方形畫布本身，這些留白比例上損失得比較
-   明顯（畫布是正方形，少幾十 px 高度，寬度也跟著等比縮小，兩個維度一起變小，比一般單純
-   垂直清單頁的損失更有感）。縮減上下 padding，把讓出來的空間直接還給畫布。 */
-.page--tight-vertical { padding-top: 1rem; padding-bottom: 1rem; }
-.page--tight-vertical .page-title { margin-bottom: 0.75rem; }
-.page--tight-vertical .hint-text { margin-bottom: 0; }
 
 /* 表單類頁面（加密／解密／設定）刻意維持適中寬度——密碼欄位、勾選項這種內容，
    拉滿整個視窗寬度只會讓每一行變得又長又空洞，讀起來反而更費力，不是每個頁面都適合

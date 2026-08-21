@@ -507,6 +507,10 @@ function onEncryptFlyAwayComplete() {
   encryptPendingItems.value = []
   showEncryptOverlay.value = false
   activeTab.value = 'list'
+  // 使用者原本就在清單頁的話（最常見的情境：從清單頁點「加密」），上面這行 activeTab 賦值
+  // 不會觸發 watch(activeTab)（值沒變），清單就永遠不會自動重新整理——這裡直接補呼叫一次，
+  // 不能只依賴那個 watcher。
+  refreshList()
   maybeOfferSaveEncryptedFilesToLocker(passwordUsed, successItems)
 }
 const isEncrypting = ref(false)

@@ -18,7 +18,16 @@ namespace FileLocker.Core.Vault;
 /// </summary>
 public sealed class VaultIndexCache : IDisposable
 {
-    private const int CurrentSchemaVersion = 1;
+    // Schema 2：新增 Status 欄位——信封加密流程的 pending/commit 交易模型（EncryptPendingAsync）
+    // 會先把 metadata 用 Status=Pending 寫進 Vault（見 LockService.cs 說明：這時原始檔案尚未
+    // 刪除、指標檔尚未寫入，是可以安全整個放棄的中間態）。FileSystemWatcher 偵測到這個
+    // .meta.json 寫入一樣會呼叫 OnMetaFileChanged 把它 upsert 進這份快取，如果 GetItems() 沒有
+    // 濾掉 Pending 列，使用者在信封還沒送出（還在等使用者按「確認」）的當下，背景清單就會提早
+    // 冒出這一筆——但指標檔要等 CommitEncryptAsync 才會寫，這時候點開它只會看到「找不到指標檔」
+    // 的錯誤。改成查詢時過濾掉 Status=Pending，清單只在真正 commit 完成、指標檔已經寫入後才會
+    // 顯示這筆項目。版號往上加一觸發既有使用者的快取全量重建（補上這個新欄位），不需要額外寫
+    // 欄位遷移邏輯。
+    private const int CurrentSchemaVersion = 2;
 
     private readonly VaultManager _vaultManager;
     private readonly string _dbPath;
@@ -61,7 +70,8 @@ public sealed class VaultIndexCache : IDisposable
             using var command = _connection.CreateCommand();
             command.CommandText =
                 "SELECT Uuid, OriginalName, OriginalPath, Type, PasskeyEnabled, RecoveryKeyEnabled, " +
-                "BatchId, OriginalSizeBytes, Hint, CreatedAtUtc, NestedLockCount FROM VaultItems";
+                "BatchId, OriginalSizeBytes, Hint, CreatedAtUtc, NestedLockCount FROM VaultItems " +
+                "WHERE Status != 'Pending'";
 
             using var reader = command.ExecuteReader();
             while (reader.Read())
@@ -269,7 +279,8 @@ public sealed class VaultIndexCache : IDisposable
                 Hint                 TEXT NULL,
                 CreatedAtUtc         TEXT NOT NULL,
                 NestedLockCount      INTEGER NOT NULL,
-                MetaFileLastWriteUtc TEXT NOT NULL
+                MetaFileLastWriteUtc TEXT NOT NULL,
+                Status               TEXT NOT NULL DEFAULT 'Committed'
             );
             """;
         createCommand.ExecuteNonQuery();
@@ -354,9 +365,9 @@ public sealed class VaultIndexCache : IDisposable
         command.CommandText =
             """
             INSERT INTO VaultItems
-                (Uuid, OriginalName, OriginalPath, Type, PasskeyEnabled, RecoveryKeyEnabled, BatchId, OriginalSizeBytes, Hint, CreatedAtUtc, NestedLockCount, MetaFileLastWriteUtc)
+                (Uuid, OriginalName, OriginalPath, Type, PasskeyEnabled, RecoveryKeyEnabled, BatchId, OriginalSizeBytes, Hint, CreatedAtUtc, NestedLockCount, MetaFileLastWriteUtc, Status)
             VALUES
-                ($uuid, $originalName, $originalPath, $type, $passkeyEnabled, $recoveryKeyEnabled, $batchId, $originalSizeBytes, $hint, $createdAtUtc, $nestedLockCount, $metaFileLastWriteUtc)
+                ($uuid, $originalName, $originalPath, $type, $passkeyEnabled, $recoveryKeyEnabled, $batchId, $originalSizeBytes, $hint, $createdAtUtc, $nestedLockCount, $metaFileLastWriteUtc, $status)
             ON CONFLICT(Uuid) DO UPDATE SET
                 OriginalName = excluded.OriginalName,
                 OriginalPath = excluded.OriginalPath,
@@ -368,7 +379,8 @@ public sealed class VaultIndexCache : IDisposable
                 Hint = excluded.Hint,
                 CreatedAtUtc = excluded.CreatedAtUtc,
                 NestedLockCount = excluded.NestedLockCount,
-                MetaFileLastWriteUtc = excluded.MetaFileLastWriteUtc
+                MetaFileLastWriteUtc = excluded.MetaFileLastWriteUtc,
+                Status = excluded.Status
             """;
         command.Parameters.AddWithValue("$uuid", metadata.Uuid);
         command.Parameters.AddWithValue("$originalName", metadata.OriginalName);
@@ -382,6 +394,7 @@ public sealed class VaultIndexCache : IDisposable
         command.Parameters.AddWithValue("$createdAtUtc", metadata.CreatedAtUtc.ToString("o"));
         command.Parameters.AddWithValue("$nestedLockCount", metadata.ContainsNestedLocks.Count);
         command.Parameters.AddWithValue("$metaFileLastWriteUtc", metaFileLastWriteUtc.ToString("o"));
+        command.Parameters.AddWithValue("$status", metadata.Status.ToString());
         command.ExecuteNonQuery();
     }
 

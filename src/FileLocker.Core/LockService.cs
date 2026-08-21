@@ -21,6 +21,22 @@ public class LockService
     private readonly Func<IReadOnlyList<string>>? _getGuardedFolderPaths;
 
     /// <summary>
+    /// 對應獨立解密流程（design-exploration/gui-styles-v2 定案文件 §1.11）的驗證/提交交易模型：
+    /// Verify 階段只證明使用者有權限解密（密碼/Passkey/恢復金鑰其中一種），不寫入任何檔案；
+    /// 使用者選定存檔位置後才呼叫 CommitPendingDecryptAsync 真正還原。跟信封加密流程的
+    /// pending/commit（EncryptPendingAsync／CommitEncryptAsync）不同的是：加密的 pending 狀態
+    /// 已經是安全的密文，可以直接持久化進 Vault；這裡 pending 的是「已經解出來但還沒用掉」的
+    /// 內容金鑰或明文密碼，絕對不能落地寫進磁碟，只能留在記憶體裡，所以用一個 process 內的
+    /// ConcurrentDictionary，不是 Vault 裡的 Status 欄位。
+    /// 已知限制：沒有逾時自動清除機制——使用者驗證成功後放著不管（既不 commit 也不 cancel），
+    /// contentKey／password 會留在記憶體直到下次同一 uuid 被重新 verify 或整個 App 關閉，
+    /// 風險等級跟其他「解密到一半」的既有暫存邏輯相同，不在這輪範圍內處理。
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, PendingDecrypt> _pendingDecrypts = new();
+
+    private sealed record PendingDecrypt(LockedItemMetadata Metadata, byte[]? ContentKey, string? Password, string UnlockMethod);
+
+    /// <summary>
     /// historyLogger／lockoutTracker 都是選填的：CLI 原型或單元測試不一定需要，傳 null 就單純不記錄／不鎖定，
     /// 不影響加密/解密本身的行為。getGuardedFolderPaths 同樣選填——用一個委派而不是直接依賴
     /// FolderGuardService 型別，讓 LockService 不需要知道資料夾防護子系統的存在，只在有傳入時
@@ -668,6 +684,192 @@ public class LockService
 
         return FinishAfterKeyResolved(metadata, uuid, contentKey, destinationDir, "recoveryKey");
     }
+
+    /// <summary>
+    /// 獨立解密流程 Verify 階段（密碼路徑）：只驗證密碼對不對、把結果存進 pending 字典，
+    /// 不寫入任何檔案。跟既有的 VerifyPasswordAsync（給永久刪除前重新驗證用）不同的是，那個
+    /// 方法驗證完就把衍生金鑰歸零、不留東西；這裡要保留原始明文密碼，讓後續
+    /// CommitPendingDecryptAsync 可以直接交給既有的 DecryptAndRestore 完成真正的還原
+    /// （密碼路徑沒有一個中間態的 contentKey 可以先解出來保存，DecryptAndRestore 本身就是
+    /// 「驗證＋衍生金鑰＋還原」一次做完，所以只能把密碼原樣留著等 commit 時重新驗證一次）。
+    /// </summary>
+    public Task<VerifyPasswordResult> VerifyDecryptPasswordAsync(string uuid, string password)
+        => Task.Run(() =>
+        {
+            var metadata = _vault.LoadMetadata(uuid);
+            if (metadata is null)
+            {
+                return new VerifyPasswordResult(false, "找不到對應的加密紀錄", ErrorCode: ErrorCodes.RecordNotFound);
+            }
+
+            var verification = VerifyPasswordAndDeriveKey(metadata, password);
+            if (verification.EncryptionKey is not null)
+            {
+                // 這裡只需要證明密碼正確，不需要衍生金鑰本身（commit 階段會用密碼重新衍生一次）。
+                CryptographicOperations.ZeroMemory(verification.EncryptionKey);
+            }
+
+            if (!verification.Success)
+            {
+                return new VerifyPasswordResult(false, verification.ErrorMessage, ErrorCode: verification.ErrorCode, ErrorDetail: verification.ErrorDetail);
+            }
+
+            _pendingDecrypts[uuid] = new PendingDecrypt(metadata, ContentKey: null, Password: password, UnlockMethod: "password");
+            return new VerifyPasswordResult(true);
+        });
+
+    /// <summary>
+    /// 獨立解密流程 Verify 階段（Passkey 路徑）：複製自 DecryptByPasskeyAsync 到解出 contentKey
+    /// 為止的邏輯，但不呼叫 FinishAfterKeyResolved 立刻還原——把解出來的 contentKey 存進 pending
+    /// 字典，等使用者選定存檔位置後才透過 CommitPendingDecryptAsync 真正寫入，這樣才能讓「驗證
+    /// 成功打勾」跟「選存檔位置」是使用者可以分開、中途取消的兩個步驟，同時只跳一次 Windows
+    /// Hello（不用像密碼路徑那樣在 commit 階段重新驗證一次）。
+    /// </summary>
+    public async Task<VerifyPasswordResult> VerifyDecryptByPasskeyAsync(string uuid, IntPtr ownerWindowHandle)
+    {
+        var metadata = _vault.LoadMetadata(uuid);
+        if (metadata is null)
+        {
+            return new VerifyPasswordResult(false, "找不到對應的加密紀錄", ErrorCode: ErrorCodes.RecordNotFound);
+        }
+
+        if (!metadata.PasskeyEnabled || metadata.PasskeyCredentialName is null
+            || metadata.PasskeyChallenge is null || metadata.PasskeyWrappedContentKey is null)
+        {
+            return new VerifyPasswordResult(false, "這個項目沒有啟用 Passkey 快速解鎖", ErrorCode: ErrorCodes.PasskeyNotEnabled);
+        }
+
+        var challenge = Convert.FromBase64String(metadata.PasskeyChallenge);
+        var signature = await PasskeyProtector.SignChallengeAsync(metadata.PasskeyCredentialName, challenge, ownerWindowHandle);
+        if (signature is null)
+        {
+            return new VerifyPasswordResult(false, "Passkey 驗證失敗或已取消", ErrorCode: ErrorCodes.PasskeyVerificationFailed);
+        }
+
+        byte[] contentKey;
+        try
+        {
+            var wrappingKey = PasskeyProtector.DeriveWrappingKey(signature);
+            try
+            {
+                contentKey = PasskeyProtector.UnwrapContentKey(wrappingKey, metadata.PasskeyWrappedContentKey);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(wrappingKey);
+            }
+        }
+        catch (CryptographicException)
+        {
+            return new VerifyPasswordResult(false, "Passkey 解包內容金鑰失敗，資料可能已損毀", ErrorCode: ErrorCodes.PasskeyUnwrapFailed);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(signature);
+        }
+
+        _pendingDecrypts[uuid] = new PendingDecrypt(metadata, ContentKey: contentKey, Password: null, UnlockMethod: "passkey");
+        return new VerifyPasswordResult(true);
+    }
+
+    /// <summary>獨立解密流程 Verify 階段（恢復金鑰路徑）：跟 Passkey 路徑同樣的做法，複製自 DecryptByRecoveryKeyCore。</summary>
+    public Task<VerifyPasswordResult> VerifyDecryptByRecoveryKeyAsync(string uuid, string recoveryKeyInput)
+        => Task.Run(() =>
+        {
+            var metadata = _vault.LoadMetadata(uuid);
+            if (metadata is null)
+            {
+                return new VerifyPasswordResult(false, "找不到對應的加密紀錄", ErrorCode: ErrorCodes.RecordNotFound);
+            }
+
+            if (!metadata.RecoveryKeyEnabled || metadata.RecoveryKeyWrappedContentKey is null)
+            {
+                return new VerifyPasswordResult(false, "這個項目沒有啟用恢復金鑰", ErrorCode: ErrorCodes.RecoveryKeyNotEnabled);
+            }
+
+            var recoveryKeyBytes = RecoveryKeyProtector.ParseUserInput(recoveryKeyInput);
+            if (recoveryKeyBytes is null)
+            {
+                return new VerifyPasswordResult(false, "恢復金鑰格式不正確，請確認有沒有打錯或漏掉字元", ErrorCode: ErrorCodes.RecoveryKeyInvalidFormat);
+            }
+
+            byte[] contentKey;
+            try
+            {
+                var wrappingKey = RecoveryKeyProtector.DeriveWrappingKey(recoveryKeyBytes);
+                try
+                {
+                    contentKey = RecoveryKeyProtector.UnwrapContentKey(wrappingKey, metadata.RecoveryKeyWrappedContentKey);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(wrappingKey);
+                }
+            }
+            catch (CryptographicException)
+            {
+                return new VerifyPasswordResult(false, "恢復金鑰不正確", ErrorCode: ErrorCodes.RecoveryKeyIncorrect);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(recoveryKeyBytes);
+            }
+
+            _pendingDecrypts[uuid] = new PendingDecrypt(metadata, ContentKey: contentKey, Password: null, UnlockMethod: "recoveryKey");
+            return new VerifyPasswordResult(true);
+        });
+
+    /// <summary>
+    /// 獨立解密流程 Commit 階段：使用者選定存檔位置後呼叫，取出對應 uuid 的 pending 驗證結果，
+    /// 依當初是哪種驗證方式分別交給既有的 DecryptAndRestore（密碼）或 FinishAfterKeyResolved
+    /// （Passkey／恢復金鑰）完成真正的還原——這兩個既有私有方法完全不用改，History 紀錄／
+    /// 指標檔清理都是它們內部本來就會做的事，這裡不用額外處理。
+    /// 找不到 pending 紀錄（沒有 verify 過，或已經 commit/cancel 過）視為呼叫端的邏輯錯誤，
+    /// 回傳明確的錯誤碼而不是拋例外。
+    /// </summary>
+    public Task<UnlockResult> CommitPendingDecryptAsync(string uuid, string? destinationDir)
+        => Task.Run(() =>
+        {
+            if (!_pendingDecrypts.TryRemove(uuid, out var pending))
+            {
+                return new UnlockResult(false, "", "找不到對應的解密驗證紀錄，請重新選擇檔案", ErrorCode: ErrorCodes.PendingItemNotFound);
+            }
+
+            if (pending.Password is not null)
+            {
+                var destinationParentDir = ResolveDestinationParentDir(pending.Metadata, destinationDir, out var resolveError);
+                if (destinationParentDir is null)
+                {
+                    return new UnlockResult(false, "", resolveError!, ErrorCode: ErrorCodes.ResolveDestinationError, ErrorDetail: resolveError);
+                }
+
+                var result = DecryptAndRestore(pending.Metadata, pending.Password, destinationParentDir);
+                if (result.Success)
+                {
+                    CleanupMarkerIfMatches(pending.Metadata, uuid);
+                }
+                return result;
+            }
+
+            return FinishAfterKeyResolved(pending.Metadata, uuid, pending.ContentKey!, destinationDir, pending.UnlockMethod);
+        });
+
+    /// <summary>
+    /// 獨立解密流程使用者按取消（或整個信封被中途關閉）時呼叫：丟掉 pending 驗證結果，
+    /// 不還原任何檔案。ContentKey 路徑（Passkey／恢復金鑰）解出來的內容金鑰要歸零，密碼路徑
+    /// 沒有額外持有的金鑰可以清（密碼字串本身跟其他既有程式碼把密碼當 string 傳遞是同一種
+    /// 做法，沒有引入新風險）。刻意做成幂等——重複呼叫同一個 uuid、或呼叫一個根本沒有 pending
+    /// 紀錄的 uuid，都直接安全地當沒發生過，不回傳錯誤（呼叫端通常是「保險起見關閉時清一下」，
+    /// 不需要知道有沒有真的清到東西）。
+    /// </summary>
+    public Task CancelPendingDecryptAsync(string uuid)
+        => Task.Run(() =>
+        {
+            if (_pendingDecrypts.TryRemove(uuid, out var pending) && pending.ContentKey is not null)
+            {
+                CryptographicOperations.ZeroMemory(pending.ContentKey);
+            }
+        });
 
     /// <summary>
     /// DecryptByPasskeyAsync／DecryptByRecoveryKeyCore 共用：兩者都是「先透過各自的方式解出

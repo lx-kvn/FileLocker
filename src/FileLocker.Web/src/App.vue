@@ -25,6 +25,7 @@ import VaultAddFolderOverlay from './components/VaultAddFolderOverlay.vue'
 import AppSidebar from './components/AppSidebar.vue'
 import TicketRow from './components/TicketRow.vue'
 import EnvelopeEncrypt from './components/EnvelopeEncrypt.vue'
+import EnvelopeDecrypt from './components/EnvelopeDecrypt.vue'
 import { sendMessage, requestMessage, resolvePending, rejectAllPending } from './composables/useIpc.js'
 import { useSidebar } from './composables/useSidebar.js'
 import {
@@ -194,6 +195,11 @@ function handleGlobalKeydown(event) {
     // 使用者確認/取消，或已經在 committing／flying，都是「阻斷式任務」不該被 Esc 意外中斷，
     // 跟點外面關閉是同一套判斷（見 .encrypt-overlay 的 @click.self）。
     closeEncryptOverlayAndResetForm()
+  } else if (showDecryptOverlay.value) {
+    // 獨立解密流程比照 mockup 最終定案：不管進行到哪個階段，Esc／點外面一律直接整個關閉
+    // （見 closeDecryptOverlay 的說明——這裡沒有加密流程那種「pending 已送出就不能中途
+    // 關閉」的限制，因為 verify 階段本身不寫入任何檔案，隨時取消都是安全的）。
+    closeDecryptOverlay()
   } else if (confirmDialogState.value) {
     resolveConfirmDialog(false)
   } else if (passwordPromptContext.value) {
@@ -407,7 +413,6 @@ const encryptPasswordConfirm = ref('')
 // 密碼跟確認密碼共用同一個顯示/隱藏狀態——兩個欄位本來就是要互相核對，同時顯示比較好核對，
 // 沒必要分開切換。
 const showEncryptPassword = ref(false)
-const showDecryptPassword = ref(false)
 // 密碼／確認密碼共用同一個顯示狀態，理由同上（見 showEncryptPassword 註解）。
 const showFolderGuardSetupPassword = ref(false)
 const showPasswordPromptValue = ref(false)
@@ -630,20 +635,12 @@ const encryptBatchTotal = ref(0)
 const encryptItemResults = ref([]) // 批次加密逐項回報的結果
 const encryptSuccessItemsForLocker = ref([]) // 這次批次成功的項目 { uuid, path }，加密完成後用來詢問要不要存進密碼庫（規劃文件第 4 節）
 
-// ---- 解密頁籤 ----
-const decryptPath = ref('')
-
-// 路徑不管是透過選檔對話框變更、還是使用者直接在欄位裡手動打字/清空，都要讓「其他解鎖方式」
-// 那組資訊（Passkey／恢復金鑰按鈕）跟著失效——不這樣做的話，使用者選過一個有開 Passkey 的
-// 檔案、後來手動把路徑改成別的檔案，畫面還是會殘留著指向舊檔案 UUID 的 Passkey 按鈕，
-// 按下去會操作到錯的項目。選檔對話框流程本身之後會再打一次 inspectLockedFile 拿到新資訊、
-// 重新填回去，這裡先清空不會跟那個流程衝突（清空在前，非同步回應在後）。
-watch(decryptPath, () => {
-  decryptItemInfo.value = null
-})
-const decryptPassword = ref('')
-const isDecrypting = ref(false)
-const decryptItemInfo = ref(null) // { uuid, originalName, hint, passkeyEnabled, recoveryKeyEnabled }
+// ---- 獨立解密流程（信封＋Sheet，定案文件 §1.11）----
+// 選定的 .locked 檔案的唯讀 metadata（inspectLockedFile 查回來的），也是信封上顯示的內容。
+const decryptItemInfo = ref(null) // { uuid, originalName, hint, passkeyEnabled, recoveryKeyEnabled, createdAtUtc }
+const showDecryptOverlay = ref(false)
+const decryptVerifyState = ref({ status: 'idle' })
+const decryptCommitState = ref({ status: 'idle' })
 
 // ---- 已加密檔案子頁籤 ----
 const vaultItems = ref([])
@@ -918,27 +915,6 @@ const messageHandlers = {
     // 純粹是既有慣例「每個請求都有對應回應」，回來確認後端真的清乾淨了。
   },
 
-  decryptResult(data) {
-    isDecrypting.value = false
-    // 跟 decryptByUuidResult／decryptByPasskeyResult／decryptByRecoveryKeyResult 用同一套
-    // toast 通知（會自動消失），不再用頁籤裡的常駐訊息——常駐訊息不會自己消失，切走頁籤/
-    // 切換語言/準備解下一個檔案時還留在原地，容易讓人誤以為是在講目前正在做的事。
-    handleOperationResult(data, {
-      successMessage: t('decrypt.success', { path: data.restoredPath }),
-      failureFallback: t('decrypt.failed', { error: data.errorMessage }),
-      // 路徑跟「其他解鎖方式」資訊只有失敗時才留著——失敗通常是密碼打錯，使用者想對同一個
-      // 檔案重新輸入密碼，這種情況下路徑欄位跟 Passkey/恢復金鑰按鈕都還有效，留著方便直接
-      // 重試。成功的話這個項目已經解密消失了，路徑跟按鈕都該一起清掉，不然會誤導使用者
-      // 以為還能對一個已經不存在的東西重試。
-      onSuccess: () => {
-        decryptPath.value = ''
-        decryptItemInfo.value = null
-      }
-    })
-    // 密碼一律清掉，不管成功或失敗，是敏感資料不該長時間留在畫面上。
-    decryptPassword.value = ''
-  },
-
   decryptByUuidResult(data) {
     decryptingUuids.value.delete(data.uuid)
     handleOperationResult(data, {
@@ -959,14 +935,6 @@ const messageHandlers = {
       onSuccess: () => {
         removeVaultItem(data.uuid)
         markLocalVaultMutation()
-        // 這則訊息是「已加密清單頁」跟「解密頁籤」的 Passkey 按鈕共用的，成功後兩邊各自
-        // 該清掉的殘留資訊都要處理——清單頁清 vaultItems（上面那行），解密頁籤清路徑欄位
-        // 跟「其他解鎖方式」按鈕，只有這次成功的項目剛好就是解密頁籤正在顯示的那個才清，
-        // 用 uuid 比對確保不會誤清到不相關的狀態。
-        if (decryptItemInfo.value?.uuid === data.uuid) {
-          decryptPath.value = ''
-          decryptItemInfo.value = null
-        }
       }
     })
   },
@@ -979,12 +947,29 @@ const messageHandlers = {
       onSuccess: () => {
         removeVaultItem(data.uuid)
         markLocalVaultMutation()
-        if (decryptItemInfo.value?.uuid === data.uuid) {
-          decryptPath.value = ''
-          decryptItemInfo.value = null
-        }
       }
     })
+  },
+
+  // ---- 獨立解密流程（信封＋Sheet）Verify/Commit/Cancel 五個 IPC 回應：跟 App.vue 其他用
+  // requestMessage() 的既有慣例一樣，這裡只需要 resolvePending，實際的狀態更新/動畫觸發
+  // 邏輯留在呼叫端（submitDecryptPassword／verifyDecryptPasskey／...）自己 await 完成後處理，
+  // 不在這裡直接動 UI 狀態——避免同一份邏輯分裂成一半在 handler、一半在呼叫端。
+  verifyDecryptPasswordResult(data) {
+    resolvePending('verifyDecryptPasswordResult', data)
+  },
+  verifyDecryptPasskeyResult(data) {
+    resolvePending('verifyDecryptPasskeyResult', data)
+  },
+  verifyDecryptRecoveryKeyResult(data) {
+    resolvePending('verifyDecryptRecoveryKeyResult', data)
+  },
+  commitPendingDecryptResult(data) {
+    resolvePending('commitPendingDecryptResult', data)
+  },
+  cancelPendingDecryptResult() {
+    // 呼叫端目前是 fire-and-forget（見 closeDecryptOverlay），純粹是既有慣例「每個請求都有
+    // 對應回應」，不需要在這裡做什麼。
   },
 
   decryptBatchStarted() {
@@ -1029,9 +1014,7 @@ const messageHandlers = {
   },
 
   inspectLockedFileResult(data) {
-    decryptItemInfo.value = data.success
-      ? { uuid: data.uuid, originalName: data.originalName, hint: data.hint, passkeyEnabled: data.passkeyEnabled, recoveryKeyEnabled: data.recoveryKeyEnabled }
-      : null
+    resolvePending('inspectLockedFileResult', data)
   },
 
   error(data) {
@@ -1042,7 +1025,6 @@ const messageHandlers = {
     isEncrypting.value = false
     cancelFakeProgress()
     encryptProgressPercent.value = 0
-    isDecrypting.value = false
     isLoadingList.value = false
     isLoadingHistory.value = false
     // 信封流程進行中途發生嚴重錯誤，退回表單頁讓使用者看得到 toast、可以重新來過——
@@ -1055,9 +1037,9 @@ const messageHandlers = {
 
   pathPicked(data) {
     if (data.purpose === 'decryptPath') {
-      decryptPath.value = data.path
-      decryptItemInfo.value = null
-      sendMessage('inspectLockedFile', { path: data.path })
+      handleDecryptPathPicked(data.path)
+    } else if (data.purpose === 'decryptDestination') {
+      commitPendingDecrypt(data.path)
     } else if (data.purpose === 'vaultFolder') {
       isChangingVaultPath.value = true
       sendMessage('changeVaultPath', { newPath: data.path })
@@ -3228,27 +3210,120 @@ async function disableCriticalAction() {
   }
 }
 
+// 獨立解密流程（信封＋Sheet，定案文件 §1.11）入口：按下「選擇要解密的檔案」直接跳原生
+// 選檔視窗，不先跳信封——信封是「確認這是一個合法加密檔案」之後才要演的儀式，選檔前信封
+// 無事可做。
 function pickLockedFile() {
   sendMessage('pickFile', { purpose: 'decryptPath' })
 }
 
-// 「解密」頁籤：直接用 .locked 檔案目前所在的資料夾當還原位置，跟密碼路徑行為一致，不用額外問。
-function decryptTabViaPasskey() {
-  if (!decryptItemInfo.value) return
-  decryptingUuids.value.add(decryptItemInfo.value.uuid)
-  sendMessage('decryptByPasskey', {
-    uuid: decryptItemInfo.value.uuid,
-    markerPath: decryptPath.value
-  })
+// 選檔完成後先查一次唯讀 metadata（不需要密碼），只在確認是合法的加密檔案時才讓信封出現；
+// 讀取失敗用既有 toast 錯誤機制顯示，不播信封動畫（見定案文件 §1.11「選檔完成後的合法性
+// 檢查」）。
+async function handleDecryptPathPicked(path) {
+  const result = await requestMessage('inspectLockedFile', 'inspectLockedFileResult', { path })
+  if (!result.success) {
+    showToast(t('decrypt.invalidFile'))
+    return
+  }
+  decryptItemInfo.value = {
+    uuid: result.uuid,
+    originalName: result.originalName,
+    hint: result.hint,
+    passkeyEnabled: result.passkeyEnabled,
+    recoveryKeyEnabled: result.recoveryKeyEnabled,
+    createdAtUtc: result.createdAtUtc
+  }
+  decryptVerifyState.value = { status: 'idle' }
+  decryptCommitState.value = { status: 'idle' }
+  showDecryptOverlay.value = true
 }
 
-function decryptTabViaRecoveryKey() {
-  if (!decryptItemInfo.value) return
-  openRecoveryKeyPrompt(
-    { uuid: decryptItemInfo.value.uuid, originalName: decryptItemInfo.value.originalName },
-    null
-  )
-  recoveryKeyPromptMarkerPath.value = decryptPath.value
+// Verify 階段（密碼路徑）：只驗證密碼對不對，不還原任何檔案——EnvelopeDecrypt.vue 收到
+// verifyState.status 變成 'success' 後才會自己播「打開信封→抽出選存檔位置 sheet」，
+// 這裡不用管動畫時機。
+async function submitDecryptPassword(password) {
+  const uuid = decryptItemInfo.value?.uuid
+  if (!uuid) return
+  const result = await requestMessage('verifyDecryptPassword', 'verifyDecryptPasswordResult', { uuid, password })
+  decryptVerifyState.value = result.success
+    ? { status: 'success' }
+    : { status: 'failed' }
+  if (!result.success) {
+    showToast(translateError(result.errorCode, result.errorDetail, t('decrypt.verifyFailed')))
+  }
+}
+
+// Verify 階段（Passkey 路徑）：sheet 一出現就自動觸發（見 EnvelopeDecrypt.vue 的
+// startPasskeyVerify），也可以由使用者手動點按鈕重試。失敗只在 sheet 上顯示提示文字，
+// 不跳錯誤 toast——Windows Hello 取消是常見操作，不該用強制性錯誤彈窗打斷。
+async function verifyDecryptPasskey() {
+  const uuid = decryptItemInfo.value?.uuid
+  if (!uuid) return
+  const result = await requestMessage('verifyDecryptPasskey', 'verifyDecryptPasskeyResult', { uuid })
+  decryptVerifyState.value = result.success
+    ? { status: 'success' }
+    : { status: 'failed', message: t('decrypt.passkeyVerifyIncomplete') }
+}
+
+// Verify 階段（恢復金鑰路徑）
+async function submitDecryptRecoveryKey(recoveryKey) {
+  const uuid = decryptItemInfo.value?.uuid
+  if (!uuid) return
+  const result = await requestMessage('verifyDecryptRecoveryKey', 'verifyDecryptRecoveryKeyResult', { uuid, recoveryKey })
+  decryptVerifyState.value = result.success
+    ? { status: 'success' }
+    : { status: 'failed' }
+  if (!result.success) {
+    showToast(translateError(result.errorCode, result.errorDetail, t('decrypt.verifyFailed')))
+  }
+}
+
+// 選存檔位置：先跳原生選資料夾視窗，選完在 pathPicked 的 'decryptDestination' 分支接著呼叫
+// commitPendingDecrypt。
+function pickDecryptDestination() {
+  sendMessage('pickFolder', { purpose: 'decryptDestination' })
+}
+
+// Commit 階段：使用者選定存檔位置後才真正寫入檔案——到這步之前只是驗證了權限，沒有任何
+// 檔案被動過（定案文件 §1.11）。
+async function commitPendingDecrypt(destinationDir) {
+  const uuid = decryptItemInfo.value?.uuid
+  if (!uuid) return
+  decryptCommitState.value = { status: 'restoring' }
+  const result = await requestMessage('commitPendingDecrypt', 'commitPendingDecryptResult', { uuid, destinationDir })
+  if (result.success) {
+    decryptCommitState.value = { status: 'success', restoredPath: result.restoredPath }
+    markLocalVaultMutation()
+    showToast(t('decrypt.success', { path: result.restoredPath }), 'success')
+  } else {
+    decryptCommitState.value = { status: 'failed' }
+    showToast(translateError(result.errorCode, result.errorDetail, t('decrypt.commitFailed')))
+  }
+}
+
+// 取消（Esc／點外面／存檔位置 sheet 的取消連結）：比照 mockup 最終定案（見
+// 13-sidebar-ticket-shell.html 使用者走查後的修正版），一律直接整個關閉，不做「信封開著、
+// 空的」中間態。丟掉後端暫存的驗證結果（如果有的話）——fire-and-forget，不用等回應才關閉。
+function closeDecryptOverlay() {
+  const uuid = decryptItemInfo.value?.uuid
+  if (uuid && decryptVerifyState.value.status !== 'idle') {
+    sendMessage('cancelPendingDecrypt', { uuid })
+  }
+  showDecryptOverlay.value = false
+  decryptItemInfo.value = null
+  decryptVerifyState.value = { status: 'idle' }
+  decryptCommitState.value = { status: 'idle' }
+}
+
+// EnvelopeDecrypt.vue 播完成功收尾（destination-sheet__success 顯示一段時間後）才 emit 這個，
+// 這時才真的關閉疊層——跟 closeDecryptOverlay 共用同一個收尾，但不需要再送 cancelPendingDecrypt
+// （已經 commit 過，pending 字典裡早就沒有這筆紀錄了）。
+function handleDecryptDone() {
+  showDecryptOverlay.value = false
+  decryptItemInfo.value = null
+  decryptVerifyState.value = { status: 'idle' }
+  decryptCommitState.value = { status: 'idle' }
 }
 
 async function submitEncrypt() {
@@ -3287,22 +3362,12 @@ async function submitEncrypt() {
   })
 }
 
-function submitDecrypt() {
-  if (!decryptPath.value || !decryptPassword.value) {
-    showToast(t('decrypt.needPathAndPassword'))
-    return
-  }
-  isDecrypting.value = true
-  sendMessage('decrypt', {
-    path: decryptPath.value,
-    password: decryptPassword.value
-  })
-}
-
-// 清單頁用密碼解密：先問要還原到原始位置、還是自己選地方存。
-// 回饋：清單解密不再詢問要還原到哪裡，一律還原到原始位置——「自己選地方存」那個分支
-// （曾經存在的 pendingDecryptItem／pendingDecryptMode／decryptDestination 這條路徑）整個
-// 拿掉了，不是隱藏起來，destinationDir 直接固定傳 null。
+// 清單頁用密碼解密：一律還原到原始位置，不問要存到哪裡。
+// 回饋：清單解密不再詢問要還原到哪裡，「自己選地方存」那個分支（曾經存在的
+// pendingDecryptItem／pendingDecryptMode）整個拿掉了，不是隱藏起來，destinationDir 直接
+// 固定傳 null。注意：獨立解密流程（信封＋Sheet，見 pickDecryptDestination／
+// commitPendingDecrypt）之後重新引入了同名的 'decryptDestination' pickFolder purpose，
+// 是完全不同的功能，服務的是「手上有一個不在清單裡的外部檔案」這個情境，兩者不要混淆。
 function decryptFromList(item) {
   promptPasswordAndDecrypt(item, null)
 }
@@ -3574,7 +3639,7 @@ function historyDetailText(entry) {
          可以感知到但邏輯不通的狀態。用原生 inert 屬性把標題列跟主要頁面內容整個排除在
          Tab 順序跟互動之外（inert 同時擋掉 focus 跟點擊，比只設 tabindex="-1" 更徹底——
          後者仍然可以被滑鼠點到），疊層本身（.encrypt-overlay）在這兩個元素外面，不受影響。 -->
-    <header class="title-bar" :inert="showEncryptOverlay">
+    <header class="title-bar" :inert="showEncryptOverlay || showDecryptOverlay">
       <div class="traffic-lights">
         <button
           class="traffic-light traffic-light--close"
@@ -3608,7 +3673,7 @@ function historyDetailText(entry) {
       <span class="title-bar__title">FileLocker</span>
     </header>
 
-    <div class="page-wrapper" :inert="showEncryptOverlay">
+    <div class="page-wrapper" :inert="showEncryptOverlay || showDecryptOverlay">
       <AppSidebar
         :collapsed="sidebarCollapsed"
         :active="sidebarActiveKey"
@@ -3618,56 +3683,7 @@ function historyDetailText(entry) {
       />
       <main class="page" :class="{ 'page--wide': pageWidthTab === 'list' }">
         <Transition name="tab-page" mode="out-in" @before-enter="pageWidthTab = activeTab; themeTab = activeTab">
-        <div v-if="activeTab === 'decrypt'" key="decrypt">
-          <h1 class="page-title">
-            <svg class="page-title__icon page-title__icon--decrypt" viewBox="0 0 24 24" fill="none"><path d="M6 10V8a6 6 0 0 1 11.2-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="4" y="10" width="16" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="15" r="1.6" fill="currentColor"/></svg>
-            {{ t('decrypt.title') }}
-          </h1>
-
-          <div class="field">
-            <label class="field__label">{{ t('decrypt.lockedPathLabel') }}</label>
-            <input v-model="decryptPath" :placeholder="t('decrypt.lockedPathPlaceholder')" class="text-input text-input--mono" />
-            <div class="button-row">
-              <button class="button button--secondary" @click="pickLockedFile" type="button">{{ t('decrypt.pickLockedFile') }}</button>
-            </div>
-          </div>
-
-          <div class="field">
-            <label class="field__label">{{ t('decrypt.passwordLabel') }}</label>
-            <div class="password-field">
-              <input v-model="decryptPassword" :type="showDecryptPassword ? 'text' : 'password'" class="text-input" @keyup.enter="submitDecrypt" />
-              <button
-                type="button"
-                class="password-field__toggle"
-                :aria-label="t(showDecryptPassword ? 'common.hidePassword' : 'common.showPassword')"
-                @click="showDecryptPassword = !showDecryptPassword"
-              >
-                <svg v-if="showDecryptPassword" viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.6"/></svg>
-                <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              </button>
-            </div>
-          </div>
-
-          <button class="button button--primary" @click="submitDecrypt" :disabled="isDecrypting || !decryptPath || !decryptPassword">
-            {{ isDecrypting ? t('decrypt.decrypting') : t('decrypt.submit') }}
-          </button>
-
-          <div v-if="decryptItemInfo && (decryptItemInfo.passkeyEnabled || decryptItemInfo.recoveryKeyEnabled)" class="alt-methods">
-            <p class="alt-methods__label">{{ t('decrypt.altMethodsAvailable') }}</p>
-            <div class="button-row">
-              <button v-if="decryptItemInfo.passkeyEnabled" class="button button--secondary" @click="decryptTabViaPasskey" type="button" :disabled="decryptingUuids.has(decryptItemInfo.uuid)">
-                <img :src="passkeyIconUrl" alt="" class="button__icon" />
-                {{ t('decrypt.passkeyUnlock') }}
-              </button>
-              <button v-if="decryptItemInfo.recoveryKeyEnabled" class="button button--secondary" @click="decryptTabViaRecoveryKey" type="button">
-                <img :src="recoveryKeyIconUrl" alt="" class="button__icon" />
-                {{ t('decrypt.recoveryKeyUnlock') }}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div v-else-if="activeTab === 'list'" key="list">
+        <div v-if="activeTab === 'list'" key="list">
           <h1 class="page-title">
             <svg class="page-title__icon page-title__icon--list" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
             {{ t('list.title') }}
@@ -3687,7 +3703,7 @@ function historyDetailText(entry) {
               <!-- 這兩顆按鈕是側欄殼子把 encrypt／decrypt／list 三個分頁合併成一個「加密」導覽項目
                    之後補上的入口——原本各自是獨立頂層分頁，現在要從清單頁的工具列進去。信封動畫
                    （這兩個按鈕點下去之後的視覺）留到下一階段，這裡先切到原本沒改過的精靈內容。 -->
-              <button class="button button--secondary" type="button" @click="activeTab = 'decrypt'">{{ t('list.openDecryptWizard') }}</button>
+              <button class="button button--secondary" type="button" @click="pickLockedFile">{{ t('list.openDecryptWizard') }}</button>
               <button class="button button--primary" type="button" @click="showEncryptOverlay = true">{{ t('list.openEncryptWizard') }}</button>
             </div>
             <div v-if="!isLoadingList && vaultItems.length === 0" class="empty-state-block">
@@ -4629,6 +4645,39 @@ function historyDetailText(entry) {
           @confirm="confirmEncryptPending"
           @cancel="encryptPhase === 'form' ? closeEncryptOverlayAndResetForm() : cancelEncryptPending()"
           @fly-away-complete="onEncryptFlyAwayComplete"
+        />
+      </div>
+    </Transition>
+
+    <!-- 獨立解密流程（信封＋Sheet，定案文件 §1.11）：跟信封加密流程共用同一個 .encrypt-overlay
+         模糊＋暗化 scrim 樣式（視覺上就是同一種疊層語言，不用另外畫一份）。跟加密流程的
+         差異：這裡點外面／Esc 一律直接整個關閉，不分階段限制——見 closeDecryptOverlay 的
+         說明，verify 階段本身不寫入任何檔案，隨時取消都是安全的，不需要加密流程那種
+         「pending 已送出就不能中途關閉」的保護。v-if 讓每次開啟都是全新的元件實例，內部
+         動畫/表單狀態自然重置，不用比照 mockup 手刻一套 resetDecryptState。 -->
+    <Transition name="encrypt-overlay">
+      <div
+        v-if="showDecryptOverlay"
+        class="encrypt-overlay"
+        @click.self="closeDecryptOverlay"
+      >
+        <EnvelopeDecrypt
+          v-if="decryptItemInfo"
+          :t="t"
+          :original-name="decryptItemInfo.originalName"
+          :created-at-utc="decryptItemInfo.createdAtUtc"
+          :passkey-enabled="decryptItemInfo.passkeyEnabled"
+          :recovery-key-enabled="decryptItemInfo.recoveryKeyEnabled"
+          :passkey-icon-url="passkeyIconUrl"
+          :recovery-key-icon-url="recoveryKeyIconUrl"
+          :verify-state="decryptVerifyState"
+          :commit-state="decryptCommitState"
+          @submit-password="submitDecryptPassword"
+          @verify-passkey="verifyDecryptPasskey"
+          @submit-recovery-key="submitDecryptRecoveryKey"
+          @pick-destination="pickDecryptDestination"
+          @cancel="closeDecryptOverlay"
+          @done="handleDecryptDone"
         />
       </div>
     </Transition>

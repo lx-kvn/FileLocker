@@ -1,4 +1,5 @@
 using FileLocker.Core.History;
+using FileLocker.Core.Models;
 using FileLocker.Core.Protocol;
 using FileLocker.Core.Security;
 using FileLocker.Core.Settings;
@@ -225,6 +226,45 @@ public class VaultProtocolHandlersTests : IDisposable
 
         Assert.NotNull(result.CreatedAtUtc);
         Assert.InRange(result.CreatedAtUtc!.Value, before.AddSeconds(-1), after.AddSeconds(1));
+    }
+
+    [Fact]
+    public async Task VerifyDecryptPasswordAsync_ThenCommitPendingDecryptAsync_RestoresContent()
+    {
+        // 薄包裝測試：只驗證協定層有沒有正確把呼叫轉給 LockService，完整的驗證/提交行為
+        // 已經在 LockServiceTests 測過，這裡不重複測底層邏輯。
+        var path = CreateWorkFile("協定層解密驗證測試.txt", "協定層內容");
+        EncryptItemResponse? encrypted = null;
+        await foreach (var item in _handlers.EncryptBatchAsync([path], "correct-password", null, false, false, IntPtr.Zero))
+        {
+            encrypted = item;
+        }
+
+        var verifyResult = await _handlers.VerifyDecryptPasswordAsync(encrypted!.Uuid, "correct-password");
+        Assert.True(verifyResult.Success);
+        Assert.False(File.Exists(path)); // 驗證階段不還原
+
+        var commitResult = await _handlers.CommitPendingDecryptAsync(encrypted.Uuid, null);
+        Assert.True(commitResult.Success);
+        Assert.Equal("協定層內容", File.ReadAllText(path));
+    }
+
+    [Fact]
+    public async Task CancelPendingDecryptAsync_ThenCommit_ReturnsPendingItemNotFound()
+    {
+        var path = CreateWorkFile("協定層取消測試.txt", "內容");
+        EncryptItemResponse? encrypted = null;
+        await foreach (var item in _handlers.EncryptBatchAsync([path], "correct-password", null, false, false, IntPtr.Zero))
+        {
+            encrypted = item;
+        }
+        await _handlers.VerifyDecryptPasswordAsync(encrypted!.Uuid, "correct-password");
+
+        await _handlers.CancelPendingDecryptAsync(encrypted.Uuid);
+        var commitResult = await _handlers.CommitPendingDecryptAsync(encrypted.Uuid, null);
+
+        Assert.False(commitResult.Success);
+        Assert.Equal(ErrorCodes.PendingItemNotFound, commitResult.ErrorCode);
     }
 
     [Fact]

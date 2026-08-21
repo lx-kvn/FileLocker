@@ -116,6 +116,22 @@ public sealed class VaultProtocolHandlers
     public Task<UnlockResult> DecryptByRecoveryKeyAsync(string uuid, string recoveryKeyInput, string? destinationDir)
         => _lockService.DecryptByRecoveryKeyAsync(uuid, recoveryKeyInput, destinationDir);
 
+    /// <summary>獨立解密流程（信封＋Sheet）Verify/Commit/Cancel 三兄弟：薄包裝，直接委派給 LockService（見 §1.11）。</summary>
+    public Task<VerifyPasswordResult> VerifyDecryptPasswordAsync(string uuid, string password)
+        => _lockService.VerifyDecryptPasswordAsync(uuid, password);
+
+    public Task<VerifyPasswordResult> VerifyDecryptByPasskeyAsync(string uuid, IntPtr ownerWindowHandle)
+        => _lockService.VerifyDecryptByPasskeyAsync(uuid, ownerWindowHandle);
+
+    public Task<VerifyPasswordResult> VerifyDecryptByRecoveryKeyAsync(string uuid, string recoveryKeyInput)
+        => _lockService.VerifyDecryptByRecoveryKeyAsync(uuid, recoveryKeyInput);
+
+    public Task<UnlockResult> CommitPendingDecryptAsync(string uuid, string? destinationDir)
+        => _lockService.CommitPendingDecryptAsync(uuid, destinationDir);
+
+    public Task CancelPendingDecryptAsync(string uuid)
+        => _lockService.CancelPendingDecryptAsync(uuid);
+
     /// <summary>對應「已加密清單」頁摺疊群組的「全部解鎖」按鈕，只支援密碼、逐一解密。</summary>
     public async IAsyncEnumerable<DecryptBatchItemResponse> DecryptBatchAsync(IReadOnlyList<string> uuids, string password)
     {

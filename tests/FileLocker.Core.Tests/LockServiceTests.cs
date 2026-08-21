@@ -807,4 +807,147 @@ public class LockServiceTests : IDisposable
         Assert.False(result.Success);
         Assert.Equal(ErrorCodes.PendingItemNotFound, result.ErrorCode);
     }
+
+    // ---- 獨立解密流程（信封＋Sheet，定案文件 §1.11）：Verify/Commit/Cancel 交易模型 ----
+    // Passkey 路徑需要真的 Windows Hello 硬體才能測，跟既有 DecryptByPasskeyAsync 一樣沒有
+    // 對應的單元測試，這裡只覆蓋密碼／恢復金鑰兩條路徑＋共用的 Commit/Cancel 行為。
+
+    [Fact]
+    public async Task VerifyDecryptPasswordAsync_WithCorrectPassword_SucceedsWithoutRestoringYet()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "驗證但先不還原.txt");
+        File.WriteAllText(filePath, "內容");
+        var lockResult = await _service.EncryptAsync(filePath, "password", null);
+
+        var verifyResult = await _service.VerifyDecryptPasswordAsync(lockResult.Uuid, "password");
+
+        Assert.True(verifyResult.Success);
+        Assert.False(File.Exists(filePath)); // 只驗證，還沒真的還原
+        Assert.True(File.Exists(lockResult.LockedMarkerPath)); // 指標檔也還在
+    }
+
+    [Fact]
+    public async Task VerifyDecryptPasswordAsync_WithWrongPassword_Fails()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "密碼錯誤驗證測試.txt");
+        File.WriteAllText(filePath, "內容");
+        var lockResult = await _service.EncryptAsync(filePath, "password", null);
+
+        var verifyResult = await _service.VerifyDecryptPasswordAsync(lockResult.Uuid, "wrong-password");
+
+        Assert.False(verifyResult.Success);
+        Assert.Equal(ErrorCodes.PasswordIncorrect, verifyResult.ErrorCode);
+    }
+
+    [Fact]
+    public async Task VerifyDecryptPasswordAsync_ThenCommitPendingDecryptAsync_RestoresToOriginalLocation()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "驗證後提交.txt");
+        File.WriteAllText(filePath, "驗證後才寫入");
+        var lockResult = await _service.EncryptAsync(filePath, "password", null);
+
+        var verifyResult = await _service.VerifyDecryptPasswordAsync(lockResult.Uuid, "password");
+        Assert.True(verifyResult.Success);
+
+        var commitResult = await _service.CommitPendingDecryptAsync(lockResult.Uuid, destinationDir: null);
+
+        Assert.True(commitResult.Success);
+        Assert.Equal(filePath, commitResult.RestoredPath);
+        Assert.Equal("驗證後才寫入", File.ReadAllText(filePath));
+        Assert.False(File.Exists(lockResult.LockedMarkerPath));
+
+        var entries = _history.ReadAll();
+        Assert.Contains(entries, entry => entry.Uuid == lockResult.Uuid && entry.Action == HistoryAction.Decrypted);
+    }
+
+    [Fact]
+    public async Task VerifyDecryptPasswordAsync_ThenCommitPendingDecryptAsync_WithCustomDestination_RestoresThere()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "驗證後自訂位置.txt");
+        File.WriteAllText(filePath, "自訂位置內容");
+        var lockResult = await _service.EncryptAsync(filePath, "password", null);
+        await _service.VerifyDecryptPasswordAsync(lockResult.Uuid, "password");
+
+        var customDestDir = Directory.CreateTempSubdirectory("FileLockerPendingDecryptDest_");
+        try
+        {
+            var commitResult = await _service.CommitPendingDecryptAsync(lockResult.Uuid, customDestDir.FullName);
+
+            Assert.True(commitResult.Success);
+            var expectedRestoredPath = Path.Combine(customDestDir.FullName, "驗證後自訂位置.txt");
+            Assert.Equal(expectedRestoredPath, commitResult.RestoredPath);
+            Assert.True(File.Exists(expectedRestoredPath));
+            Assert.False(File.Exists(filePath));
+        }
+        finally
+        {
+            customDestDir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task VerifyDecryptByRecoveryKeyAsync_ThenCommitPendingDecryptAsync_RestoresWithoutPassword()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "恢復金鑰驗證後提交.txt");
+        File.WriteAllText(filePath, "恢復金鑰內容");
+        var encryptResult = await _service.EncryptAsync(filePath, "password", null, enableRecoveryKey: true);
+
+        var verifyResult = await _service.VerifyDecryptByRecoveryKeyAsync(encryptResult.Uuid, encryptResult.RecoveryKey!);
+        Assert.True(verifyResult.Success);
+        Assert.False(File.Exists(filePath)); // 驗證階段不還原
+
+        var commitResult = await _service.CommitPendingDecryptAsync(encryptResult.Uuid, destinationDir: null);
+
+        Assert.True(commitResult.Success);
+        Assert.Equal("恢復金鑰內容", File.ReadAllText(filePath));
+    }
+
+    [Fact]
+    public async Task VerifyDecryptByRecoveryKeyAsync_WithWrongKey_Fails()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "恢復金鑰驗證失敗測試.txt");
+        File.WriteAllText(filePath, "內容");
+        var encryptResult = await _service.EncryptAsync(filePath, "password", null, enableRecoveryKey: true);
+        var wrongKey = FileLocker.Core.Crypto.RecoveryKeyProtector.FormatForDisplay(
+            FileLocker.Core.Crypto.RecoveryKeyProtector.GenerateRecoveryKeyBytes());
+
+        var verifyResult = await _service.VerifyDecryptByRecoveryKeyAsync(encryptResult.Uuid, wrongKey);
+
+        Assert.False(verifyResult.Success);
+        Assert.Equal(ErrorCodes.RecoveryKeyIncorrect, verifyResult.ErrorCode);
+    }
+
+    [Fact]
+    public async Task CancelPendingDecryptAsync_ThenCommit_ReturnsPendingItemNotFound()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "取消驗證測試.txt");
+        File.WriteAllText(filePath, "內容");
+        var lockResult = await _service.EncryptAsync(filePath, "password", null);
+        await _service.VerifyDecryptPasswordAsync(lockResult.Uuid, "password");
+
+        await _service.CancelPendingDecryptAsync(lockResult.Uuid);
+        var commitResult = await _service.CommitPendingDecryptAsync(lockResult.Uuid, destinationDir: null);
+
+        Assert.False(commitResult.Success);
+        Assert.Equal(ErrorCodes.PendingItemNotFound, commitResult.ErrorCode);
+        Assert.False(File.Exists(filePath)); // 確認真的沒有還原
+        Assert.True(File.Exists(lockResult.LockedMarkerPath));
+    }
+
+    [Fact]
+    public async Task CancelPendingDecryptAsync_WithoutPriorVerify_IsIdempotentAndDoesNotThrow()
+    {
+        // 沒有 verify 過就直接 cancel（例如信封被中途關閉時保險起見呼叫一次）——應該安全地
+        // 當沒發生過，不拋例外、不回傳錯誤。
+        await _service.CancelPendingDecryptAsync(Guid.NewGuid().ToString());
+    }
+
+    [Fact]
+    public async Task CommitPendingDecryptAsync_WithoutPriorVerify_ReturnsPendingItemNotFound()
+    {
+        var commitResult = await _service.CommitPendingDecryptAsync(Guid.NewGuid().ToString(), destinationDir: null);
+
+        Assert.False(commitResult.Success);
+        Assert.Equal(ErrorCodes.PendingItemNotFound, commitResult.ErrorCode);
+    }
 }

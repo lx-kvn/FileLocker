@@ -381,6 +381,8 @@
   "passwordLocker.sortTime": "Sort by time",
   "passwordLocker.noItems": "Password Locker is empty",
   "passwordLocker.noSearchResults": "No entries match your search",
+  "passwordLocker.pagerPrev": "‹ Prev",
+  "passwordLocker.pagerNext": "Next ›",
   "passwordLocker.colTitle": "Title",
   "passwordLocker.colFileName": "File Name",
   "passwordLocker.colUsername": "Username",

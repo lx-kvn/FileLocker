@@ -157,14 +157,20 @@ async Task EncryptCommandAsync(string[] targetPaths, CliOptions options)
         var result = await service.EncryptAsync(
             targetPath, password, string.IsNullOrWhiteSpace(hint) ? null : hint,
             enablePasskey: false, ownerWindowHandle: IntPtr.Zero,
-            enableRecoveryKey: enableRecoveryKey, batchId: batchId);
+            enableRecoveryKey: enableRecoveryKey, batchId: batchId,
+            storageMode: options.StandaloneEnabled ? StorageMode.Standalone : StorageMode.Vault,
+            destinationDir: options.DestinationDir);
 
         if (result.Success)
         {
             successCount++;
             Console.WriteLine($"加密成功：{targetPath}");
             Console.WriteLine($"  UUID：{result.Uuid}");
-            Console.WriteLine($"  指標檔位置：{result.LockedMarkerPath}");
+            // Standalone 模式沒有 .locked 指標檔，LockResult.LockedMarkerPath 這個欄位借用來裝
+            // 實際落腳的 .flocked 檔案路徑（見 LockService.CommitStandaloneEncryptAsync），
+            // 顯示文字要跟著改，不然使用者會誤以為那還是一份指標檔。
+            var locationLabel = options.StandaloneEnabled ? "獨立密文（.flocked）位置" : "指標檔位置";
+            Console.WriteLine($"  {locationLabel}：{result.LockedMarkerPath}");
             if (!string.IsNullOrEmpty(result.RecoveryKey))
             {
                 Console.WriteLine($"  恢復金鑰（請妥善保存，不會再顯示第二次）：{result.RecoveryKey}");
@@ -426,6 +432,8 @@ void PrintUsage()
     Console.WriteLine("  --recovery-key             非互動模式下順便產生恢復金鑰（--encrypt 適用，預設不產生）");
     Console.WriteLine("  --hint <文字>              非互動模式下設定密碼提示（--encrypt 適用，預設留空）");
     Console.WriteLine("  --yes                      跳過 --delete 的確認提示，直接刪除");
+    Console.WriteLine("  --standalone               獨立加密：加密結果不進 Vault，產生可獨立攜帶的 .flocked 檔（--encrypt 適用）");
+    Console.WriteLine("  --destination <資料夾>      搭配 --standalone，指定 .flocked 檔要存到哪個資料夾（不指定就原地取代原始檔案）");
     Console.WriteLine();
     Console.WriteLine("結束碼：0 = 全部成功，1 = 參數錯誤，2 = 批次中至少一筆失敗，3 = 使用者/腳本取消（例如 --delete 沒帶 --yes 又回答非 y）。");
 }

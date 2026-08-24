@@ -83,4 +83,38 @@ public class CliArgumentParserTests
         Assert.Throws<CliArgumentException>(() =>
             CliArgumentParser.Parse(["file.txt", "--password-stdin", "--password-file", "pw.txt"]));
     }
+
+    [Fact]
+    public void Parse_StandaloneFlag_SetsStandaloneEnabledTrue_DefaultIsFalse()
+    {
+        var (withFlag, _) = CliArgumentParser.Parse(["file.txt", "--standalone"]);
+        var (withoutFlag, _) = CliArgumentParser.Parse(["file.txt"]);
+
+        Assert.True(withFlag.StandaloneEnabled);
+        Assert.False(withoutFlag.StandaloneEnabled);
+    }
+
+    [Fact]
+    public void Parse_DestinationFlag_WithStandalone_CapturesFollowingValue()
+    {
+        var (options, _) = CliArgumentParser.Parse(["file.txt", "--standalone", "--destination", "D:\\out"]);
+
+        Assert.Equal("D:\\out", options.DestinationDir);
+    }
+
+    [Fact]
+    public void Parse_DestinationFlag_MissingValue_ThrowsUsageError()
+    {
+        Assert.Throws<CliArgumentException>(() => CliArgumentParser.Parse(["file.txt", "--standalone", "--destination"]));
+    }
+
+    [Fact]
+    public void Parse_DestinationFlag_WithoutStandalone_IsRejectedAsMeaningless()
+    {
+        // --destination 只有搭配 --standalone 才有意義（原地取代或指定他處都只對「不進 Vault」
+        // 的獨立加密有意義，Vault 模式的存放位置本來就是固定的）——單獨出現是使用者輸入錯誤，
+        // 比照 --password-stdin/--password-file 互斥檢查的做法，一律當參數錯誤擋下來。
+        Assert.Throws<CliArgumentException>(() =>
+            CliArgumentParser.Parse(["file.txt", "--destination", "D:\\out"]));
+    }
 }

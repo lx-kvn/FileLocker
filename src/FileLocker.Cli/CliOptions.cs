@@ -8,7 +8,9 @@ public sealed record CliOptions(
     string? PasswordFilePath,
     bool RecoveryKeyEnabled,
     string? Hint,
-    bool SkipConfirmation);
+    bool SkipConfirmation,
+    bool StandaloneEnabled,
+    string? DestinationDir);
 
 /// <summary>旗標解析失敗（缺值、旗標互斥）時丟出，Program.cs 接住後印訊息＋PrintUsage()，
 /// 用既有的 CliExitCode.UsageError 結束——不是未預期的例外，是使用者輸入錯誤的正常回報方式。</summary>
@@ -21,6 +23,8 @@ public static class CliArgumentParser
     private const string RecoveryKeyFlag = "--recovery-key";
     private const string HintFlag = "--hint";
     private const string YesFlag = "--yes";
+    private const string StandaloneFlag = "--standalone";
+    private const string DestinationFlag = "--destination";
 
     /// <summary>從 --encrypt/--unlock/--delete 之後的參數區段解析出 CliOptions，同時把剩下
     /// 不是旗標的參數（路徑/uuid 列表）分離出來回傳，保留原始順序。旗標順序不拘、可以跟位置
@@ -32,6 +36,8 @@ public static class CliArgumentParser
         var recoveryKeyEnabled = false;
         string? hint = null;
         var skipConfirmation = false;
+        var standaloneEnabled = false;
+        string? destinationDir = null;
         var remaining = new List<string>();
 
         for (var i = 0; i < args.Count; i++)
@@ -53,6 +59,12 @@ public static class CliArgumentParser
                 case YesFlag:
                     skipConfirmation = true;
                     break;
+                case StandaloneFlag:
+                    standaloneEnabled = true;
+                    break;
+                case DestinationFlag:
+                    destinationDir = RequireValue(args, ref i, DestinationFlag);
+                    break;
                 default:
                     remaining.Add(args[i]);
                     break;
@@ -64,7 +76,16 @@ public static class CliArgumentParser
             throw new CliArgumentException($"{PasswordStdinFlag} 跟 {PasswordFileFlag} 不能同時使用，請只選一種密碼來源。");
         }
 
-        var options = new CliOptions(passwordFromStdin, passwordFilePath, recoveryKeyEnabled, hint, skipConfirmation);
+        // --destination 只在「不進 Vault」的獨立加密下才有意義（Vault 模式的存放位置本來就是
+        // 固定的），單獨出現視為使用者輸入錯誤，比照上面密碼旗標互斥檢查的做法擋下來。
+        if (destinationDir is not null && !standaloneEnabled)
+        {
+            throw new CliArgumentException($"{DestinationFlag} 只能搭配 {StandaloneFlag} 使用。");
+        }
+
+        var options = new CliOptions(
+            passwordFromStdin, passwordFilePath, recoveryKeyEnabled, hint, skipConfirmation,
+            standaloneEnabled, destinationDir);
         return (options, remaining);
     }
 

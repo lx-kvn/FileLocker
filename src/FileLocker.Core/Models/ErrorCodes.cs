@@ -49,6 +49,13 @@ public static class ErrorCodes
     public const string MarkerReplacedByOtherNamed = "MARKER_REPLACED_BY_OTHER_NAMED";
     public const string MarkerPackedIntoContainer = "MARKER_PACKED_INTO_CONTAINER";
 
+    // 對應「單檔案分散式加密」功能規劃 §8：跟上面幾個 Marker* 代碼平行的一組，情境相同
+    // （原本位置的檔案找不到／解析失敗／被別的項目取代），差別只在檢查的是 .flocked
+    // 檔案本體而不是 .locked 指標檔。
+    public const string FlockedNotFound = "FLOCKED_NOT_FOUND";
+    public const string FlockedParseFailed = "FLOCKED_PARSE_FAILED";
+    public const string FlockedReplacedByOther = "FLOCKED_REPLACED_BY_OTHER";
+
     public const string VaultMoveSamePath = "VAULT_MOVE_SAME_PATH";
     public const string VaultMoveDestinationNotEmpty = "VAULT_MOVE_DESTINATION_NOT_EMPTY";
     public const string VaultMoveIoError = "VAULT_MOVE_IO_ERROR";

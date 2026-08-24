@@ -542,8 +542,8 @@ App.vue 裡既有的其他動畫（modal 淡入淡出、`table-row-in` 清單進
 ### 8.2 資料夾防護（金庫門）
 
 - ~~全站 `prefers-reduced-motion` 的全面盤點與補強——這輪只在新增的金庫門動畫做了範圍內處理，App.vue 既有的 modal／`table-row-in` 等動畫都還沒有這層保護。~~——**已解決**：實際盤點後發現大部分（modal、toast、`table-row-in`、側欄、轉盤、金庫門、信封落下回彈／寄出飛走、票根撕開、資料夾防護新增疊層）先前已陸續補齊，只有兩處漏網之魚：`App.vue` 的 `.ticket-fly-*`（撕開後其餘列補位動畫，90px 位移＋旋轉）跟 `EnvelopeDecrypt.vue` 的 `.decrypt-sheet__pages`（步驟一/二切換的 240px 橫向滑動），已一併補上。
-- 批次「全部解鎖」的錯開時長／間隔（80-120ms）目前只是概念上的數值，實際串接進 App.vue、在真實列表寬高與筆數下要重新走查確認節奏是否合適，不能只憑數字複製就假設正確。
-- 金庫門開／關動畫的精確 CSS 時序常數沿用 `10-vault-door.html`／《GUI造型探索_技術規格.md》既有驗證過的數值，移植進 Vue 元件（含懸浮金庫層的新情境）時要重新截圖走查一次視覺結果，不能假設原本表格列情境驗證過的手感直接套用到全螢幕懸浮層也一樣好看。
+- ~~批次「全部解鎖」的錯開時長／間隔（80-120ms）目前只是概念上的數值，實際串接進 App.vue、在真實列表寬高與筆數下要重新走查確認節奏是否合適，不能只憑數字複製就假設正確。~~——**已解決**：用 Playwright 驅動真正的 `App.vue`（假 `window.chrome.webview`），塞 6 筆鎖定中的資料夾、觸發「解鎖全部」，逐幀量測每個轉盤的 CSS transform 確認：`STAGGER_MS = 100`（`App.vue` `playFolderGuardBatchUnlockAnimation`）確實依序每 ~100ms 觸發下一顆的旋轉，6 筆總長約 1.3 秒收尾，節奏落在文件原訂的 80-120ms 範圍內、視覺上一筆接一筆的層次感清楚，不會太趕也不會拖沓，數字維持不變。
+- ~~金庫門開／關動畫的精確 CSS 時序常數沿用 `10-vault-door.html`／《GUI造型探索_技術規格.md》既有驗證過的數值，移植進 Vue 元件（含懸浮金庫層的新情境）時要重新截圖走查一次視覺結果，不能假設原本表格列情境驗證過的手感直接套用到全螢幕懸浮層也一樣好看。~~——**已解決**：同樣用 Playwright 驅動真正的 `App.vue` 走了一次「新增資料夾」完整開門儀式（轉盤解鎖 650ms → 門扇 `rotateY` 開啟 500ms → 選定資料夾 → 門扇關閉 500ms → 轉盤上鎖 780ms → 新列以反向旋轉進場），逐段截圖確認：轉盤先轉完、門扇才開始開，開到底時 3D 透視角度跟門框比例協調，沒有穿模或跳動；關門收尾後新列準確出現在清單裡並帶著上鎖動畫。`VaultAddFolderOverlay.vue` 裡的 `DOOR_MS = 500` 常數搬進懸浮層情境後手感依舊成立，不用調整。
 
 ### 8.3 側欄與票根清單
 
@@ -564,7 +564,8 @@ App.vue 裡既有的其他動畫（modal 淡入淡出、`table-row-in` 清單進
 
 ### 8.5 信封加密流程接入側欄殼子
 
-- 信封素材的深色版本（比照 `Notebook_Body_Drack.svg` 那樣另外匯出一套）——下一輪如果要讓深色模式下信封也跟著變深，需要先請使用者出新素材。
+- ~~信封素材的深色版本（比照 `Notebook_Body_Drack.svg` 那樣另外匯出一套）——下一輪如果要讓深色模式下信封也跟著變深，需要先請使用者出新素材。~~——**已解決**：使用者提供了 `Envelope_Body_Dark.svg`／`_Empty_Dark`／`_One_Dark`／`_Two_Dark`／`Envelope_Flap_Dark.svg`（另外還有 `Envelope_Stack_Dark.svg`，但對應的淺色版 `Envelope_Stack.svg` 目前程式碼裡沒有任何地方在用，一併保留素材但這輪不接線）。
+  接線時發現一個判斷依據上的誤會：深色模式**不是**跟著作業系統的 `prefers-color-scheme` 走，而是 `App.vue` 自己的 `settingsTheme` 應用程式設定（使用者在設定頁手動切換、存進後端設定檔）——一開始寫了一版用 `window.matchMedia('(prefers-color-scheme: dark)')` 偵測的 composable，寫完測試才發現跟 `passkeyIconUrl`／`recoveryKeyIconUrl` 這兩個既有的圖示深淺色切換邏輯對不上（那兩個是 `App.vue` 算好 `settingsTheme.value === 'dark'` 才往下傳 prop），已經整組作廢重寫：新增 `isDarkTheme` boolean prop（`App.vue` 算好、傳給 `EnvelopeEncrypt.vue`），本體/封口的深色版 URL 挑選改成看這個 prop，不是元件自己偵測系統主題。用 Playwright 驅動真正的 `App.vue`（假 `getSettings` 回應 `theme: 'dark'`）截圖確認：信封整個變成深色炭黑、紅色蠟印在深色背景上依然清楚可辨，沒有「殼子深、信封仍淺色」的違和感。
 - 步驟二表單最終是塞進信封輪廓內、還是改用 `.sheet`，實作時量測排版後要回頭把結論**寫回本節**，不要讓「各自判斷」這個開放式決策停留在「還沒決定」的狀態太久。
 
 ### 8.6 獨立解密流程（信封＋Sheet）

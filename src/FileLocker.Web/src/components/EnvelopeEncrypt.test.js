@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import EnvelopeEncrypt from './EnvelopeEncrypt.vue'
+import envelopeBodyTwoDarkUrl from '../assets/Envelope_Body_Two_Dark.svg'
+import envelopeBodyEmptyDarkUrl from '../assets/Envelope_Body_Empty_Dark.svg'
+import envelopeFlapDarkUrl from '../assets/Envelope_Flap_Dark.svg'
+import envelopeBodyEmptyUrl from '../assets/Envelope_Body_Empty.svg'
+import envelopeFlapUrl from '../assets/Envelope_Flap.svg'
 
 const t = (key, params) => (params ? `${key}:${JSON.stringify(params)}` : key)
 
@@ -207,6 +212,42 @@ describe('EnvelopeEncrypt', () => {
     expect(canvas.classes()).toContain('is-drag-hovering')
     expect(wrapper.find('.dropzone-hint').classes()).toContain('is-hidden')
     expect(wrapper.find('.envelope-canvas__body').attributes('src')).toContain('Two')
+  })
+
+  describe('深色模式下換用深色版信封素材（§8.5 待辦）', () => {
+    // 深色模式是 App.vue 的 settingsTheme 應用程式設定（見 App.vue isDarkTheme computed），
+    // 不是作業系統的 prefers-color-scheme，所以這裡直接用 prop 驅動，不需要／不應該
+    // mock window.matchMedia——真的用 matchMedia 偵測的話，使用者在設定頁切換深色模式
+    // 不會反映在信封上，只有真的改了作業系統主題才會變，這不是這個功能要的行為。
+
+    it('isDarkTheme=false（預設）時，本體與封口用原本的淺色素材', async () => {
+      const wrapper = mountEnvelope()
+      await vi.advanceTimersByTimeAsync(2000)
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.find('.envelope-canvas__body').attributes('src')).toBe(envelopeBodyEmptyUrl)
+      expect(wrapper.find('.flap-group__flap').attributes('src')).toBe(envelopeFlapUrl)
+    })
+
+    it('isDarkTheme=true 時，本體與封口改用 _Dark 版素材', async () => {
+      const wrapper = mountEnvelope({ isDarkTheme: true })
+      await vi.advanceTimersByTimeAsync(2000)
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.find('.envelope-canvas__body').attributes('src')).toBe(envelopeBodyEmptyDarkUrl)
+      expect(wrapper.find('.flap-group__flap').attributes('src')).toBe(envelopeFlapDarkUrl)
+    })
+
+    it('深色模式下懸停多檔預覽，一樣切成對應張數的深色版本（不是退回淺色）', async () => {
+      const wrapper = mountEnvelope({ isDarkTheme: true })
+      await vi.advanceTimersByTimeAsync(2000)
+      await wrapper.vm.$nextTick()
+
+      const canvas = wrapper.find('.envelope-canvas')
+      await canvas.trigger('dragenter', { dataTransfer: { items: [{ kind: 'file' }, { kind: 'file' }] } })
+
+      expect(wrapper.find('.envelope-canvas__body').attributes('src')).toBe(envelopeBodyTwoDarkUrl)
+    })
   })
 
   it('拖曳離開後懸停狀態要還原，不會卡在懸停中的張數預覽', async () => {

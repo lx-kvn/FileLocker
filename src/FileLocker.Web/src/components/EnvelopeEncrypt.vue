@@ -14,6 +14,15 @@ import envelopeBodyOneUrl from '../assets/Envelope_Body_One.svg'
 import envelopeBodyTwoUrl from '../assets/Envelope_Body_Two.svg'
 import envelopeBodyUrl from '../assets/Envelope_Body.svg'
 import envelopeFlapUrl from '../assets/Envelope_Flap.svg'
+// 深色版本（§8.5 待辦：信封素材沒有深色版時，深色模式下殼子深、信封本身仍淺色，視覺
+// 落差是刻意接受的取捨——現在使用者補了深色素材，接上後這個落差就不用再刻意接受）。
+// 只有本體四張＋封口需要換圖：蠟滴/蠟印/巢狀鎖定郵戳這幾個小裝飾維持原本顏色，深色
+// 背景下對比度仍然足夠，沒有另外出深色版本的必要。
+import envelopeBodyEmptyDarkUrl from '../assets/Envelope_Body_Empty_Dark.svg'
+import envelopeBodyOneDarkUrl from '../assets/Envelope_Body_One_Dark.svg'
+import envelopeBodyTwoDarkUrl from '../assets/Envelope_Body_Two_Dark.svg'
+import envelopeBodyDarkUrl from '../assets/Envelope_Body_Dark.svg'
+import envelopeFlapDarkUrl from '../assets/Envelope_Flap_Dark.svg'
 import waxDripBackUrl from '../assets/Wax_Drip_Back.svg'
 import envelopeWaxSealUrl from '../assets/Envelope_Wax_Seal.svg'
 import postmarkNestedLockUrl from '../assets/Postmark_Nested_Lock.svg'
@@ -29,6 +38,11 @@ const props = defineProps({
   disablePasskeyRecoveryKey: { type: Boolean, default: false },
   passkeyIconUrl: { type: String, default: '' },
   recoveryKeyIconUrl: { type: String, default: '' },
+  // 深色模式判斷跟 passkeyIconUrl／recoveryKeyIconUrl 是同一套既有慣例：App.vue 的深色模式
+  // 是應用程式自己的設定（settingsTheme，使用者在設定頁手動切換、存進後端設定檔），不是
+  // 跟著作業系統的 prefers-color-scheme 走，這裡不能用 CSS media query 或 matchMedia 偵測，
+  // 只能讓 App.vue 把目前是不是深色算好，透過 prop 傳下來。
+  isDarkTheme: { type: Boolean, default: false },
   // 'form'：使用者還在選檔案/填密碼；'processing'：encryptPending 進行中；
   // 'confirming'：pending 已完成，等使用者按確認/取消；'committing'：commitEncrypt 進行中；
   // 'flying'：commit 成功，播寄出動畫。App.vue 依 IPC 回應狀態決定目前是哪一階段。
@@ -418,11 +432,19 @@ function onDrop(event) {
 const bodyImageUrl = computed(() => {
   // 懸停中：用拖曳項目的即時數量預覽；沒在懸停：用已經選定的檔案數量。
   const count = isDragHovering.value ? dragHoverCount.value : props.paths.length
+  if (props.isDarkTheme) {
+    if (count <= 0) return envelopeBodyEmptyDarkUrl
+    if (count === 1) return envelopeBodyOneDarkUrl
+    if (count === 2) return envelopeBodyTwoDarkUrl
+    return envelopeBodyDarkUrl
+  }
   if (count <= 0) return envelopeBodyEmptyUrl
   if (count === 1) return envelopeBodyOneUrl
   if (count === 2) return envelopeBodyTwoUrl
   return envelopeBodyUrl
 })
+
+const flapImageUrl = computed(() => (props.isDarkTheme ? envelopeFlapDarkUrl : envelopeFlapUrl))
 
 const progressScale = computed(() => Math.max(0, Math.min(100, props.progressPercent)) / 100)
 
@@ -447,7 +469,7 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
         <img class="envelope-canvas__body" :src="bodyImageUrl" alt="" />
         <div class="flap-group">
           <div class="wax-drip-back"><img :src="waxDripBackUrl" alt="" /></div>
-          <img class="flap-group__flap" :src="envelopeFlapUrl" alt="" />
+          <img class="flap-group__flap" :src="flapImageUrl" alt="" />
           <div class="wax-seal"><img :src="envelopeWaxSealUrl" alt="" /></div>
         </div>
         <p class="dropzone-hint" :class="{ 'is-hidden': isDragHovering }">{{ t('encrypt.dropHint') }}</p>

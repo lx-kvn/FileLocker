@@ -284,6 +284,10 @@ const lightModeIconUrl = computed(() => settingsTheme.value === 'dark' ? lightMo
 const darkModeIconUrl = computed(() => settingsTheme.value === 'dark' ? darkModeWhiteUrl : darkModeBlackUrl)
 const passkeyIconUrl = computed(() => settingsTheme.value === 'dark' ? passkeyWhiteUrl : passkeyBlackUrl)
 const recoveryKeyIconUrl = computed(() => settingsTheme.value === 'dark' ? recoveryKeyWhiteUrl : recoveryKeyBlackUrl)
+// EnvelopeEncrypt 信封素材的深色版本判斷（§8.5 待辦）：跟上面幾個圖示同一套慣例，深色模式
+// 是這裡的 settingsTheme 設定值決定，不是作業系統的 prefers-color-scheme，所以只能由
+// App.vue 算好、往下傳 prop，不能讓子元件自己用 CSS media query 或 matchMedia 偵測。
+const isDarkTheme = computed(() => settingsTheme.value === 'dark')
 const settingsSaveMessage = ref('')
 const isChangingVaultPath = ref(false)
 
@@ -4817,6 +4821,7 @@ const isAnyBlockingModalOpen = computed(() =>
           :disable-passkey-recovery-key="encryptPaths.length > 1"
           :passkey-icon-url="passkeyIconUrl"
           :recovery-key-icon-url="recoveryKeyIconUrl"
+          :is-dark-theme="isDarkTheme"
           :phase="encryptPhase"
           :progress-percent="encryptRealProgressPercent"
           :pending-summary="encryptPendingSummary"

@@ -195,6 +195,31 @@ public class VaultProtocolHandlersTests : IDisposable
     }
 
     [Fact]
+    public async Task ListVaultAsync_StandaloneModeItem_ChecksFlockedFileNotLockedMarker()
+    {
+        // 回歸測試：ListVaultAsync 原本無論 StorageMode 是什麼都固定用 MarkerStatusChecker 查
+        // .locked 指標檔在不在，Standalone 項目原地留下的其實是 .flocked 檔案本體，從來就不會有
+        // .locked——結果剛加密完馬上就被誤判成「指標檔可能被移動或刪除」，即使 .flocked 好端端
+        // 在原地、雙擊也能正常解密。這是使用者實際回報的 bug。
+        var path = CreateWorkFile("獨立加密清單測試.txt", "測試內容");
+        EncryptPendingItemResponse? pending = null;
+        await foreach (var item in _handlers.EncryptPendingBatchAsync(
+            [path], "correct-password", null, false, false, IntPtr.Zero,
+            storageMode: StorageMode.Standalone))
+        {
+            pending = item;
+        }
+        Assert.True(pending!.Success);
+        await _handlers.CommitEncryptAsync(pending.Uuid);
+
+        _vaultIndexCache.Rebuild();
+        var items = await _handlers.ListVaultAsync();
+
+        Assert.Single(items);
+        Assert.True(items[0].MarkerFound);
+    }
+
+    [Fact]
     public async Task ListHistory_AfterEncrypt_RecordsEncryptedEntry()
     {
         var path = CreateWorkFile("紀錄測試.txt", "測試內容");
@@ -238,6 +263,58 @@ public class VaultProtocolHandlersTests : IDisposable
         Assert.Equal(encrypted.Uuid, result.Uuid);
         Assert.Equal("檢視測試.txt", result.OriginalName);
         Assert.Equal("我的提示", result.Hint);
+    }
+
+    [Fact]
+    public async Task InspectLockedFile_ForFlockedFile_ReadsUuidFromHeaderAndReturnsMetadataInfo()
+    {
+        // 回歸測試：「解密」頁籤手動選檔案的入口原本只認 .locked（LockedMarkerFile.ReadFrom），
+        // 選 .flocked 檔案會直接查無 UUID、當成「找不到或無法解析」，即使檔案本身完全正常。
+        var path = CreateWorkFile("檢視獨立加密測試.txt", "測試內容");
+        EncryptPendingItemResponse? pending = null;
+        await foreach (var item in _handlers.EncryptPendingBatchAsync(
+            [path], "correct-password", "分散式提示", false, false, IntPtr.Zero,
+            storageMode: StorageMode.Standalone))
+        {
+            pending = item;
+        }
+        Assert.True(pending!.Success);
+        var commitResult = await _handlers.CommitEncryptAsync(pending.Uuid);
+        Assert.True(commitResult.Success);
+        var flockedPath = commitResult.LockedMarkerPath;
+
+        var result = _handlers.InspectLockedFile(flockedPath);
+
+        Assert.True(result.Success);
+        Assert.Equal(pending.Uuid, result.Uuid);
+        Assert.Equal("檢視獨立加密測試.txt", result.OriginalName);
+        Assert.Equal("分散式提示", result.Hint);
+    }
+
+    [Fact]
+    public async Task DecryptAsync_ForFlockedFile_DispatchesToStandaloneDecryptAndRestoresContent()
+    {
+        // 回歸測試：「解密」頁籤手動選 .flocked 檔案送出密碼，DecryptAsync 原本無條件呼叫
+        // LockService.DecryptAsync（讀 .locked marker），對 .flocked 檔案會直接判定「找不到或
+        // 無法解析」，即使密碼正確、檔案完全正常。
+        var path = CreateWorkFile("手動選檔解密測試.txt", "測試內容");
+        EncryptPendingItemResponse? pending = null;
+        await foreach (var item in _handlers.EncryptPendingBatchAsync(
+            [path], "manual-pick-password", null, false, false, IntPtr.Zero,
+            storageMode: StorageMode.Standalone))
+        {
+            pending = item;
+        }
+        Assert.True(pending!.Success);
+        var commitResult = await _handlers.CommitEncryptAsync(pending.Uuid);
+        Assert.True(commitResult.Success);
+        var flockedPath = commitResult.LockedMarkerPath;
+
+        var decryptResult = await _handlers.DecryptAsync(flockedPath, "manual-pick-password");
+
+        Assert.True(decryptResult.Success);
+        Assert.True(File.Exists(path));
+        Assert.False(File.Exists(flockedPath));
     }
 
     [Fact]

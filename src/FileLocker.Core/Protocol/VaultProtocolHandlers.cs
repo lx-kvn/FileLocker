@@ -105,8 +105,11 @@ public sealed class VaultProtocolHandlers
     public Task RollbackPendingEncryptAsync(string uuid)
         => _lockService.RollbackPendingEncryptAsync(uuid);
 
-    public Task<UnlockResult> DecryptAsync(string lockedMarkerPath, string password)
-        => _lockService.DecryptAsync(lockedMarkerPath, password);
+    /// <summary>對應「解密」頁籤手動選檔案的入口，依副檔名分派給對應的 LockService 方法——跟 InspectLockedFile 同一套判斷。</summary>
+    public Task<UnlockResult> DecryptAsync(string filePath, string password)
+        => string.Equals(Path.GetExtension(filePath), ".flocked", StringComparison.OrdinalIgnoreCase)
+            ? _lockService.DecryptFlockedFileAsync(filePath, password)
+            : _lockService.DecryptAsync(filePath, password);
 
     public Task<UnlockResult> DecryptByUuidAsync(string uuid, string password, string? destinationDir)
         => _lockService.DecryptByUuidAsync(uuid, password, destinationDir);
@@ -172,17 +175,27 @@ public sealed class VaultProtocolHandlers
     /// Passkey／恢復金鑰，讓前端可以動態顯示對應的按鈕。這裡只讀 marker 拿 UUID、查 metadata，
     /// 不驗證簽章——純粹是為了顯示資訊，真正的安全驗證在使用者實際選擇某條解鎖路徑時才會發生。
     /// </summary>
+    /// <summary>
+    /// 依副檔名分派：`.locked` 讀 marker 拿 UUID，`.flocked` 讀檔頭拿 UUID（見 FlockedFileFormat）——
+    /// 這裡跟 PasswordPromptWindow 建構子讀取顯示用資訊的邏輯是同一套判斷，只是這裡服務的是「解密」
+    /// 頁籤手動選檔案的入口，不是雙擊檔案。兩者沒有共用程式碼是因為 PasswordPromptWindow 那邊是
+    /// WPF 型別、這裡是不依賴任何 UI 框架的協定層，硬共用反而要為了這麼小一段邏輯多繞一層。
+    /// </summary>
     public InspectLockedFileResponse InspectLockedFile(string path)
     {
-        var marker = LockedMarkerFile.ReadFrom(path);
-        if (marker is null)
+        var isFlocked = string.Equals(Path.GetExtension(path), ".flocked", StringComparison.OrdinalIgnoreCase);
+        var uuid = isFlocked
+            ? (FlockedFileFormat.TryReadUuid(path, out var flockedUuid) ? flockedUuid : null)
+            : LockedMarkerFile.ReadFrom(path)?.Uuid;
+
+        if (uuid is null)
         {
             return new InspectLockedFileResponse(false, null, null, null, false, false);
         }
 
-        var metadata = _vaultManager.LoadMetadata(marker.Uuid);
+        var metadata = _vaultManager.LoadMetadata(uuid);
         return new InspectLockedFileResponse(
-            metadata is not null, marker.Uuid, metadata?.OriginalName, metadata?.Hint,
+            metadata is not null, uuid, metadata?.OriginalName, metadata?.Hint,
             metadata?.PasskeyEnabled ?? false, metadata?.RecoveryKeyEnabled ?? false,
             metadata?.CreatedAtUtc);
     }
@@ -444,7 +457,13 @@ public sealed class VaultProtocolHandlers
                 .AsParallel()
                 .Select(entry =>
                 {
-                    var markerStatus = MarkerStatusChecker.CheckMarkerStatus(entry.Uuid, entry.OriginalPath, entry.Type);
+                    // Standalone 項目原本位置留下的是 .flocked 檔案本體，不是 .locked 指標檔——
+                    // 用 MarkerStatusChecker 去查一個從來就不存在的 .locked，永遠會回報「找不到」，
+                    // 剛加密完馬上就顯示「可能被移動或刪除」，明明 .flocked 檔案好端端在原地。
+                    var markerStatus = entry.StorageMode == StorageMode.Standalone
+                        ? FlockedStatusChecker.CheckFlockedStatus(entry.Uuid, entry.OriginalPath, entry.Type)
+                        : MarkerStatusChecker.CheckMarkerStatus(entry.Uuid, entry.OriginalPath, entry.Type);
+                    var isStandalone = entry.StorageMode == StorageMode.Standalone;
                     if (!markerStatus.Found && markerStatus.ConflictingUuid is { } conflictingUuid)
                     {
                         // 查得到佔用者的名稱就直接講清楚是誰取代的，查不到（例如那個項目後來也被
@@ -454,19 +473,25 @@ public sealed class VaultProtocolHandlers
                         {
                             markerStatus = markerStatus with
                             {
-                                Code = ErrorCodes.MarkerReplacedByOtherNamed,
+                                Code = isStandalone ? ErrorCodes.FlockedReplacedByOtherNamed : ErrorCodes.MarkerReplacedByOtherNamed,
                                 Detail = conflictingName,
-                                Message = $"指標檔已被「{conflictingName}」鎖定"
+                                Message = isStandalone
+                                    ? $".flocked 檔案已被「{conflictingName}」取代"
+                                    : $"指標檔已被「{conflictingName}」鎖定"
                             };
                         }
                     }
                     else if (!markerStatus.Found && nestedContainerNames.TryGetValue(entry.Uuid, out var containerName))
                     {
+                        // Standalone 項目一樣可能被外層資料夾整包收進去（FolderArchiver 片3已經
+                        // 同時掃 .locked／.flocked），文案要跟著換，不能講「指標檔」誤導使用者。
                         markerStatus = markerStatus with
                         {
-                            Code = ErrorCodes.MarkerPackedIntoContainer,
+                            Code = isStandalone ? ErrorCodes.FlockedPackedIntoContainer : ErrorCodes.MarkerPackedIntoContainer,
                             Detail = containerName,
-                            Message = $"該檔案的指標檔已經收進「{containerName}」這個資料夾一起加密了"
+                            Message = isStandalone
+                                ? $"該 .flocked 檔案已經收進「{containerName}」這個資料夾一起加密了"
+                                : $"該檔案的指標檔已經收進「{containerName}」這個資料夾一起加密了"
                         };
                     }
                     return new VaultListItemResponse(entry, markerStatus, containerNestedNames.GetValueOrDefault(entry.Uuid, []));

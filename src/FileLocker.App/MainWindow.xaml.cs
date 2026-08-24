@@ -1793,11 +1793,11 @@ public partial class MainWindow : Window
 
         var dialog = new Microsoft.Win32.OpenFileDialog
         {
-            Title = purpose == "decryptPath" ? "選擇要解密的 .locked 檔案" : "選擇要加密的檔案",
+            Title = purpose == "decryptPath" ? "選擇要解密的 .locked／.flocked 檔案" : "選擇要加密的檔案",
             CheckFileExists = true,
             Multiselect = allowMultiselect,
             Filter = purpose == "decryptPath"
-                ? "FileLocker 鎖定檔 (*.locked)|*.locked|所有檔案 (*.*)|*.*"
+                ? "FileLocker 鎖定檔 (*.locked, *.flocked)|*.locked;*.flocked|所有檔案 (*.*)|*.*"
                 : "所有檔案 (*.*)|*.*"
         };
 

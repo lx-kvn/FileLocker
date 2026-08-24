@@ -433,9 +433,10 @@ public partial class App : Application
             return;
         }
 
-        // 雙擊 .locked 檔案：允許同時存在多個 PasswordPromptWindow（使用者可能想同時解鎖
-        // 好幾個不同的項目），每次都開一個新的，不嘗試去找「有沒有已經開著的」。
-        if (args.Length == 1 && LooksLikeLockedFileArgument(args[0]))
+        // 雙擊 .locked／.flocked 檔案：允許同時存在多個 PasswordPromptWindow（使用者可能想同時
+        // 解鎖好幾個不同的項目），每次都開一個新的，不嘗試去找「有沒有已經開著的」。兩種副檔名
+        // 共用同一個 PasswordPromptWindow，內部靠副檔名分派該用哪一套讀取／解密邏輯（見該類別）。
+        if (args.Length == 1 && (LooksLikeLockedFileArgument(args[0]) || LooksLikeFlockedFileArgument(args[0])))
         {
             var promptWindow = new PasswordPromptWindow(args[0], _vaultManager!, _lockService!, _settings!.Theme);
             promptWindow.Closed += (_, _) => ShutdownIfNoWindowsRemain();
@@ -642,6 +643,9 @@ public partial class App : Application
 
     private static bool LooksLikeLockedFileArgument(string arg)
         => File.Exists(arg) && string.Equals(Path.GetExtension(arg), ".locked", StringComparison.OrdinalIgnoreCase);
+
+    private static bool LooksLikeFlockedFileArgument(string arg)
+        => File.Exists(arg) && string.Equals(Path.GetExtension(arg), ".flocked", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// 對應規格文件第 5.2 節：Shell Extension 選取數量/長度超過門檻時，不會把每個路徑各自當一個命令列參數，

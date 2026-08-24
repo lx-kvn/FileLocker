@@ -55,6 +55,8 @@ public static class ErrorCodes
     public const string FlockedNotFound = "FLOCKED_NOT_FOUND";
     public const string FlockedParseFailed = "FLOCKED_PARSE_FAILED";
     public const string FlockedReplacedByOther = "FLOCKED_REPLACED_BY_OTHER";
+    public const string FlockedReplacedByOtherNamed = "FLOCKED_REPLACED_BY_OTHER_NAMED";
+    public const string FlockedPackedIntoContainer = "FLOCKED_PACKED_INTO_CONTAINER";
     public const string FlockedAlreadyExists = "FLOCKED_ALREADY_EXISTS";
 
     public const string VaultMoveSamePath = "VAULT_MOVE_SAME_PATH";

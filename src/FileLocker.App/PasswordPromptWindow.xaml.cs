@@ -37,6 +37,10 @@ public partial class PasswordPromptWindow : Window
     private readonly bool _passkeyEnabled;
     private readonly bool _recoveryKeyEnabled;
     private readonly bool _hasAnyAltAuth;
+    // 雙擊 .flocked（單檔案分散式加密，不進 Vault）跟雙擊 .locked 共用同一個視窗，靠副檔名判斷
+    // 該用哪一套讀取／解密邏輯——只有「怎麼讀取顯示用的 metadata」跟「密碼路徑要呼叫哪個
+    // LockService 方法」這兩處分歧，Passkey／恢復金鑰兩條路徑本來就是只認 UUID，兩種模式共用。
+    private readonly bool _isFlockedFile;
     private bool _isBusy;
 
     // 密碼／恢復金鑰是互斥的兩種輸入模式，切換時互換可見的欄位跟標籤；Passkey 不算一種
@@ -52,14 +56,24 @@ public partial class PasswordPromptWindow : Window
 
         _lockedMarkerPath = lockedMarkerPath;
         _lockService = lockService;
+        _isFlockedFile = string.Equals(Path.GetExtension(lockedMarkerPath), ".flocked", StringComparison.OrdinalIgnoreCase);
 
-        // 先讀 marker 拿 UUID、查 metadata 顯示原始檔名、提示，以及是否啟用了 Passkey／恢復金鑰——
-        // 這一步不驗證簽章，純粹是為了顯示資訊給使用者看；真正的安全驗證（簽章 + 密碼／Passkey／
-        // 恢復金鑰）發生在使用者實際嘗試解鎖時。
-        var marker = LockedMarkerFile.ReadFrom(lockedMarkerPath);
-        var metadata = marker is not null ? vaultManager.LoadMetadata(marker.Uuid) : null;
+        // 先讀出 UUID、查 metadata 顯示原始檔名、提示，以及是否啟用了 Passkey／恢復金鑰——這一步
+        // 不驗證簽章／完整性，純粹是為了顯示資訊給使用者看；真正的安全驗證（.locked 的簽章，或
+        // .flocked 的密碼／Passkey／恢復金鑰）發生在使用者實際嘗試解鎖時。.flocked 沒有像
+        // .locked 那樣的獨立簽章可以讀，UUID 直接來自檔頭（見 FlockedFileFormat）。
+        string? uuidFromFile;
+        if (_isFlockedFile)
+        {
+            uuidFromFile = FlockedFileFormat.TryReadUuid(lockedMarkerPath, out var flockedUuid) ? flockedUuid : null;
+        }
+        else
+        {
+            uuidFromFile = LockedMarkerFile.ReadFrom(lockedMarkerPath)?.Uuid;
+        }
+        var metadata = uuidFromFile is not null ? vaultManager.LoadMetadata(uuidFromFile) : null;
 
-        _uuid = marker?.Uuid ?? "";
+        _uuid = uuidFromFile ?? "";
         _passkeyEnabled = metadata?.PasskeyEnabled ?? false;
         _recoveryKeyEnabled = metadata?.RecoveryKeyEnabled ?? false;
 
@@ -218,7 +232,9 @@ public partial class PasswordPromptWindow : Window
         SetBusyState(true);
         ErrorText.Visibility = Visibility.Collapsed;
 
-        var result = await _lockService.DecryptAsync(_lockedMarkerPath, PasswordInput.Password);
+        var result = _isFlockedFile
+            ? await _lockService.DecryptFlockedFileAsync(_lockedMarkerPath, PasswordInput.Password)
+            : await _lockService.DecryptAsync(_lockedMarkerPath, PasswordInput.Password);
 
         if (result.Success)
         {

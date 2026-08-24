@@ -102,6 +102,12 @@ async function playSheetTwoPhaseEntrance(page) {
   after(SHEET_PHASE_MS, () => {
     if (!isCurrentGen(animKey, gen)) return
     sheetTransitionState.value = 'settle'
+    // 只有 verify 頁、而且表單真的顯示出來（沒有因為 Passkey 自動觸發而被 verifying 蓋掉）
+    // 才需要搶焦點——sheet 卡片落定的當下才搶，不要在還在滑動進場時就搶，避免使用者感覺到
+    // 畫面「跳」一下。
+    if (page === 'verify' && !verifying.value) {
+      focusActiveInput()
+    }
   })
 }
 
@@ -160,6 +166,21 @@ const verifying = ref(false)
 const verifySucceeded = ref(false)
 const passkeyHint = ref('')
 
+// 選完要解密的檔案、信封跳出來之後，鍵盤焦點要自動落在輸入框上，不用使用者自己點一下才能
+// 打字——跟 PasswordPromptWindow.xaml.cs（雙擊 .locked／.flocked 檔案跳出的原生小視窗）
+// 既有行為一致（那邊沒開 Passkey 就 PasswordInput.Focus()）。這裡分密碼／恢復金鑰兩個
+// input，用哪個要看目前顯示哪一頁，所以拆成一個統一的 focusActiveInput() 判斷。
+const passwordInputEl = ref(null)
+const recoveryKeyInputEl = ref(null)
+async function focusActiveInput() {
+  await nextTick()
+  if (recoveryKeyPageActive.value) {
+    recoveryKeyInputEl.value?.focus()
+  } else {
+    passwordInputEl.value?.focus()
+  }
+}
+
 function submitPassword() {
   if (!passwordInput.value.trim() || verifying.value) return
   verifying.value = true
@@ -176,9 +197,11 @@ function startPasskeyVerify() {
 
 function goToRecoveryKeyPage() {
   recoveryKeyPageActive.value = true
+  focusActiveInput()
 }
 function backToPasswordPage() {
   recoveryKeyPageActive.value = false
+  focusActiveInput()
 }
 function submitRecoveryKey() {
   if (!recoveryKeyInput.value.trim() || verifying.value) return
@@ -215,6 +238,9 @@ watch(() => props.verifyState, (state) => {
     if (state.message) {
       passkeyHint.value = state.message
     }
+    // Passkey 沒完成驗證，退回輸入表單——表單重新出現了，焦點也要跟著回來，
+    // 不要讓使用者退回輸入框卻還要自己點一下才能打字。
+    focusActiveInput()
   }
 }, { deep: true })
 
@@ -269,6 +295,7 @@ const createdAtDisplay = computed(() => {
       <div v-if="!verifying && !verifySucceeded" class="decrypt-sheet__pages">
         <div class="decrypt-sheet__page">
           <input
+            ref="passwordInputEl"
             v-model="passwordInput"
             type="password"
             :placeholder="t('decrypt.enterPassword')"
@@ -291,6 +318,7 @@ const createdAtDisplay = computed(() => {
              不讓它參與高度計算。 -->
         <div v-if="recoveryKeyEnabled" class="decrypt-sheet__page">
           <input
+            ref="recoveryKeyInputEl"
             v-model="recoveryKeyInput"
             type="text"
             :placeholder="t('decrypt.enterRecoveryKey')"

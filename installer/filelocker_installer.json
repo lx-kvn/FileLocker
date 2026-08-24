@@ -3,6 +3,9 @@
   "png_icon": "D:\\Github\\FileLocker_專案\\icon.png",
   "ico_icon": "D:\\Github\\FileLocker_專案\\icon.ico",
   "doc_icon": "D:\\Github\\FileLocker_專案\\Locked_File.ico",
+  "doc_icons": {
+    ".flocked": "D:\\Github\\FileLocker_專案\\Locked_File_flocked.ico"
+  },
   "app_name": "FileLocker",
   "folder_name": "FileLocker",
   "version": "1.1.1",
@@ -17,7 +20,7 @@
   "dependencies": [
     "dotnet_desktop"
   ],
-  "file_associations": ".locked",
+  "file_associations": [".locked", ".flocked"],
   "add_to_path": true,
   "path_target_exe": "cli/FileLocker.Cli.exe",
   "restart_explorer_on_update": true

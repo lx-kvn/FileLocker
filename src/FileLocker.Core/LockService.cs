@@ -701,6 +701,48 @@ public class LockService
     }
 
     /// <summary>
+    /// 對應雙擊 .flocked 檔案的解密流程，跟 DecryptAsync（雙擊 .locked）平行，但驗證方式不同：
+    /// .flocked 沒有像 .locked 那樣的獨立簽章可以驗證，先從 header 讀出 UUID，metadata（密碼驗證
+    /// 用的鹽值／Argon2 參數等）仍然查 Vault——commit 時搬走的只有密文本體，metadata 留在原地
+    /// （見 CommitStandaloneEncryptAsync）。密文則直接從使用者實際點開的這個檔案讀，不透過
+    /// metadata.OriginalPath 反推位置，這樣使用者把 .flocked 搬到別的資料夾之後還是雙擊得開，
+    /// 才對得起規劃文件講的「獨立可攜」。
+    /// </summary>
+    public Task<UnlockResult> DecryptFlockedFileAsync(string flockedFilePath, string password)
+        => Task.Run(() => DecryptFlockedFileCore(flockedFilePath, password));
+
+    private UnlockResult DecryptFlockedFileCore(string flockedFilePath, string password)
+    {
+        if (!FlockedFileFormat.TryReadUuid(flockedFilePath, out var uuid) || uuid is null)
+        {
+            return new UnlockResult(false, "", "找不到或無法解析這個 .flocked 檔案", ErrorCode: ErrorCodes.FlockedParseFailed);
+        }
+
+        var metadata = _vault.LoadMetadata(uuid);
+        if (metadata is null)
+        {
+            return new UnlockResult(false, "", "在集中管理區找不到對應的加密紀錄", ErrorCode: ErrorCodes.VaultContentMissing);
+        }
+
+        var parentDir = Path.GetDirectoryName(Path.GetFullPath(flockedFilePath));
+        if (parentDir is null)
+        {
+            return new UnlockResult(false, "", "無法判斷 .flocked 檔案所在的資料夾", ErrorCode: ErrorCodes.CannotDetermineFolder);
+        }
+
+        var result = DecryptAndRestore(metadata, password, parentDir, explicitFlockedPath: flockedFilePath);
+
+        if (result.Success)
+        {
+            // 跟 DecryptViaMarkerCore 刪 .locked 指標檔同一個道理：這個路徑本來就是從 .flocked
+            // 檔案本身進來的，解密成功後直接刪除它就好。
+            File.Delete(flockedFilePath);
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// 對應「已加密清單」頁直接選項目解密：不需要事先找到 .locked 檔案，直接用 UUID 從 Vault 解密。
     /// destinationDir 為 null 時（使用者選擇「還原到原始位置」），退而求其次用加密當下記錄的原始路徑
     /// 所在的資料夾；使用者若指定了 destinationDir（自己選了另一個地方存），就用那個位置。
@@ -1157,7 +1199,7 @@ public class LockService
     }
 
     /// <summary>密碼路徑：驗證密碼、拿到內容金鑰後，交給 RestoreFromKey 做剩下的還原工作。</summary>
-    private UnlockResult DecryptAndRestore(LockedItemMetadata metadata, string password, string destinationParentDir)
+    private UnlockResult DecryptAndRestore(LockedItemMetadata metadata, string password, string destinationParentDir, string? explicitFlockedPath = null)
     {
         var verification = VerifyPasswordAndDeriveKey(metadata, password);
         if (!verification.Success)
@@ -1165,7 +1207,7 @@ public class LockService
             return new UnlockResult(false, "", verification.ErrorMessage!, ErrorCode: verification.ErrorCode, ErrorDetail: verification.ErrorDetail);
         }
 
-        return RestoreFromKey(metadata, verification.EncryptionKey!, destinationParentDir, "password");
+        return RestoreFromKey(metadata, verification.EncryptionKey!, destinationParentDir, "password", explicitFlockedPath);
     }
 
     /// <summary>
@@ -1275,14 +1317,22 @@ public class LockService
     /// 誤把不相關的內容解出來）。header 無法解析或 UUID 不符都丟 InvalidDataException，
     /// 跟 RestoreFromKey 既有的「內容損毀」錯誤路徑共用同一套處理（見那裡的 catch 區塊）。
     /// </summary>
-    private Stream OpenContentStreamForDecrypt(LockedItemMetadata metadata)
+    /// <param name="explicitFlockedPath">
+    /// 雙擊 .flocked 檔案（見 DecryptFlockedFileCore）這條路徑上呼叫端手上已經有使用者實際
+    /// 點開的檔案路徑，直接用它讀取密文，不要回頭用 metadata.OriginalPath 反推——.flocked
+    /// 設計上是可以被使用者自由搬動的「獨立可攜」檔案（跟只認 metadata.OriginalPath 固定
+    /// 位置的 DecryptByUuidAsync／DecryptByPasskeyAsync 等入口不同，那些入口除了 UUID
+    /// 什麼都沒有，只能依賴 metadata 記錄的位置），沒有提供時才退回既有的反推行為。
+    /// </param>
+    private Stream OpenContentStreamForDecrypt(LockedItemMetadata metadata, string? explicitFlockedPath = null)
     {
         if (metadata.StorageMode != StorageMode.Standalone)
         {
             return _vault.OpenEncryptedContentRead(metadata.Uuid);
         }
 
-        var flockedPath = FlockedStatusChecker.ComputeFlockedPath(metadata.OriginalPath, metadata.Type == ItemType.Folder);
+        var flockedPath = explicitFlockedPath
+            ?? FlockedStatusChecker.ComputeFlockedPath(metadata.OriginalPath, metadata.Type == ItemType.Folder);
         var stream = File.OpenRead(flockedPath);
         if (!FlockedFileFormat.TryReadHeader(stream, out var headerUuid) || headerUuid != metadata.Uuid)
         {
@@ -1299,7 +1349,7 @@ public class LockService
     /// 呼叫端負責把 encryptionKey 準備好（不管是密碼衍生、Passkey 解包，還是恢復金鑰解包出來的），
     /// 這裡負責用完清零；unlockMethod 只是拿來寫進使用紀錄，不影響解密邏輯本身。
     /// </summary>
-    private UnlockResult RestoreFromKey(LockedItemMetadata metadata, byte[] encryptionKey, string destinationParentDir, string unlockMethod)
+    private UnlockResult RestoreFromKey(LockedItemMetadata metadata, byte[] encryptionKey, string destinationParentDir, string unlockMethod, string? explicitFlockedPath = null)
     {
         if (!IsSafeRestoreFileName(metadata.OriginalName))
         {
@@ -1337,7 +1387,7 @@ public class LockService
                 // StorageMode=Standalone 的項目密文不在 Vault 裡（commit 時已經搬到 .flocked
                 // 檔案本體，見 CommitStandaloneEncryptAsync），改從那裡讀，讀之前要先跳過
                 // 前面的 header 並確認 UUID 對得上——理由跟 FlockedStatusChecker 一致。
-                using (var encStream = OpenContentStreamForDecrypt(metadata))
+                using (var encStream = OpenContentStreamForDecrypt(metadata, explicitFlockedPath))
                 using (var outputStream = File.Create(actualWritePath))
                 {
                     ChunkedCipher.DecryptStream(encryptionKey, encStream, outputStream);

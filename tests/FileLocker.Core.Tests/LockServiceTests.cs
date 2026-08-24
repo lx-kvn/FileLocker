@@ -1008,6 +1008,77 @@ public class LockServiceTests : IDisposable
         Assert.True(File.Exists(Path.Combine(_workDir.FullName, "密碼錯誤的分散式檔案.flocked")));
     }
 
+    // ---- 雙擊 .flocked 檔案解密（實作計畫片 7）：跟雙擊 .locked 的 DecryptAsync 平行 ----
+
+    [Fact]
+    public async Task DecryptFlockedFileAsync_FlockedStillAtOriginalLocation_RestoresContentAndDeletesFlockedFile()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "雙擊解密原地.txt");
+        const string originalContent = "雙擊解密的內容";
+        File.WriteAllText(filePath, originalContent);
+        var lockResult = await _service.EncryptAsync(filePath, "dblclick-password", null, storageMode: StorageMode.Standalone);
+        Assert.True(lockResult.Success);
+        var flockedPath = lockResult.LockedMarkerPath;
+
+        var unlockResult = await _service.DecryptFlockedFileAsync(flockedPath, "dblclick-password");
+
+        Assert.True(unlockResult.Success);
+        Assert.True(File.Exists(filePath));
+        Assert.Equal(originalContent, File.ReadAllText(filePath));
+        Assert.False(File.Exists(flockedPath));
+    }
+
+    [Fact]
+    public async Task DecryptFlockedFileAsync_FileMovedToAnotherFolder_StillDecryptsFromLiteralPathAndRestoresThere()
+    {
+        // 「獨立可攜」是這個功能的賣點——使用者把 .flocked 搬到跟加密當下完全無關的資料夾之後
+        // 還是應該雙擊得開，不能像 DecryptByUuidAsync 那樣依賴 metadata.OriginalPath 反推位置
+        // （那個位置在檔案被搬走之後已經不對了）。
+        var filePath = Path.Combine(_workDir.FullName, "雙擊解密搬移前.txt");
+        const string originalContent = "搬移後還能解密的內容";
+        File.WriteAllText(filePath, originalContent);
+        var lockResult = await _service.EncryptAsync(filePath, "moved-password", null, storageMode: StorageMode.Standalone);
+        Assert.True(lockResult.Success);
+
+        var movedDir = Directory.CreateDirectory(Path.Combine(_workDir.FullName, "搬到這個資料夾"));
+        var movedFlockedPath = Path.Combine(movedDir.FullName, "雙擊解密搬移前.flocked");
+        File.Move(lockResult.LockedMarkerPath, movedFlockedPath);
+
+        var unlockResult = await _service.DecryptFlockedFileAsync(movedFlockedPath, "moved-password");
+
+        Assert.True(unlockResult.Success);
+        var restoredPath = Path.Combine(movedDir.FullName, "雙擊解密搬移前.txt");
+        Assert.True(File.Exists(restoredPath));
+        Assert.Equal(originalContent, File.ReadAllText(restoredPath));
+        Assert.False(File.Exists(movedFlockedPath));
+    }
+
+    [Fact]
+    public async Task DecryptFlockedFileAsync_WrongPassword_FailsWithoutDeletingFlockedFile()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "雙擊密碼錯誤.txt");
+        File.WriteAllText(filePath, "內容");
+        var lockResult = await _service.EncryptAsync(filePath, "correct-password", null, storageMode: StorageMode.Standalone);
+        Assert.True(lockResult.Success);
+
+        var unlockResult = await _service.DecryptFlockedFileAsync(lockResult.LockedMarkerPath, "wrong-password");
+
+        Assert.False(unlockResult.Success);
+        Assert.True(File.Exists(lockResult.LockedMarkerPath));
+    }
+
+    [Fact]
+    public async Task DecryptFlockedFileAsync_NotAFlockedFile_FailsWithParseError()
+    {
+        var notFlockedPath = Path.Combine(_workDir.FullName, "不是flocked檔案.txt");
+        File.WriteAllText(notFlockedPath, "隨便的內容，不是 FlockedFileFormat 產生的");
+
+        var unlockResult = await _service.DecryptFlockedFileAsync(notFlockedPath, "任何密碼");
+
+        Assert.False(unlockResult.Success);
+        Assert.Equal(ErrorCodes.FlockedParseFailed, unlockResult.ErrorCode);
+    }
+
     // ---- 獨立解密流程（信封＋Sheet，定案文件 §1.11）：Verify/Commit/Cancel 交易模型 ----
     // Passkey 路徑需要真的 Windows Hello 硬體才能測，跟既有 DecryptByPasskeyAsync 一樣沒有
     // 對應的單元測試，這裡只覆蓋密碼／恢復金鑰兩條路徑＋共用的 Commit/Cancel 行為。

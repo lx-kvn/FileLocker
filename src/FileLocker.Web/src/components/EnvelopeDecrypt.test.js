@@ -31,6 +31,14 @@ async function advancePastEntrance(wrapper) {
   await wrapper.vm.$nextTick()
 }
 
+// 驗證 sheet 落定（sheet--settle）在 advancePastEntrance 之後還要再等 SHEET_PHASE_MS——
+// 焦點是在落定那一刻才搶的（見元件裡的說明：不要在滑動進場途中就搶），測試要跟著等到那個時間點。
+async function advancePastSheetSettle(wrapper) {
+  await advancePastEntrance(wrapper)
+  await vi.advanceTimersByTimeAsync(SHEET_PHASE_MS + 10)
+  await wrapper.vm.$nextTick()
+}
+
 beforeEach(() => {
   vi.useFakeTimers()
 })
@@ -66,6 +74,48 @@ describe('EnvelopeDecrypt', () => {
 
     await advancePastEntrance(wrapper)
     expect(sheet.classes()).not.toContain('sheet--hidden')
+  })
+
+  it('沒開 Passkey：sheet 落定後密碼輸入框自動拿到鍵盤焦點', async () => {
+    const wrapper = mount(EnvelopeDecrypt, { attachTo: document.body, props: { t, verifyState: { status: 'idle' }, commitState: { status: 'idle' } } })
+    await advancePastSheetSettle(wrapper)
+
+    expect(document.activeElement).toBe(wrapper.find('input[type="password"]').element)
+
+    wrapper.unmount()
+  })
+
+  it('開 Passkey 自動驗證失敗、退回密碼輸入表單後，焦點跟著回到密碼輸入框', async () => {
+    const wrapper = mount(EnvelopeDecrypt, {
+      attachTo: document.body,
+      props: { t, passkeyEnabled: true, verifyState: { status: 'idle' }, commitState: { status: 'idle' } },
+    })
+    await advancePastSheetSettle(wrapper)
+
+    await wrapper.setProps({ verifyState: { status: 'failed', message: 'Passkey 驗證未完成' } })
+    await wrapper.vm.$nextTick()
+
+    expect(document.activeElement).toBe(wrapper.find('input[type="password"]').element)
+
+    wrapper.unmount()
+  })
+
+  it('切到恢復金鑰頁／切回密碼頁，焦點各自跟著切換的輸入框走', async () => {
+    const wrapper = mount(EnvelopeDecrypt, {
+      attachTo: document.body,
+      props: { t, recoveryKeyEnabled: true, verifyState: { status: 'idle' }, commitState: { status: 'idle' } },
+    })
+    await advancePastSheetSettle(wrapper)
+
+    await wrapper.find('.decrypt-sheet__alt-btn').trigger('click') // 「使用恢復金鑰」
+    await wrapper.vm.$nextTick()
+    expect(document.activeElement).toBe(wrapper.find('input[type="text"]').element)
+
+    await wrapper.find('.decrypt-sheet__link').trigger('click') // 「返回」
+    await wrapper.vm.$nextTick()
+    expect(document.activeElement).toBe(wrapper.find('input[type="password"]').element)
+
+    wrapper.unmount()
   })
 
   it('沒有開 Passkey 時不會自動送出 verify-passkey', async () => {

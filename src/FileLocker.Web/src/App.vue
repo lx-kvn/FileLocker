@@ -689,6 +689,15 @@ const decryptingUuids = ref(new Set())
 // 待在這個集合裡——見下面 removeVaultItem／handleTicketTornAway。
 const tearingUuids = ref(new Set())
 const expandedGroups = ref(new Set())
+// 回饋（使用者實測抓到）：批次群組展開清單第一筆撕開時，撐開動畫會往上溢出到手風琴容器
+// 邊界外，被 .ticket-group__items 的 overflow:hidden（手風琴收合動畫需要）直接切掉——
+// 中間那幾筆撕開時溢出的範圍還在容器內，只有貼著容器邊緣（第一筆/最後一筆）才會被切到，
+// 所以先前只測中間那筆沒抓到這個情況。解法：手風琴展開動畫播完（跟 CSS 的 280ms 對齊）
+// 才放開裁切，展開動畫進行中／收合狀態下仍然維持裁切（收合需要裁切才看不到內容，這個
+// 不能放，只有「已經完全展開、不會再有高度變化」這個狀態才安全放開）。
+const settledGroups = ref(new Set())
+const groupExpandSettleTimers = {} // batchId -> timeoutId，避免快速連續切換時前一個計時器還在跑
+const GROUP_EXPAND_TRANSITION_MS = 280 // 要跟 .ticket-group__items-wrapper 的 transition duration 對齊
 const decryptingBatchIds = ref(new Set())
 
 // ---- 使用紀錄子頁籤 ----
@@ -1512,10 +1521,21 @@ function nestedLockPreviewText(item) {
 }
 
 function toggleGroupExpanded(batchId) {
+  if (groupExpandSettleTimers[batchId]) {
+    clearTimeout(groupExpandSettleTimers[batchId])
+    delete groupExpandSettleTimers[batchId]
+  }
   if (expandedGroups.value.has(batchId)) {
     expandedGroups.value.delete(batchId)
+    // 收合要立刻恢復裁切——收合過程本身就需要裁切才看得出「內容被收進去」的效果，
+    // 不能等動畫播完才裁，那樣播的時候反而會看到內容跑到手風琴外面。
+    settledGroups.value.delete(batchId)
   } else {
     expandedGroups.value.add(batchId)
+    groupExpandSettleTimers[batchId] = window.setTimeout(() => {
+      settledGroups.value.add(batchId)
+      delete groupExpandSettleTimers[batchId]
+    }, GROUP_EXPAND_TRANSITION_MS)
   }
 }
 
@@ -3904,7 +3924,10 @@ const isAnyBlockingModalOpen = computed(() =>
                        控制展開高度（grid-template-rows 0fr/1fr 技巧，不用 JS 量測高度），裡面
                        也換成 <TransitionGroup> 沿用同一組 ticket-fly 動畫語彙，解鎖/刪除單一
                        項目時其餘項目一樣會有彈性補位效果。 -->
-                  <div class="ticket-group__items-wrapper" :class="{ 'is-expanded': expandedGroups.has(group.batchId) }">
+                  <div
+                    class="ticket-group__items-wrapper"
+                    :class="{ 'is-expanded': expandedGroups.has(group.batchId), 'is-settled': settledGroups.has(group.batchId) }"
+                  >
                     <TransitionGroup name="ticket-fly" tag="div" class="ticket-group__items">
                       <TicketRow
                         v-for="item in group.items"
@@ -7494,6 +7517,14 @@ button:focus-visible,
   position: relative; /* 撕開飛走／解鎖移除時 .ticket-fly-leave-active 用絕對定位疊在上面，需要這個當定位基準，跟 .ticket-list 是同一個道理 */
 }
 
+/* 手風琴完全展開、動畫播完之後才放開裁切——見上面 GROUP_EXPAND_TRANSITION_MS 旁邊的
+   說明，第一筆/最後一筆項目撕開時撐開的視覺範圍會貼近容器邊緣，這時候還留著 overflow:hidden
+   會把撐開動畫切掉一角。收合狀態／展開動畫進行中都還是要維持裁切，只有這個「已經完全展開、
+   之後不會再有高度變化」的狀態才安全放開。 */
+.ticket-group__items-wrapper.is-settled .ticket-group__items {
+  overflow: visible;
+}
+
 /* ---- 設定頁籤 ---- */
 /* 卡片式分組（GUI造型探索_定案文件 §6）：11 個既有 .settings-section 攤平在同一條捲軸上，
    使用者要找特定開關會退化成「用捲輪找設定」，不是「掃一眼找到」。分成一般／安全性／關於
@@ -7779,6 +7810,13 @@ button:focus-visible,
   width: 100%;
   max-height: calc(100vh - 3rem);
   overflow-y: auto;
+  /* 回饋（使用者實測抓到）：解鎖/刪除確認彈窗的檔名是內插進來的使用者資料，沒限制長度——
+     遇到像沒有空白/連字號可以斷行的長檔名（例如安裝程式常見的 hash 檔名）時，內容硬撐開
+     彈窗寬度，冒出水平捲軸，在這種「一次性小彈窗」的情境下捲軸看起來像排版壞掉。
+     overflow-wrap: break-word 是 inherited 屬性，這裡設一次整個彈窗底下的文字（標題／
+     副標題／訊息）都受益，優先在正常字詞邊界斷行，真的斷不了才強制斷在字中間，不影響
+     一般短檔名的正常換行行為。 */
+  overflow-wrap: break-word;
   text-align: left;
   transform-origin: center;
   transition: transform var(--duration-base) var(--ease-out), opacity var(--duration-base) var(--ease-out);

@@ -566,7 +566,7 @@ App.vue 裡既有的其他動畫（modal 淡入淡出、`table-row-in` 清單進
 
 - ~~信封素材的深色版本（比照 `Notebook_Body_Drack.svg` 那樣另外匯出一套）——下一輪如果要讓深色模式下信封也跟著變深，需要先請使用者出新素材。~~——**已解決**：使用者提供了 `Envelope_Body_Dark.svg`／`_Empty_Dark`／`_One_Dark`／`_Two_Dark`／`Envelope_Flap_Dark.svg`（另外還有 `Envelope_Stack_Dark.svg`，但對應的淺色版 `Envelope_Stack.svg` 目前程式碼裡沒有任何地方在用，一併保留素材但這輪不接線）。
   接線時發現一個判斷依據上的誤會：深色模式**不是**跟著作業系統的 `prefers-color-scheme` 走，而是 `App.vue` 自己的 `settingsTheme` 應用程式設定（使用者在設定頁手動切換、存進後端設定檔）——一開始寫了一版用 `window.matchMedia('(prefers-color-scheme: dark)')` 偵測的 composable，寫完測試才發現跟 `passkeyIconUrl`／`recoveryKeyIconUrl` 這兩個既有的圖示深淺色切換邏輯對不上（那兩個是 `App.vue` 算好 `settingsTheme.value === 'dark'` 才往下傳 prop），已經整組作廢重寫：新增 `isDarkTheme` boolean prop（`App.vue` 算好、傳給 `EnvelopeEncrypt.vue`），本體/封口的深色版 URL 挑選改成看這個 prop，不是元件自己偵測系統主題。用 Playwright 驅動真正的 `App.vue`（假 `getSettings` 回應 `theme: 'dark'`）截圖確認：信封整個變成深色炭黑、紅色蠟印在深色背景上依然清楚可辨，沒有「殼子深、信封仍淺色」的違和感。
-- 步驟二表單最終是塞進信封輪廓內、還是改用 `.sheet`，實作時量測排版後要回頭把結論**寫回本節**，不要讓「各自判斷」這個開放式決策停留在「還沒決定」的狀態太久。
+- ~~步驟二表單最終是塞進信封輪廓內、還是改用 `.sheet`，實作時量測排版後要回頭把結論**寫回本節**，不要讓「各自判斷」這個開放式決策停留在「還沒決定」的狀態太久。~~——**已解決**：查證 `EnvelopeEncrypt.vue` 現況後發現已經實作並選了 `.sheet`——密碼／提示／Passkey／恢復金鑰勾選表單包在 `.sheet.sheet--password`（`EnvelopeEncrypt.vue:523`）裡，`.sheet` 是獨立的圓角卡片（268px 寬、自己的背景色與陰影，`position: absolute` 疊在信封上方），不是塞進信封菱形輪廓內畫。這條待辦是實作前寫的開放式決策，後來動工時已經做了選擇，只是沒有回頭補寫這裡，這次一併訂正。
 
 ### 8.6 獨立解密流程（信封＋Sheet）
 

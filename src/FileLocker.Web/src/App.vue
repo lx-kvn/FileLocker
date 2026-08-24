@@ -7991,5 +7991,21 @@ button:focus-visible,
   .group-row__chevron {
     transition: none;
   }
+
+  /* 撕開驗證通過後其餘列補位動畫（見上方 .ticket-fly-* 說明）——這個 TransitionGroup
+     漏掉這層保護，跟 TicketRow.vue 內部自己的撕開飛走動畫、EnvelopeEncrypt.vue 的
+     mailaway-rig 是同一種「移動很遠的距離」動態，那兩處已經補過，這裡是盤點全站動畫
+     時發現的漏網之魚，一併補上。只拿掉飛走的位移/旋轉，淡出的透明度變化保留。 */
+  .ticket-fly-move {
+    transition: none;
+  }
+
+  .ticket-fly-leave-active {
+    transition: opacity 200ms ease;
+  }
+
+  .ticket-fly-leave-to {
+    transform: none;
+  }
 }
 </style>

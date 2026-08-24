@@ -694,5 +694,11 @@ const createdAtDisplay = computed(() => {
   .spinner {
     animation-duration: 1400ms;
   }
+
+  /* 解密表單步驟一/二切換時的 240px 橫向滑動——盤點全站動畫時發現漏掉這層保護，跟同一
+     個媒體查詢裡其他項目一樣的道理：位移距離夠大，屬於這個查詢要擋的前庭不適動態。 */
+  .decrypt-sheet__pages {
+    transition: none;
+  }
 }
 </style>

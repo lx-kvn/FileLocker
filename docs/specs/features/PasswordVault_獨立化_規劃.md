@@ -4,7 +4,7 @@
 
 ## 1. 背景
 
-`FileLocker_密碼庫_功能規劃.md` 第 12 節原本把「獨立單機介面版本」列為明確擱置的構想。可選配部件架構（含第二階段自動安裝）落地之後，重新排入規劃，並在這輪 grilling 中決定：不是單純幫既有的 `FileLocker.PasswordLocker` 部件多做一份 UI 外殼，而是把整個密碼庫功能獨立成一個品牌、一個產品——**PasswordVault**，原始碼遷出到獨立 repo（見 [ADR-0003](docs/adr/0003-passwordvault-separate-repo.md)）。
+`密碼庫_功能規劃.md` 第 12 節原本把「獨立單機介面版本」列為明確擱置的構想。可選配部件架構（含第二階段自動安裝）落地之後，重新排入規劃，並在這輪 grilling 中決定：不是單純幫既有的 `FileLocker.PasswordLocker` 部件多做一份 UI 外殼，而是把整個密碼庫功能獨立成一個品牌、一個產品——**PasswordVault**，原始碼遷出到獨立 repo（見 [ADR-0003](../../adr/0003-passwordvault-separate-repo.md)）。
 
 FileLocker 本體跟 PasswordVault 的關係，从「FileLocker 的一個可選配部件」重新定位成「FileLocker 是 PasswordVault 的其中一個消費端」——FileLocker.App 要用密碼庫功能，一樣是下載 PasswordVault 的核心元件（見第 3 節），這件事本來就已經是既有架構，這輪不需要改動 FileLocker.App 這一側的下載/載入機制。
 
@@ -19,7 +19,7 @@ FileLocker 本體跟 PasswordVault 的關係，从「FileLocker 的一個可選�
 | `src/FileLocker.Extension/`（瀏覽器擴充功能） | 隨 repo 遷移一併改名／改品牌文字 |
 | （新）獨立桌面程式 | `PasswordVault.exe` |
 
-FileLocker 本體 UI 上「密碼庫」分頁的中文名稱維持不變——這是使用者已經熟悉的既有語彙（見 `CONTEXT.md` 的「密碼庫（Password Locker）」定義），改名範圍是專案／程式碼／安裝路徑層級，不是要求使用者跟著改口。
+FileLocker 本體 UI 上「密碼庫」分頁的中文名稱維持不變——這是使用者已經熟悉的既有語彙（見 `../../../CONTEXT.md` 的「密碼庫（Password Locker）」定義），改名範圍是專案／程式碼／安裝路徑層級，不是要求使用者跟著改口。
 
 ## 3. 執行形態與元件關係
 
@@ -27,7 +27,7 @@ FileLocker 本體 UI 上「密碼庫」分頁的中文名稱維持不變——�
 
 前端不整支複製，改採**實體分割**：把現有 `App.vue` 裡密碼庫分頁相關的 template/script 拆成獨立 Vue 元件，`PasswordVault.exe`（新的 Vite 專案）與 `FileLocker.App`（現有 `FileLocker.Web`）兩邊都 import 同一份元件——避免以後修一個 bug 要改兩份程式碼、兩邊行為逐漸漂移的既有風險（跟這個專案「不使用複製貼上式的雙份維護」的一貫原則一致）。
 
-**實際拆分方式（這輪定案，見 [ADR-0004](docs/adr/0004-shared-password-locker-ui-npm-package.md)）**：
+**實際拆分方式（這輪定案，見 [ADR-0004](../../adr/0004-shared-password-locker-ui-npm-package.md)）**：
 
 - **跨 repo 共用機制**：把整個密碼庫分頁封裝成一個整體元件（`<PasswordLockerPage>`，內部細節怎麼再拆是套件自己的事），發布成公開 npm 套件 `@lx-kvn/password-locker-ui`——兩個 repo 是完全獨立的 git 歷史、沒有共同的 monorepo workspace，公開 npm registry 免費、不需要自架任何發布基礎設施，版本號天然解決「兩邊發布節奏不同步」的問題。
 - **套件原始碼位置**：放在 PasswordVault repo 的 `packages/password-locker-ui/`——跟 ADR-0003「PasswordVault repo 是密碼庫功能唯一真相來源」的定位一致，不另開第三個 repo。
@@ -79,7 +79,7 @@ FileLocker 本體 UI 上「密碼庫」分頁的中文名稱維持不變——�
 
 ## 9. 發布方式
 
-`PasswordVault.exe` 的安裝程式發布在獨立的 GitHub repo／Release，不掛在 FileLocker 現有的 repo 底下。原始碼本身也遷過去（見 [ADR-0003](docs/adr/0003-passwordvault-separate-repo.md)），這份 repo 是新 repo 唯一真相來源，`FileLocker.PasswordLocker`／`FileLocker.Extension` 遷移後從這個 FileLocker repo 移除。
+`PasswordVault.exe` 的安裝程式發布在獨立的 GitHub repo／Release，不掛在 FileLocker 現有的 repo 底下。原始碼本身也遷過去（見 [ADR-0003](../../adr/0003-passwordvault-separate-repo.md)），這份 repo 是新 repo 唯一真相來源，`FileLocker.PasswordLocker`／`FileLocker.Extension` 遷移後從這個 FileLocker repo 移除。
 
 ## 10. Repo 遷移的實際步驟
 
@@ -103,7 +103,7 @@ PasswordVault 內建 CLI（隨 `PasswordVault.exe` 一起發布、一起編號�
 
 `PasswordVault.Core` 與 `PasswordVault.exe`（含內建 CLI）同一個 repo、同一個版號——因為 `PasswordVault.exe` 編譯期直接內建 `PasswordVault.Core`（見第 3 節），兩者本來就是同一次建置的產物，沒有獨立編號的必要，版號從 `0.1.0` 起算（沿用現有 `FileLocker.PasswordLocker` 的既有慣例）。
 
-`FileLocker.App` 下載使用的部件版本，維持「版號各自獨立」——這是既有慣例（見 `FileLocker_密碼庫_功能規劃.md`），FileLocker 本體發新版不代表部件也要跟著出新版，PasswordVault 獨立化後這個既有規則不變。
+`FileLocker.App` 下載使用的部件版本，維持「版號各自獨立」——這是既有慣例（見 `密碼庫_功能規劃.md`），FileLocker 本體發新版不代表部件也要跟著出新版，PasswordVault 獨立化後這個既有規則不變。
 
 ## 14. 單一執行個體 Mutex／系統匣圖示
 

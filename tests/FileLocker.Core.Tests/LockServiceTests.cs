@@ -156,6 +156,38 @@ public class LockServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task EncryptAsync_FolderContainingNestedFlockedFile_RecordsNestedUuid()
+    {
+        // 對應「單檔案分散式加密」功能規劃 §4 點 2：外層資料夾整份被集中庫加密時，裡面巢狀的
+        // .flocked 檔案（單檔案分散式加密留下的，這輪還沒做出真正的產生流程，見片 4，這裡直接
+        // 用 FlockedFileFormat 手動構造一份等價的檔案）也要能被記錄下來，不能只認得 .locked。
+        var nestedUuid = Guid.NewGuid().ToString();
+        var outerFolder = Path.Combine(Path.GetTempPath(), $"FileLockerOuter_{Guid.NewGuid()}");
+        Directory.CreateDirectory(outerFolder);
+        var nestedFlockedPath = Path.Combine(outerFolder, "inner.flocked");
+        using (var stream = File.Create(nestedFlockedPath))
+        {
+            FlockedFileFormat.WriteHeader(stream, nestedUuid);
+            stream.Write([1, 2, 3, 4]); // 模擬後面接的密文串流，內容不重要
+        }
+
+        try
+        {
+            var outerResult = await _service.EncryptAsync(outerFolder, "outer-password", null);
+            Assert.True(outerResult.Success);
+
+            var metadata = new VaultManager(_vaultDir.FullName).LoadMetadata(outerResult.Uuid);
+            Assert.NotNull(metadata);
+            Assert.Single(metadata!.ContainsNestedLocks);
+            Assert.Equal(nestedUuid, metadata.ContainsNestedLocks[0]);
+        }
+        finally
+        {
+            if (Directory.Exists(outerFolder)) Directory.Delete(outerFolder, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task TryDeleteRecordAsync_WithNestedLocks_IsBlockedByDefault()
     {
         var vault = new VaultManager(_vaultDir.FullName);

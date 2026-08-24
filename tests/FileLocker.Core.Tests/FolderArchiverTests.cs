@@ -74,6 +74,26 @@ public class FolderArchiverTests : IDisposable
     }
 
     [Fact]
+    public void FindNestedLockedFiles_AlsoFindsFlockedFilesRecursively()
+    {
+        // 對應「單檔案分散式加密」功能規劃 §4 點 2：外層資料夾整份要被集中庫加密時，
+        // 裡面巢狀的 .flocked 檔案（單檔案分散式加密留下的）也要能被找到，不能只認得
+        // .locked——否則使用者不會知道這個資料夾裡包了另一顆已經加密過的獨立密文檔。
+        File.WriteAllText(Path.Combine(_sourceDir.FullName, "已鎖定項目.locked"), "{}");
+        File.WriteAllBytes(Path.Combine(_sourceDir.FullName, "獨立密文項目.flocked"), [1, 2, 3]);
+        var subDir = Directory.CreateDirectory(Path.Combine(_sourceDir.FullName, "subfolder"));
+        File.WriteAllBytes(Path.Combine(subDir.FullName, "深層獨立密文項目.flocked"), [1, 2, 3]);
+        File.WriteAllText(Path.Combine(_sourceDir.FullName, "普通檔案.txt"), "not locked");
+
+        var found = FolderArchiver.FindNestedLockedFiles(_sourceDir.FullName);
+
+        Assert.Equal(3, found.Count);
+        Assert.Contains(found, p => p.EndsWith("已鎖定項目.locked"));
+        Assert.Contains(found, p => p.EndsWith("獨立密文項目.flocked"));
+        Assert.Contains(found, p => p.EndsWith("深層獨立密文項目.flocked"));
+    }
+
+    [Fact]
     public void FindNestedGuardedFolders_GuardedPathInsideTree_IsFound()
     {
         var subDir = Directory.CreateDirectory(Path.Combine(_sourceDir.FullName, "subfolder"));

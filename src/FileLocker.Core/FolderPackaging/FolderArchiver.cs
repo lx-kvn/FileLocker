@@ -44,8 +44,13 @@ public static class FolderArchiver
     }
 
     /// <summary>
-    /// 對應規格文件 3.2 節「巢狀 .locked 項目」：加密前先遞迴掃描資料夾，
-    /// 找出裡面所有 *.locked 檔案的路徑，回傳給呼叫端決定要不要跳出提示、要記錄哪些 UUID。
+    /// 對應規格文件 3.2 節「巢狀 .locked 項目」，以及「單檔案分散式加密」功能規劃 §4 點 2：
+    /// 加密前先遞迴掃描資料夾，找出裡面所有 *.locked（集中庫加密指標檔）跟 *.flocked
+    /// （單檔案分散式加密的獨立密文檔）的路徑，回傳給呼叫端決定要不要跳出提示、要記錄哪些
+    /// UUID——兩種副檔名都要掃，不能只認得 .locked，否則 .flocked 檔案會被外層資料夾的
+    /// 集中庫加密整批吞掉而使用者不自知。呼叫端（LockService.EncryptToVault）會依副檔名
+    /// 分別用 LockedMarkerFile／FlockedFileFormat 讀出對應的 UUID，這裡只負責找路徑，
+    /// 不負責解析內容。
     /// </summary>
     public static IReadOnlyList<string> FindNestedLockedFiles(string folderPath)
     {
@@ -54,7 +59,9 @@ public static class FolderArchiver
             return Array.Empty<string>();
         }
 
-        return Directory.EnumerateFiles(folderPath, "*.locked", SearchOption.AllDirectories).ToList();
+        return Directory.EnumerateFiles(folderPath, "*.locked", SearchOption.AllDirectories)
+            .Concat(Directory.EnumerateFiles(folderPath, "*.flocked", SearchOption.AllDirectories))
+            .ToList();
     }
 
     /// <summary>

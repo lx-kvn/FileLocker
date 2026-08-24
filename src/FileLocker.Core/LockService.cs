@@ -456,12 +456,24 @@ public class LockService
         {
             if (isFolder)
             {
-                foreach (var nestedMarkerPath in FolderArchiver.FindNestedLockedFiles(path))
+                foreach (var nestedPath in FolderArchiver.FindNestedLockedFiles(path))
                 {
-                    var nestedMarker = LockedMarkerFile.ReadFrom(nestedMarkerPath);
-                    if (nestedMarker is not null)
+                    // .locked 指標檔跟 .flocked 獨立密文檔是完全不同的格式（見各自類別上的
+                    // 說明），依副檔名分開解析，不能共用同一套讀取邏輯。
+                    if (nestedPath.EndsWith(".flocked", StringComparison.OrdinalIgnoreCase))
                     {
-                        nestedUuids.Add(nestedMarker.Uuid);
+                        if (FlockedFileFormat.TryReadUuid(nestedPath, out var flockedUuid))
+                        {
+                            nestedUuids.Add(flockedUuid!);
+                        }
+                    }
+                    else
+                    {
+                        var nestedMarker = LockedMarkerFile.ReadFrom(nestedPath);
+                        if (nestedMarker is not null)
+                        {
+                            nestedUuids.Add(nestedMarker.Uuid);
+                        }
                     }
                 }
 

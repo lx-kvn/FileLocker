@@ -49,6 +49,15 @@ public class LockedItemMetadata
     /// </summary>
     public StorageMode StorageMode { get; set; } = StorageMode.Vault;
 
+    /// <summary>
+    /// 只在 StorageMode=Standalone 且 Pending 階段使用者選了「存放到其他地方」時才有值，
+    /// commit 時讀這個欄位決定 .flocked 最終要搬到哪個資料夾——沒有值就是原地取代原始檔案。
+    /// commit 完成後這個欄位不再有實際作用（真正的落腳位置已經反映在 OriginalPath 上，
+    /// 見 LockService.CommitEncryptAsync 的 Standalone 分支），但保留寫著的值本身無害，
+    /// 可以當作「使用者當初選了哪裡」的歷史記錄，沒有必要 commit 完就清掉它。
+    /// </summary>
+    public string? StandaloneDestinationDir { get; set; }
+
     /// <summary>對應 Vault 內 {Uuid}.enc 檔名。</summary>
     public required string Uuid { get; set; }
 

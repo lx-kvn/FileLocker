@@ -75,7 +75,8 @@ public sealed class VaultProtocolHandlers
     public async IAsyncEnumerable<EncryptPendingItemResponse> EncryptPendingBatchAsync(
         IReadOnlyList<string> paths, string password, string? hint,
         bool enablePasskey, bool enableRecoveryKey, IntPtr ownerWindowHandle,
-        IProgress<double>? progress = null, Action<bool>? onPasskeyVerifying = null)
+        IProgress<double>? progress = null, Action<bool>? onPasskeyVerifying = null,
+        StorageMode storageMode = StorageMode.Vault, string? destinationDir = null)
     {
         var batchId = paths.Count > 1 ? Guid.NewGuid().ToString() : null;
 
@@ -84,7 +85,7 @@ public sealed class VaultProtocolHandlers
             var result = await _lockService.EncryptPendingAsync(
                 path, password, string.IsNullOrWhiteSpace(hint) ? null : hint,
                 enablePasskey, ownerWindowHandle, enableRecoveryKey, batchId,
-                progress, onPasskeyVerifying);
+                progress, onPasskeyVerifying, storageMode, destinationDir);
 
             var actuallyPasskeyEnabled = false;
             if (result.Success)

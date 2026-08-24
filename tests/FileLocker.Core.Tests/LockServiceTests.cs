@@ -840,6 +840,174 @@ public class LockServiceTests : IDisposable
         Assert.Equal(ErrorCodes.PendingItemNotFound, result.ErrorCode);
     }
 
+    // ---- 「單檔案分散式加密」功能規劃 §7：Pending/Commit/Rollback 延伸到 StorageMode.Standalone ----
+
+    [Fact]
+    public async Task EncryptPendingAsync_StandaloneMode_LeavesOriginalFileAndDoesNotWriteFlockedYet()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "待確認的分散式檔案.txt");
+        File.WriteAllText(filePath, "還沒真的加密完成");
+
+        var result = await _service.EncryptPendingAsync(filePath, "pending-password", null, storageMode: StorageMode.Standalone);
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(filePath)); // 原始檔案還在
+        var expectedFlockedPath = Path.Combine(_workDir.FullName, "待確認的分散式檔案.flocked");
+        Assert.False(File.Exists(expectedFlockedPath)); // .flocked 還沒真的落地
+
+        var metadata = new VaultManager(_vaultDir.FullName).LoadMetadata(result.Uuid);
+        Assert.NotNull(metadata);
+        Assert.Equal(LockStatus.Pending, metadata!.Status);
+        Assert.Equal(StorageMode.Standalone, metadata.StorageMode);
+    }
+
+    [Fact]
+    public async Task CommitEncryptAsync_StandaloneModeInPlace_MovesFlockedFileDeletesOriginalNoLockedMarker()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "要提交的分散式檔案.txt");
+        File.WriteAllText(filePath, "內容");
+        var pending = await _service.EncryptPendingAsync(filePath, "commit-password", null, storageMode: StorageMode.Standalone);
+        Assert.True(pending.Success);
+
+        var commit = await _service.CommitEncryptAsync(pending.Uuid);
+
+        Assert.True(commit.Success);
+        Assert.False(File.Exists(filePath)); // 原始檔案被刪除
+        var expectedFlockedPath = Path.Combine(_workDir.FullName, "要提交的分散式檔案.flocked");
+        Assert.Equal(expectedFlockedPath, commit.LockedMarkerPath); // 沿用同一個欄位回報 .flocked 最終位置
+        Assert.True(File.Exists(expectedFlockedPath));
+        Assert.False(File.Exists(Path.Combine(_workDir.FullName, "要提交的分散式檔案.locked"))); // 沒有寫 .locked
+
+        var metadata = new VaultManager(_vaultDir.FullName).LoadMetadata(pending.Uuid);
+        Assert.NotNull(metadata);
+        Assert.Equal(LockStatus.Committed, metadata!.Status);
+        Assert.Equal(filePath, metadata.OriginalPath); // 原地取代，OriginalPath 不變
+
+        var historyEntries = _history.ReadAll().ToList();
+        Assert.Contains(historyEntries, e => e.Uuid == pending.Uuid && e.Action == HistoryAction.Encrypted);
+    }
+
+    [Fact]
+    public async Task CommitEncryptAsync_StandaloneModeWithDestinationDir_MovesFlockedFileToDestinationAndUpdatesOriginalPath()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "要搬去別處的檔案.txt");
+        File.WriteAllText(filePath, "內容");
+        var destinationDir = Directory.CreateTempSubdirectory("FileLockerFlockedDestination_").FullName;
+
+        try
+        {
+            var pending = await _service.EncryptPendingAsync(
+                filePath, "commit-password", null, storageMode: StorageMode.Standalone, destinationDir: destinationDir);
+            Assert.True(pending.Success);
+
+            var commit = await _service.CommitEncryptAsync(pending.Uuid);
+
+            Assert.True(commit.Success);
+            Assert.False(File.Exists(filePath)); // 原始位置的檔案被刪除
+            var expectedFlockedPath = Path.Combine(destinationDir, "要搬去別處的檔案.flocked");
+            Assert.Equal(expectedFlockedPath, commit.LockedMarkerPath);
+            Assert.True(File.Exists(expectedFlockedPath));
+
+            var metadata = new VaultManager(_vaultDir.FullName).LoadMetadata(pending.Uuid);
+            Assert.NotNull(metadata);
+            // OriginalPath 要跟著更新成新位置，之後 FlockedStatusChecker 才能查對地方。
+            Assert.Equal(Path.Combine(destinationDir, "要搬去別處的檔案.txt"), metadata!.OriginalPath);
+        }
+        finally
+        {
+            Directory.Delete(destinationDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CommitEncryptAsync_StandaloneMode_TargetAlreadyExists_FailsAndLeavesItemPending()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "目標衝突的檔案.txt");
+        File.WriteAllText(filePath, "內容");
+        var pending = await _service.EncryptPendingAsync(filePath, "password", null, storageMode: StorageMode.Standalone);
+        Assert.True(pending.Success);
+
+        // 在 pending 跟 commit 之間，原本的目標位置冒出一個同名 .flocked（模擬另一個流程搶先卡位）。
+        var conflictingPath = Path.Combine(_workDir.FullName, "目標衝突的檔案.flocked");
+        File.WriteAllBytes(conflictingPath, [9, 9, 9]);
+
+        var commit = await _service.CommitEncryptAsync(pending.Uuid);
+
+        Assert.False(commit.Success);
+        Assert.Equal(ErrorCodes.FlockedAlreadyExists, commit.ErrorCode);
+        var metadata = new VaultManager(_vaultDir.FullName).LoadMetadata(pending.Uuid);
+        Assert.Equal(LockStatus.Pending, metadata!.Status); // 沒有自動回滾，留在 Pending 讓使用者決定
+    }
+
+    [Fact]
+    public async Task RollbackPendingEncryptAsync_StandaloneMode_CleansUpStagedContentLeavesOriginalUntouched()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "要取消的分散式檔案.txt");
+        const string originalContent = "使用者按了取消";
+        File.WriteAllText(filePath, originalContent);
+        var pending = await _service.EncryptPendingAsync(filePath, "cancel-password", null, storageMode: StorageMode.Standalone);
+        Assert.True(pending.Success);
+
+        await _service.RollbackPendingEncryptAsync(pending.Uuid);
+
+        Assert.True(File.Exists(filePath));
+        Assert.Equal(originalContent, File.ReadAllText(filePath));
+        Assert.Null(new VaultManager(_vaultDir.FullName).LoadMetadata(pending.Uuid));
+        Assert.False(File.Exists(Path.Combine(_workDir.FullName, "要取消的分散式檔案.flocked")));
+    }
+
+    [Fact]
+    public async Task EncryptAsync_StandaloneMode_OneShot_CreatesFlockedFileWithoutLockedMarker()
+    {
+        // 對應 CLI／舊版精靈會用的一次到位包裝——確認 storageMode 參數有從 EncryptAsync
+        // 一路轉呼叫到 EncryptPendingAsync，不是只有分段式的信封流程能用這個功能。
+        var filePath = Path.Combine(_workDir.FullName, "一次到位的分散式檔案.txt");
+        File.WriteAllText(filePath, "內容");
+
+        var result = await _service.EncryptAsync(filePath, "one-shot-password", null, storageMode: StorageMode.Standalone);
+
+        Assert.True(result.Success);
+        Assert.False(File.Exists(filePath));
+        var expectedFlockedPath = Path.Combine(_workDir.FullName, "一次到位的分散式檔案.flocked");
+        Assert.True(File.Exists(expectedFlockedPath));
+        Assert.Equal(expectedFlockedPath, result.LockedMarkerPath);
+    }
+
+    [Fact]
+    public async Task DecryptByUuidAsync_StandaloneMode_ReadsContentFromFlockedFileAndCleansItUp()
+    {
+        // 對應功能規劃 §8：清單頁直接解密，正常情境（.flocked 還在記錄的原始路徑上）。
+        var filePath = Path.Combine(_workDir.FullName, "要解密的分散式檔案.txt");
+        const string originalContent = "分散式加密的內容";
+        File.WriteAllText(filePath, originalContent);
+        var lockResult = await _service.EncryptAsync(filePath, "decrypt-password", null, storageMode: StorageMode.Standalone);
+        Assert.True(lockResult.Success);
+
+        var unlockResult = await _service.DecryptByUuidAsync(lockResult.Uuid, "decrypt-password");
+
+        Assert.True(unlockResult.Success);
+        Assert.True(File.Exists(filePath));
+        Assert.Equal(originalContent, File.ReadAllText(filePath));
+        // 解密成功後，.flocked 本體（已經被讀完內容、任務完成）要跟著清掉，
+        // 比照 .locked 指標檔解密成功後會被刪除的既有行為。
+        Assert.False(File.Exists(Path.Combine(_workDir.FullName, "要解密的分散式檔案.flocked")));
+        Assert.Null(new VaultManager(_vaultDir.FullName).LoadMetadata(lockResult.Uuid));
+    }
+
+    [Fact]
+    public async Task DecryptByUuidAsync_StandaloneMode_WrongPassword_FailsWithoutDeletingFlockedFile()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "密碼錯誤的分散式檔案.txt");
+        File.WriteAllText(filePath, "內容");
+        var lockResult = await _service.EncryptAsync(filePath, "correct-password", null, storageMode: StorageMode.Standalone);
+        Assert.True(lockResult.Success);
+
+        var unlockResult = await _service.DecryptByUuidAsync(lockResult.Uuid, "wrong-password");
+
+        Assert.False(unlockResult.Success);
+        Assert.True(File.Exists(Path.Combine(_workDir.FullName, "密碼錯誤的分散式檔案.flocked")));
+    }
+
     // ---- 獨立解密流程（信封＋Sheet，定案文件 §1.11）：Verify/Commit/Cancel 交易模型 ----
     // Passkey 路徑需要真的 Windows Hello 硬體才能測，跟既有 DecryptByPasskeyAsync 一樣沒有
     // 對應的單元測試，這裡只覆蓋密碼／恢復金鑰兩條路徑＋共用的 Commit/Cancel 行為。

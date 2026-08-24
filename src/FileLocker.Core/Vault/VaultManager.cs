@@ -201,6 +201,14 @@ public class VaultManager
         }
     }
 
+    /// <summary>
+    /// 對應「單檔案分散式加密」功能規劃 §7：commit 階段要把 Pending 期間暫存在 Vault 裡的
+    /// 密文（跟集中庫加密共用同一個暫存位置，見 LockService.EncryptToVault 的說明）直接搬
+    /// 到最終位置（原地或使用者指定的資料夾），用檔案系統層級的 File.Move，不需要重新讀寫
+    /// 整份內容——曝露這個路徑讓 LockService 可以做這個搬移。
+    /// </summary>
+    public string GetEncContentPath(string uuid) => EncPath(uuid);
+
     public Stream OpenEncryptedContentRead(string uuid) => File.OpenRead(EncPath(uuid));
 
     public Stream OpenEncryptedContentWrite(string uuid)

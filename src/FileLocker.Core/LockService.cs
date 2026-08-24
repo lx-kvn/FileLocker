@@ -68,11 +68,13 @@ public class LockService
         bool enablePasskey = false, IntPtr ownerWindowHandle = default,
         bool enableRecoveryKey = false, string? batchId = null,
         IProgress<double>? progress = null,
-        Action<bool>? onPasskeyVerifying = null)
+        Action<bool>? onPasskeyVerifying = null,
+        StorageMode storageMode = StorageMode.Vault,
+        string? destinationDir = null)
     {
         var pending = await EncryptPendingAsync(
             path, password, hint, enablePasskey, ownerWindowHandle, enableRecoveryKey, batchId,
-            progress, onPasskeyVerifying);
+            progress, onPasskeyVerifying, storageMode, destinationDir);
 
         if (!pending.Success)
         {
@@ -112,7 +114,9 @@ public class LockService
         bool enablePasskey = false, IntPtr ownerWindowHandle = default,
         bool enableRecoveryKey = false, string? batchId = null,
         IProgress<double>? progress = null,
-        Action<bool>? onPasskeyVerifying = null)
+        Action<bool>? onPasskeyVerifying = null,
+        StorageMode storageMode = StorageMode.Vault,
+        string? destinationDir = null)
     {
         var isFolder = Directory.Exists(path);
         var isFile = File.Exists(path);
@@ -136,6 +140,19 @@ public class LockService
             return new LockResult(false, "", "", $"目標位置已經有一個指標檔了：{markerPath}", ErrorCode: ErrorCodes.MarkerAlreadyExists, ErrorDetail: markerPath);
         }
 
+        // 單檔案分散式加密的目標是 .flocked，跟集中庫加密的 .locked 是不同檔名，理論上不會
+        // 撞上面那個檢查——這裡另外檢查一次真正的目標位置（原地或 destinationDir），一樣是
+        // 「先做便宜檢查、避免白白先壓縮完才發現要失敗」的理由，commit 階段也會再檢查一次
+        // （pending 到 commit 之間這段時間，目標位置仍然可能被其他操作搶先卡位）。
+        if (storageMode == StorageMode.Standalone)
+        {
+            var flockedTargetPath = ComputeStandaloneFlockedTargetPath(path, isFolder, destinationDir);
+            if (File.Exists(flockedTargetPath))
+            {
+                return new LockResult(false, "", "", $"目標位置已經有一個獨立密文檔了：{flockedTargetPath}", ErrorCode: ErrorCodes.FlockedAlreadyExists, ErrorDetail: flockedTargetPath);
+            }
+        }
+
         // 資料夾防護的 ACL 拒絕規則掛在目前登入帳號的 SID 上，這個行程本身也是用同一個帳號跑，
         // 讀取防護中的子資料夾一樣會被拒絕存取——同一個理由，這裡也要先做這個便宜的檢查，
         // 不要等 EncryptToVault 壓縮到一半才撞見 UnauthorizedAccessException（見規劃文件第 8 節）。
@@ -155,7 +172,7 @@ public class LockService
         EncryptionResult encryptResult;
         try
         {
-            encryptResult = await Task.Run(() => EncryptToVault(path, isFolder, password, progress));
+            encryptResult = await Task.Run(() => EncryptToVault(path, isFolder, password, storageMode, progress));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -275,7 +292,9 @@ public class LockService
                 RecoveryKeyEnabled = recoveryKeyWrappedBase64 is not null,
                 RecoveryKeyWrappedContentKey = recoveryKeyWrappedBase64,
                 BatchId = batchId,
-                Status = LockStatus.Pending
+                Status = LockStatus.Pending,
+                StorageMode = storageMode,
+                StandaloneDestinationDir = destinationDir
             };
             _vault.SaveMetadata(metadata);
 
@@ -325,6 +344,17 @@ public class LockService
             return new LockResult(false, "", "", $"找不到待確認的加密項目：{uuid}", ErrorCode: ErrorCodes.PendingItemNotFound, ErrorDetail: uuid);
         }
 
+        // 對應「單檔案分散式加密」功能規劃 §7：兩種模式 commit 階段實際做的事不同（寫 .locked
+        // marker vs. 把暫存密文搬到最終位置的 .flocked），分成兩個方法各自負責，不要擠在同一個
+        // 方法裡用一堆 if 分支——這兩段邏輯除了「都要更新 Status、寫 History」以外幾乎沒有共用
+        // 部分，硬併在一起只會更難讀。
+        return metadata.StorageMode == StorageMode.Standalone
+            ? await CommitStandaloneEncryptAsync(metadata)
+            : await CommitVaultEncryptAsync(metadata, uuid);
+    }
+
+    private async Task<LockResult> CommitVaultEncryptAsync(LockedItemMetadata metadata, string uuid)
+    {
         var originalPath = metadata.OriginalPath;
         var isFolder = metadata.Type == ItemType.Folder;
         var markerPath = MarkerStatusChecker.ComputeMarkerPath(originalPath, isFolder);
@@ -382,6 +412,103 @@ public class LockService
             // 舊版 EncryptAsync 那種「失敗就整個回滾」的行為在合併版本的 EncryptAsync 裡處理。
             return new LockResult(false, "", "", $"完成加密時發生錯誤：{ex.Message}", ErrorCode: ErrorCodes.CommitPendingEncryptFailed, ErrorDetail: ex.Message);
         }
+    }
+
+    /// <summary>
+    /// 對應「單檔案分散式加密」功能規劃 §7：不寫 .locked marker，改成把 EncryptToVault 階段
+    /// 已經暫存在 Vault 裡（含 .flocked header）的密文檔案，用 File.Move 直接搬到最終位置
+    /// （原地取代原始檔案，或使用者當初指定的 destinationDir）——密文內容不需要重新讀寫一次。
+    /// 搬移完成後 OriginalPath 要更新成新位置，之後 FlockedStatusChecker／解密流程才會查對
+    /// 地方（見 LockedItemMetadata.StorageMode 上的說明）。
+    /// </summary>
+    private async Task<LockResult> CommitStandaloneEncryptAsync(LockedItemMetadata metadata)
+    {
+        var uuid = metadata.Uuid;
+        var originalPath = metadata.OriginalPath;
+        var isFolder = metadata.Type == ItemType.Folder;
+        var finalFlockedPath = ComputeStandaloneFlockedTargetPath(originalPath, isFolder, metadata.StandaloneDestinationDir);
+
+        try
+        {
+            if (File.Exists(finalFlockedPath))
+            {
+                return new LockResult(false, "", "", $"目標位置已經有一個獨立密文檔了：{finalFlockedPath}", ErrorCode: ErrorCodes.FlockedAlreadyExists, ErrorDetail: finalFlockedPath);
+            }
+
+            var targetParentDir = Path.GetDirectoryName(finalFlockedPath);
+            if (!string.IsNullOrEmpty(targetParentDir))
+            {
+                // 原地取代的情境這個資料夾理論上一定存在（就是原始檔案所在的資料夾）；
+                // destinationDir 是使用者透過原生選資料夾對話框挑的，也一定存在——這裡
+                // 純粹是防禦性寫法，比照 VaultManager.SaveMetadata 對 Vault 資料夾本身的
+                // 既有慣例，不假設呼叫端一定先幫忙建好。
+                Directory.CreateDirectory(targetParentDir);
+            }
+            File.Move(_vault.GetEncContentPath(uuid), finalFlockedPath);
+
+            metadata.OriginalPath = metadata.StandaloneDestinationDir is null
+                ? originalPath
+                : Path.Combine(metadata.StandaloneDestinationDir, metadata.OriginalName);
+            metadata.Status = LockStatus.Committed;
+            _vault.SaveMetadata(metadata);
+
+            // 到這裡，.flocked 已經落地、metadata 已經標記完成——資料本身已經安全了。
+            // 清除原始明文是「收尾」動作，理由跟 CommitVaultEncryptAsync 完全一樣。
+            string? cleanupWarning = null;
+            try
+            {
+                await Task.Run(() =>
+                {
+                    if (isFolder)
+                    {
+                        SecureFileEraser.OverwriteAndDeleteFolder(originalPath);
+                    }
+                    else
+                    {
+                        SecureFileEraser.OverwriteAndDelete(originalPath);
+                    }
+                });
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                cleanupWarning = $"加密已完成，但清除原始檔案時發生錯誤，請手動確認並刪除原始檔案：{ex.Message}";
+            }
+
+            _history?.Append(new HistoryEntry(
+                uuid, metadata.OriginalName, HistoryAction.Encrypted, DateTimeOffset.UtcNow, metadata.Hint,
+                SourcePath: originalPath,
+                PasskeyEnabled: metadata.PasskeyEnabled,
+                RecoveryKeyEnabled: metadata.RecoveryKeyEnabled));
+
+            return new LockResult(true, uuid, finalFlockedPath, cleanupWarning);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 搬移到一半失敗（例如磁碟滿了）——項目留在 Pending，不在這裡自動回滾，理由跟
+            // CommitVaultEncryptAsync 完全一樣：呼叫端可能想讓使用者重試 commit。
+            return new LockResult(false, "", "", $"完成加密時發生錯誤：{ex.Message}", ErrorCode: ErrorCodes.CommitPendingEncryptFailed, ErrorDetail: ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 算出單檔案分散式加密最終要落腳的 .flocked 路徑——沒有 destinationDir 就是原地
+    /// （沿用 FlockedStatusChecker.ComputeFlockedPath 對 sourcePath 本身的計算）；有的話，
+    /// 先組出「假設這個項目現在人在 destinationDir 底下」的虛擬路徑，再套用同一套副檔名
+    /// 換算規則——EncryptPendingAsync（先做便宜的早期碰撞檢查）跟 CommitStandaloneEncryptAsync
+    /// （真正決定搬去哪）共用同一份計算，確保兩處算出來的路徑不會不一致。
+    /// </summary>
+    private static string ComputeStandaloneFlockedTargetPath(string sourcePath, bool isFolder, string? destinationDir)
+    {
+        if (destinationDir is null)
+        {
+            return FlockedStatusChecker.ComputeFlockedPath(sourcePath, isFolder);
+        }
+
+        var name = isFolder
+            ? Path.GetFileName(sourcePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            : Path.GetFileName(sourcePath);
+        var virtualOriginalPath = Path.Combine(destinationDir, name);
+        return FlockedStatusChecker.ComputeFlockedPath(virtualOriginalPath, isFolder);
     }
 
     /// <summary>
@@ -446,7 +573,8 @@ public class LockService
     /// 回傳的 EncryptionKey 刻意不在這裡清零——呼叫端（EncryptAsync）還要拿它去做 Passkey 包裝，
     /// 用完才會清零，見 EncryptAsync 的 finally 區塊。
     /// </summary>
-    private EncryptionResult EncryptToVault(string path, bool isFolder, string password, IProgress<double>? progress = null)
+    private EncryptionResult EncryptToVault(
+        string path, bool isFolder, string password, StorageMode storageMode, IProgress<double>? progress = null)
     {
         var nestedUuids = new List<string>();
         string contentPath;
@@ -496,6 +624,15 @@ public class LockService
             using (var plaintextStream = File.OpenRead(contentPath))
             using (var encStream = _vault.OpenEncryptedContentWrite(uuid))
             {
+                // Standalone 模式：Pending 階段先跟集中庫加密共用同一個 Vault 暫存位置
+                // （{uuid}.enc），只是內容前面多寫一段 .flocked header——這樣 commit 時只要
+                // 把這個檔案整個 File.Move 到最終位置就是一份合法的 .flocked 檔案，不需要
+                // 重新讀寫整份密文；Rollback 也直接沿用既有的 _vault.DeleteItem(uuid)，
+                // 不需要另外設計一套暫存檔清理機制。
+                if (storageMode == StorageMode.Standalone)
+                {
+                    FlockedFileFormat.WriteHeader(encStream, uuid);
+                }
                 ChunkedCipher.EncryptStream(derived.EncryptionKey, plaintextStream, encStream, progress: progress, totalBytes: originalSizeBytes);
             }
 
@@ -592,7 +729,7 @@ public class LockService
 
         if (result.Success)
         {
-            CleanupMarkerIfMatches(metadata, uuid);
+            CleanupOriginalArtifactIfMatches(metadata, uuid);
         }
 
         return result;
@@ -858,7 +995,7 @@ public class LockService
                 var result = DecryptAndRestore(pending.Metadata, pending.Password, destinationParentDir);
                 if (result.Success)
                 {
-                    CleanupMarkerIfMatches(pending.Metadata, uuid);
+                    CleanupOriginalArtifactIfMatches(pending.Metadata, uuid);
                 }
                 return result;
             }
@@ -904,7 +1041,7 @@ public class LockService
 
         if (result.Success)
         {
-            CleanupMarkerIfMatches(metadata, uuid);
+            CleanupOriginalArtifactIfMatches(metadata, uuid);
         }
 
         return result;
@@ -949,7 +1086,24 @@ public class LockService
     }
 
     /// <summary>
-    /// DecryptByUuidCore／DecryptByPasskeyAsync／DecryptByRecoveryKeyAsync 共用：解密成功後，
+    /// DecryptByUuidCore／DecryptByPasskeyAsync／DecryptByRecoveryKeyAsync／TryDeleteRecordAsync
+    /// 共用：解密成功（或使用者直接刪除紀錄）後，把原本位置留著的「這筆加密實際的產出物」
+    /// 清掉——Vault 模式是 .locked 指標檔，Standalone 模式是 .flocked 檔案本體，兩者的檔案
+    /// 格式、驗證方式都不一樣（見各自類別上的說明），依 StorageMode 分派給對應的實作，
+    /// 呼叫端不用自己判斷該用哪一套。
+    /// </summary>
+    private void CleanupOriginalArtifactIfMatches(LockedItemMetadata metadata, string uuid)
+    {
+        if (metadata.StorageMode == StorageMode.Standalone)
+        {
+            CleanupFlockedIfMatches(metadata, uuid);
+            return;
+        }
+
+        CleanupMarkerIfMatches(metadata, uuid);
+    }
+
+    /// <summary>
     /// 反推原本 .locked 應該在的位置，有（而且真的是同一個 UUID、簽章也驗證通過）就清掉，
     /// 避免留下一個已經失效、會誤導使用者的指標檔；沒有就跳過。
     /// 這裡刻意額外驗證簽章、不能只看 UUID 是否相符——metadata.OriginalPath 是明文的本機資料，
@@ -979,6 +1133,27 @@ public class LockService
         }
 
         File.Delete(expectedMarkerPath);
+    }
+
+    /// <summary>
+    /// 跟 CleanupMarkerIfMatches 平行：反推原本 .flocked 應該在的位置，UUID 對得上就刪掉。
+    /// .flocked 沒有像 .locked 那樣的獨立簽章可以驗證（見 FlockedFileFormat 上的說明——完整性
+    /// 由密文串流自己的 AES-GCM Auth Tag 保護），這裡的 UUID 比對已經是能做的最後一道防線。
+    /// </summary>
+    private void CleanupFlockedIfMatches(LockedItemMetadata metadata, string uuid)
+    {
+        var expectedFlockedPath = FlockedStatusChecker.ComputeFlockedPath(metadata.OriginalPath, metadata.Type == ItemType.Folder);
+        if (!File.Exists(expectedFlockedPath))
+        {
+            return;
+        }
+
+        if (!FlockedFileFormat.TryReadUuid(expectedFlockedPath, out var foundUuid) || foundUuid != uuid)
+        {
+            return;
+        }
+
+        File.Delete(expectedFlockedPath);
     }
 
     /// <summary>密碼路徑：驗證密碼、拿到內容金鑰後，交給 RestoreFromKey 做剩下的還原工作。</summary>
@@ -1094,6 +1269,31 @@ public class LockService
     }
 
     /// <summary>
+    /// 對應「單檔案分散式加密」功能規劃 §8：算出密文串流的來源——Vault 模式維持原樣讀
+    /// {uuid}.enc；Standalone 模式改讀 .flocked 檔案本體，跳過 header 並驗證裡面的 UUID
+    /// 真的對得上這筆 metadata（防禦：避免 OriginalPath 被竄改指到別的 .flocked 檔案時
+    /// 誤把不相關的內容解出來）。header 無法解析或 UUID 不符都丟 InvalidDataException，
+    /// 跟 RestoreFromKey 既有的「內容損毀」錯誤路徑共用同一套處理（見那裡的 catch 區塊）。
+    /// </summary>
+    private Stream OpenContentStreamForDecrypt(LockedItemMetadata metadata)
+    {
+        if (metadata.StorageMode != StorageMode.Standalone)
+        {
+            return _vault.OpenEncryptedContentRead(metadata.Uuid);
+        }
+
+        var flockedPath = FlockedStatusChecker.ComputeFlockedPath(metadata.OriginalPath, metadata.Type == ItemType.Folder);
+        var stream = File.OpenRead(flockedPath);
+        if (!FlockedFileFormat.TryReadHeader(stream, out var headerUuid) || headerUuid != metadata.Uuid)
+        {
+            stream.Dispose();
+            throw new InvalidDataException(".flocked 檔案的 header 無法解析，或裡面的 UUID 跟這筆紀錄不符");
+        }
+
+        return stream;
+    }
+
+    /// <summary>
     /// DecryptAndRestore（密碼路徑）跟 DecryptByPasskeyAsync／DecryptByRecoveryKeyAsync 共用的核心還原邏輯：
     /// 拿到內容金鑰之後，解密內容、寫回目的地、清除 Vault 內的項目、記錄歷史紀錄。
     /// 呼叫端負責把 encryptionKey 準備好（不管是密碼衍生、Passkey 解包，還是恢復金鑰解包出來的），
@@ -1134,7 +1334,10 @@ public class LockService
             try
             {
                 // 串流解密：一次只處理一個 chunk，全程不會有「整份明文」同時存在記憶體裡。
-                using (var encStream = _vault.OpenEncryptedContentRead(metadata.Uuid))
+                // StorageMode=Standalone 的項目密文不在 Vault 裡（commit 時已經搬到 .flocked
+                // 檔案本體，見 CommitStandaloneEncryptAsync），改從那裡讀，讀之前要先跳過
+                // 前面的 header 並確認 UUID 對得上——理由跟 FlockedStatusChecker 一致。
+                using (var encStream = OpenContentStreamForDecrypt(metadata))
                 using (var outputStream = File.Create(actualWritePath))
                 {
                     ChunkedCipher.DecryptStream(encryptionKey, encStream, outputStream);
@@ -1208,10 +1411,11 @@ public class LockService
 
             _vault.DeleteItem(uuid);
 
-            // Vault 裡的加密內容刪掉之後，原本位置的 .locked 指標檔會變成一個指向不存在內容的死連結——
-            // 順便清掉它，避免使用者之後雙擊到一個只會顯示「找不到對應的加密紀錄」的失效檔案。
-            // 沿用跟解密成功後一樣的簽章驗證邏輯，確保不會誤刪到別的項目的指標檔。
-            CleanupMarkerIfMatches(metadata, uuid);
+            // Vault 裡的加密內容刪掉之後，原本位置留著的產出物（.locked 指標檔，或
+            // Standalone 模式的 .flocked 檔案本體）會變成一個指向不存在內容的死連結／孤兒
+            // 密文——順便清掉它，避免使用者之後雙擊到一個只會顯示「找不到對應的加密紀錄」
+            // 的失效檔案，或留著一份已經沒有對應紀錄、卻還裝著實際密文的孤兒檔案。
+            CleanupOriginalArtifactIfMatches(metadata, uuid);
 
             _history?.Append(new HistoryEntry(uuid, metadata.OriginalName, HistoryAction.RecordDeleted, DateTimeOffset.UtcNow, null));
 

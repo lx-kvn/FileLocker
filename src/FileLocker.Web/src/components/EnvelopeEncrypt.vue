@@ -26,6 +26,11 @@ import envelopeFlapDarkUrl from '../assets/Envelope_Flap_Dark.svg'
 import waxDripBackUrl from '../assets/Wax_Drip_Back.svg'
 import envelopeWaxSealUrl from '../assets/Envelope_Wax_Seal.svg'
 import postmarkNestedLockUrl from '../assets/Postmark_Nested_Lock.svg'
+// 對應「單檔案分散式加密」功能規劃 §5：跟 .locked 指標檔同一個視覺家族（文件＋鎖頭），
+// 多畫兩條內容線區分「裡面真的裝著東西」——這裡只是勾選框旁邊的小圖示，不需要跟
+// passkeyIconUrl／recoveryKeyIconUrl 那樣分深淺色兩版，圖示本身自帶白色描邊，深淺背景
+// 下對比度都夠，沒有另外做深色版本的必要。
+import flockedIconUrl from '../assets/Locked_File_flocked_icon.svg'
 
 const props = defineProps({
   t: { type: Function, required: true },
@@ -36,6 +41,14 @@ const props = defineProps({
   enablePasskey: { type: Boolean, default: false },
   enableRecoveryKey: { type: Boolean, default: false },
   disablePasskeyRecoveryKey: { type: Boolean, default: false },
+  // 對應「單檔案分散式加密」功能規劃 §3：跟 enablePasskey／enableRecoveryKey 不一樣，這個
+  // 勾選項在批次加密時不用停用（規劃文件 §2：跟現有加密功能同範圍，單一檔案/批次/資料夾
+  // 都支援，沒有 disablePasskeyRecoveryKey 那種「批次不支援」的限制）。
+  enableStandaloneMode: { type: Boolean, default: false },
+  // 使用者選定的目的地資料夾（勾了「存放到其他地方」才會有值）；null 代表原地取代原始檔案。
+  // 這個狀態由 App.vue 持有（實際選資料夾要透過原生對話框，這個元件本身不碰檔案系統），
+  // 這裡只負責顯示跟觸發挑選/清除，比照 passkeyIconUrl 這類「App.vue 算好、往下傳」的既有模式。
+  standaloneDestinationDir: { type: String, default: null },
   passkeyIconUrl: { type: String, default: '' },
   recoveryKeyIconUrl: { type: String, default: '' },
   // 深色模式判斷跟 passkeyIconUrl／recoveryKeyIconUrl 是同一套既有慣例：App.vue 的深色模式
@@ -60,8 +73,22 @@ const emit = defineEmits([
   'pick-file', 'pick-folder', 'remove-path', 'clear-paths', 'drop',
   'update:password', 'update:passwordConfirm', 'update:hint',
   'update:enablePasskey', 'update:enableRecoveryKey',
+  'update:enableStandaloneMode', 'update:standaloneDestinationDir', 'pick-standalone-destination',
   'submit', 'confirm', 'cancel', 'fly-away-complete',
 ])
+
+// 子選項（存放到其他地方）打勾／取消打勾要做不同的事：打勾是「開始挑選」（觸發原生選
+// 資料夾對話框，這個元件自己不能決定選了哪裡），取消打勾是「清掉已經選定的路徑，改回
+// 原地取代」——這裡不能直接用一個獨立的本地 ref 存「是否勾選」，因為勾選狀態本身就該
+// 完全由 standaloneDestinationDir 是不是有值決定（單一事實來源），不然使用者取消原生
+// 對話框時（App.vue 沒有拿到新路徑）這裡的勾選狀態會跟 standaloneDestinationDir 兜不起來。
+function onToggleStandaloneOtherLocation(checked) {
+  if (checked) {
+    emit('pick-standalone-destination')
+  } else {
+    emit('update:standaloneDestinationDir', null)
+  }
+}
 
 // ---- 時序常數（技術規格 §2.10／§2.11，跟 mockup 完全一致的數值） ----
 const DROP_MS = 820
@@ -600,6 +627,34 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
             <span class="info-tooltip__bubble">{{ t('encrypt.passkeyRecoveryKeyBatchDisabled') }}</span>
           </span>
         </div>
+        <div class="checkbox-row">
+          <label>
+            <input
+              data-field="enableStandaloneMode"
+              type="checkbox"
+              :checked="enableStandaloneMode"
+              @change="emit('update:enableStandaloneMode', $event.target.checked)"
+            />
+            <img :src="flockedIconUrl" alt="" />
+            {{ t('encrypt.standaloneModeLabel') }}
+          </label>
+          <span class="info-tooltip" tabindex="0">
+            <span class="info-tooltip__icon info-tooltip__icon--plain">?</span>
+            <span class="info-tooltip__bubble">{{ t('encrypt.standaloneModeHint') }}</span>
+          </span>
+        </div>
+        <div v-if="enableStandaloneMode" class="checkbox-row checkbox-row--nested">
+          <label>
+            <input
+              data-field="standaloneOtherLocation"
+              type="checkbox"
+              :checked="!!standaloneDestinationDir"
+              @change="onToggleStandaloneOtherLocation($event.target.checked)"
+            />
+            {{ t('encrypt.standaloneOtherLocationLabel') }}
+          </label>
+          <span v-if="standaloneDestinationDir" class="standalone-destination-path" :title="standaloneDestinationDir">{{ standaloneDestinationDir }}</span>
+        </div>
       </div>
 
       <div v-if="phase === 'processing'" class="progress-bar" role="progressbar" :aria-valuenow="Math.round(progressPercent)">
@@ -1019,6 +1074,21 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* 「存放到其他地方」是「單檔案分散式加密」底下的子選項，小幅縮排讓從屬關係一眼看得出來，
+   跟上面主選項那排的間距沒有另外拉開，避免看起來像獨立的第三個選項。 */
+.checkbox-row--nested {
+  margin-left: 20px;
+}
+
+.standalone-destination-path {
+  font-size: 12px;
+  color: var(--color-text-secondary, var(--color-text-tertiary));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .progress-bar {

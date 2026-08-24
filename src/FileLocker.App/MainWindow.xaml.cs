@@ -638,6 +638,13 @@ public partial class MainWindow : Window
         var hint = request.TryGetProperty("hint", out var hintProp) ? hintProp.GetString() : null;
         var enablePasskey = request.TryGetProperty("enablePasskey", out var passkeyProp) && passkeyProp.GetBoolean();
         var enableRecoveryKey = request.TryGetProperty("enableRecoveryKey", out var recoveryProp) && recoveryProp.GetBoolean();
+        // 對應「單檔案分散式加密」功能規劃 §3：前端只送一個是非題（要不要用分散式模式），
+        // 這裡才轉換成 StorageMode 這個 Core 層的列舉，前端不需要知道這個列舉的存在。
+        var standaloneMode = request.TryGetProperty("standaloneMode", out var standaloneModeProp) && standaloneModeProp.GetBoolean();
+        var storageMode = standaloneMode ? StorageMode.Standalone : StorageMode.Vault;
+        var destinationDir = request.TryGetProperty("destinationDir", out var destinationDirProp) && destinationDirProp.ValueKind != JsonValueKind.Null
+            ? destinationDirProp.GetString()
+            : null;
 
         var ownerWindowHandle = enablePasskey ? new WindowInteropHelper(this).Handle : IntPtr.Zero;
 
@@ -648,7 +655,8 @@ public partial class MainWindow : Window
 
         await foreach (var item in _protocolHandlers.EncryptPendingBatchAsync(
             paths, password, hint, enablePasskey, enableRecoveryKey, ownerWindowHandle, progress,
-            verifying => SendToFrontend(new { type = "encryptPasskeyVerifying", verifying })))
+            verifying => SendToFrontend(new { type = "encryptPasskeyVerifying", verifying }),
+            storageMode, destinationDir))
         {
             if (item.Success)
             {
@@ -1816,7 +1824,15 @@ public partial class MainWindow : Window
 
         var dialog = new Microsoft.Win32.OpenFolderDialog
         {
-            Title = purpose == "decryptDestination" ? "選擇要還原到哪個資料夾" : "選擇要加密的資料夾"
+            Title = purpose switch
+            {
+                "decryptDestination" => "選擇要還原到哪個資料夾",
+                // 對應「單檔案分散式加密」功能規劃 §3：勾選「存放到其他地方」時選的目的地資料夾，
+                // 跟既有的 decryptDestination／預設情境是三種不同標題，比照既有 switch 寫法列出來，
+                // 不要塞進三元運算子擠成一行看不清楚。
+                "flockedDestination" => "選擇 .flocked 檔案要存到哪個資料夾",
+                _ => "選擇要加密的資料夾"
+            }
         };
 
         if (dialog.ShowDialog(this) == true)

@@ -113,6 +113,39 @@ public class VaultProtocolHandlersTests : IDisposable
     }
 
     [Fact]
+    public async Task EncryptPendingBatchAsync_StandaloneMode_ThreadsStorageModeAndDestinationDirToLockService()
+    {
+        // 對應「單檔案分散式加密」功能規劃 §7，實作計畫片 5：確認這一層薄包裝真的有把
+        // storageMode／destinationDir 轉呼叫下去，不是只加了參數卻沒接起來。
+        var path = CreateWorkFile("分散式待確認.txt", "內容");
+        var destinationDir = Directory.CreateTempSubdirectory("FileLockerFlockedDestination_").FullName;
+
+        try
+        {
+            EncryptPendingItemResponse? pending = null;
+            await foreach (var item in _handlers.EncryptPendingBatchAsync(
+                [path], "correct-password", null, false, false, IntPtr.Zero,
+                storageMode: StorageMode.Standalone, destinationDir: destinationDir))
+            {
+                pending = item;
+            }
+
+            Assert.True(pending!.Success);
+            var metadata = _vaultManager.LoadMetadata(pending.Uuid);
+            Assert.Equal(StorageMode.Standalone, metadata!.StorageMode);
+            Assert.Equal(destinationDir, metadata.StandaloneDestinationDir);
+
+            var commitResult = await _handlers.CommitEncryptAsync(pending.Uuid);
+            Assert.True(commitResult.Success);
+            Assert.True(File.Exists(Path.Combine(destinationDir, "分散式待確認.flocked")));
+        }
+        finally
+        {
+            Directory.Delete(destinationDir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task CommitEncryptAsync_ThenRollbackPendingEncryptAsync_BothDelegateToLockService()
     {
         var commitPath = CreateWorkFile("要提交.txt", "內容");

@@ -19,6 +19,8 @@ function mountEnvelope(props = {}) {
       hint: '',
       enablePasskey: false,
       enableRecoveryKey: false,
+      enableStandaloneMode: false,
+      standaloneDestinationDir: null,
       phase: 'form',
       progressPercent: 0,
       pendingSummary: null,
@@ -110,6 +112,69 @@ describe('EnvelopeEncrypt', () => {
     await wrapper.vm.$nextTick()
 
     expect(wrapper.find('.sheet--password').classes()).not.toContain('sheet--hidden')
+  })
+
+  describe('單檔案分散式加密勾選項（規劃文件 §3、實作計畫片 5）', () => {
+    async function gotoStep2(wrapper) {
+      await vi.advanceTimersByTimeAsync(2000)
+      await wrapper.vm.$nextTick()
+      await wrapper.find('[data-action="next"]').trigger('click')
+      await vi.advanceTimersByTimeAsync(500)
+      await wrapper.vm.$nextTick()
+    }
+
+    it('勾選主選項會 emit update:enableStandaloneMode', async () => {
+      const wrapper = mountEnvelope({ paths: ['C:\\a.txt'] })
+      await gotoStep2(wrapper)
+
+      await wrapper.find('[data-field="enableStandaloneMode"]').setValue(true)
+
+      expect(wrapper.emitted('update:enableStandaloneMode')).toEqual([[true]])
+    })
+
+    it('沒勾主選項時，「存放到其他地方」子選項不顯示', async () => {
+      const wrapper = mountEnvelope({ paths: ['C:\\a.txt'], enableStandaloneMode: false })
+      await gotoStep2(wrapper)
+
+      expect(wrapper.find('[data-field="standaloneOtherLocation"]').exists()).toBe(false)
+    })
+
+    it('勾了主選項後，子選項才會顯示', async () => {
+      const wrapper = mountEnvelope({ paths: ['C:\\a.txt'], enableStandaloneMode: true })
+      await gotoStep2(wrapper)
+
+      expect(wrapper.find('[data-field="standaloneOtherLocation"]').exists()).toBe(true)
+    })
+
+    it('勾選子選項（目前還沒選定目的地）會 emit pick-standalone-destination 觸發選資料夾，不會直接改本地狀態', async () => {
+      const wrapper = mountEnvelope({ paths: ['C:\\a.txt'], enableStandaloneMode: true, standaloneDestinationDir: null })
+      await gotoStep2(wrapper)
+
+      await wrapper.find('[data-field="standaloneOtherLocation"]').setValue(true)
+
+      expect(wrapper.emitted('pick-standalone-destination')).toHaveLength(1)
+    })
+
+    it('已經選定 destinationDir 時，子選項顯示為勾選並顯示選定的路徑', async () => {
+      const wrapper = mountEnvelope({
+        paths: ['C:\\a.txt'], enableStandaloneMode: true, standaloneDestinationDir: 'D:\\我的資料夾',
+      })
+      await gotoStep2(wrapper)
+
+      expect(wrapper.find('[data-field="standaloneOtherLocation"]').element.checked).toBe(true)
+      expect(wrapper.text()).toContain('D:\\我的資料夾')
+    })
+
+    it('取消勾選子選項（已經選定過目的地）會 emit update:standaloneDestinationDir 帶 null，清掉選定路徑', async () => {
+      const wrapper = mountEnvelope({
+        paths: ['C:\\a.txt'], enableStandaloneMode: true, standaloneDestinationDir: 'D:\\我的資料夾',
+      })
+      await gotoStep2(wrapper)
+
+      await wrapper.find('[data-field="standaloneOtherLocation"]').setValue(false)
+
+      expect(wrapper.emitted('update:standaloneDestinationDir')).toEqual([[null]])
+    })
   })
 
   it('點選擇檔案／選擇資料夾會 emit pick-file／pick-folder', async () => {

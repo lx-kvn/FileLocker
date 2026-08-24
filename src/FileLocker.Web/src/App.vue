@@ -337,6 +337,11 @@ const showPasswordPromptValue = ref(false)
 const hint = ref('')
 const enablePasskey = ref(false)
 const enableRecoveryKey = ref(false)
+// 對應「單檔案分散式加密」功能規劃 §3：storageMode 這個內部詞彙不直接暴露成 ref 名稱，
+// 用使用者實際勾選的意圖命名（是否啟用分散式模式／存放到其他地方的資料夾），送 IPC
+// 時才轉換成 StorageMode.Standalone／Vault（見 submitEncryptPending）。
+const enableStandaloneMode = ref(false)
+const standaloneDestinationDir = ref(null)
 const recoveryKeyDisplay = ref('') // 非空字串時顯示恢復金鑰彈窗
 const recoveryKeySaveState = ref('') // '' | 'saved' | 'acknowledged'
 
@@ -381,7 +386,13 @@ async function submitEncryptPending() {
     password: encryptPassword.value,
     hint: hint.value,
     enablePasskey: isBatch ? false : enablePasskey.value,
-    enableRecoveryKey: isBatch ? false : enableRecoveryKey.value
+    enableRecoveryKey: isBatch ? false : enableRecoveryKey.value,
+    // 對應「單檔案分散式加密」功能規劃 §3：布林值直接送，不送 StorageMode 這個內部列舉的
+    // 字串名稱——C# 端只需要一個是非題（要不要用分散式模式），不需要知道這個列舉本身的存在，
+    // 少一層字串對應要維護。destinationDir 是 null 就是原地取代，跟 GUI 上不勾「存放到其他
+    // 地方」同一個意思，C# 端直接原樣轉成 LockService 的 destinationDir 參數。
+    standaloneMode: enableStandaloneMode.value,
+    destinationDir: standaloneDestinationDir.value
   })
 }
 
@@ -1005,6 +1016,12 @@ const messageHandlers = {
       // （要等關門動畫播完、懸浮層消失才上鎖，見定案文件〈新增資料夾的開門儀式〉）。
       resolveFolderGuardPick?.({ path: data.path })
       resolveFolderGuardPick = null
+    } else if (data.purpose === 'flockedDestination') {
+      // 對應「單檔案分散式加密」功能規劃 §3：使用者選好「存放到其他地方」的目的地資料夾。
+      // 取消（沒有選）不用特別處理——EnvelopeEncrypt.vue 只有在 standaloneDestinationDir
+      // 還是 null 的時候才會觸發這個 pick，取消的話它本來就還是 null，checkbox 自然維持
+      // 未勾選狀態，不需要額外的 pathPickCancelled 分支去復原什麼。
+      standaloneDestinationDir.value = data.path
     } else {
       // 資料夾選擇（單選）走這裡，加到清單裡而不是取代整份清單。
       if (!encryptPaths.value.includes(data.path)) {
@@ -1807,6 +1824,8 @@ function closeEncryptOverlayAndResetForm() {
   hint.value = ''
   enablePasskey.value = false
   enableRecoveryKey.value = false
+  enableStandaloneMode.value = false
+  standaloneDestinationDir.value = null
 }
 
 /// 拖放檔案：一般的 postMessage 只能傳可以轉成 JSON 的資料，瀏覽器沙盒化的 File 物件本身
@@ -3099,6 +3118,8 @@ const isAnyBlockingModalOpen = computed(() =>
           :hint="hint"
           :enable-passkey="enablePasskey"
           :enable-recovery-key="enableRecoveryKey"
+          :enable-standalone-mode="enableStandaloneMode"
+          :standalone-destination-dir="standaloneDestinationDir"
           :disable-passkey-recovery-key="encryptPaths.length > 1"
           :passkey-icon-url="passkeyIconUrl"
           :recovery-key-icon-url="recoveryKeyIconUrl"
@@ -3117,6 +3138,9 @@ const isAnyBlockingModalOpen = computed(() =>
           @update:hint="hint = $event"
           @update:enable-passkey="enablePasskey = $event"
           @update:enable-recovery-key="enableRecoveryKey = $event"
+          @update:enable-standalone-mode="enableStandaloneMode = $event"
+          @update:standalone-destination-dir="standaloneDestinationDir = $event"
+          @pick-standalone-destination="sendMessage('pickFolder', { purpose: 'flockedDestination' })"
           @submit="submitEncryptPending"
           @confirm="confirmEncryptPending"
           @cancel="encryptPhase === 'form' ? closeEncryptOverlayAndResetForm() : cancelEncryptPending()"

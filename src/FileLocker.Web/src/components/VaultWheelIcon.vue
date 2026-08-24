@@ -15,6 +15,10 @@ import vaultWheelBottomUrl from '../assets/Vault_Wheel_bottom.svg'
 import vaultWheelListTopUrl from '../assets/Vault_Wheel_List_top.svg'
 import vaultWheelListMiddleUrl from '../assets/Vault_Wheel_List_middle.svg'
 import vaultWheelListBottomUrl from '../assets/Vault_Wheel_List_bottom.svg'
+// 清單小轉輪專用的背景襯底（使用者自己畫的，取代先前 CSS 深灰方塊的試做版）——疊在 bottom
+// 圖層下面、z-index 最低，不參與旋轉動畫（跟 top/bottom 一樣是固定不動的靜態層，只有
+// middle 那層會轉）。金庫層大轉輪（dimUnlocked=false）不用這個背景，維持原本鏤空的樣子。
+import vaultWheelBackgroundUrl from '../assets/Vault_Wheel_Background.svg'
 
 // 常態鎖定/解鎖用同一套顏色，靠角度＋透明度區分（定案文件〈清單常態圖示的狀態區分〉）。
 // 這兩個數字是先給一個合理起手值，實際效果要用 run skill 截圖走查後再微調，不是定死的規格。
@@ -139,6 +143,7 @@ defineExpose({ wiggle, spin, skipSpin })
     :class="{ 'is-locked': displayLocked, 'is-unlocked': !displayLocked && dimUnlocked, 'is-wiggling': wiggling }"
     :style="{ width: `${size}px`, height: `${size}px` }"
   >
+    <img v-if="dimUnlocked" :src="vaultWheelBackgroundUrl" alt="" class="vault-wheel-icon__layer vault-wheel-icon__layer--background" />
     <img :src="wheelBottomUrl" alt="" class="vault-wheel-icon__layer vault-wheel-icon__layer--bottom" />
     <img
       ref="wheelImgEl"
@@ -178,6 +183,7 @@ defineExpose({ wiggle, spin, skipSpin })
   object-fit: contain;
 }
 
+.vault-wheel-icon__layer--background { z-index: 0; }
 .vault-wheel-icon__layer--bottom { z-index: 1; }
 .vault-wheel-icon__layer--middle { z-index: 2; }
 .vault-wheel-icon__layer--top { z-index: 3; }

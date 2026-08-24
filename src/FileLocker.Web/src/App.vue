@@ -4063,7 +4063,11 @@ const isAnyBlockingModalOpen = computed(() =>
             <div v-if="folderGuardItems.length > 0" class="table-scroll">
               <table class="table table--folder-guard">
                 <colgroup>
-                  <col style="width: 52px;" />
+                  <!-- 圖示欄寬度：表格 table-layout:fixed，欄跟欄的分界是靠這裡宣告的寬度決定，
+                       不是靠 cell padding——原本 52px 只夠塞下 44px 圖示加一點點邊距，加大跟右邊
+                       路徑文字的間距要放大這個數字，不能只加 td 的 padding-right（那樣只是在
+                       固定寬度的框框裡面推，框框本身不會變寬，右邊欄的起始位置完全不會動）。 -->
+                  <col style="width: 80px;" />
                   <col style="width: 37%;" />
                   <col style="width: 15%;" />
                   <col style="width: 45%;" />
@@ -4399,6 +4403,12 @@ const isAnyBlockingModalOpen = computed(() =>
             {{ t('settings.title') }}
           </h1>
 
+          <div class="settings-group">
+          <h2 class="settings-group__header">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"><line x1="4" y1="6" x2="20" y2="6"/><circle cx="9" cy="6" r="2" fill="var(--color-bg)"/><line x1="4" y1="12" x2="20" y2="12"/><circle cx="15" cy="12" r="2" fill="var(--color-bg)"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="7" cy="18" r="2" fill="var(--color-bg)"/></svg>
+            {{ t('settings.groupGeneralTitle') }}
+          </h2>
+
           <section class="settings-section">
             <h3 class="settings-section__title">{{ t('settings.vaultLocationTitle') }}</h3>
             <p class="vault-path-display" :title="settingsVaultPath">{{ settingsVaultPath }}</p>
@@ -4493,6 +4503,13 @@ const isAnyBlockingModalOpen = computed(() =>
             </div>
             <p class="hint-text">{{ t('settings.windowControlStyleHint') }}</p>
           </section>
+          </div>
+
+          <div class="settings-group">
+          <h2 class="settings-group__header">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"><path d="M12 3 4 6v6c0 5 3.5 7.7 8 9 4.5-1.3 8-4 8-9V6l-8-3Z"/></svg>
+            {{ t('settings.groupSecurityTitle') }}
+          </h2>
 
           <section class="settings-section">
             <h3 class="settings-section__title">{{ t('settings.criticalActionTitle') }}</h3>
@@ -4672,6 +4689,13 @@ const isAnyBlockingModalOpen = computed(() =>
               </button>
             </div>
           </section>
+          </div>
+
+          <div class="settings-group">
+          <h2 class="settings-group__header">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16"/><circle cx="12" cy="8" r="0.6" fill="currentColor" stroke="none"/></svg>
+            {{ t('settings.groupAboutTitle') }}
+          </h2>
 
           <section class="settings-section">
             <h3 class="settings-section__title">{{ t('settings.helpTitle') }}</h3>
@@ -4695,6 +4719,7 @@ const isAnyBlockingModalOpen = computed(() =>
               </button>
             </template>
           </section>
+          </div>
 
           <p v-if="settingsSaveMessage" class="status-message status-message--success">{{ settingsSaveMessage }}</p>
         </div>
@@ -7378,6 +7403,44 @@ button:focus-visible,
 }
 
 /* ---- 設定頁籤 ---- */
+/* 卡片式分組（GUI造型探索_定案文件 §6）：11 個既有 .settings-section 攤平在同一條捲軸上，
+   使用者要找特定開關會退化成「用捲輪找設定」，不是「掃一眼找到」。分成一般／安全性／關於
+   三組，用卡片背景/邊框分隔——不套獨立主題（那是密碼庫筆記本 revert 過的教訓），只是把
+   既有中性風格排版得更清楚。 */
+.settings-group {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  box-shadow: var(--shadow-sm);
+  padding: 20px 24px 4px;
+  margin-bottom: 1.5rem;
+}
+
+.settings-group__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+  margin: 0 0 1rem;
+}
+
+.settings-group__header svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.8;
+  flex-shrink: 0;
+}
+
+/* 組內最後一個 .settings-section 已經靠 :last-of-type 拿掉底線（見下方既有規則），
+   這裡再扣掉卡片底部多餘的留白，避免卡片內緣看起來比其他三邊寬。 */
+.settings-group .settings-section:last-of-type {
+  padding-bottom: 0;
+}
+
 .settings-section {
   margin-bottom: 1.75rem;
   padding-bottom: 1.75rem;

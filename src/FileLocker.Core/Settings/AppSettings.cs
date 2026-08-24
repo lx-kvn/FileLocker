@@ -28,4 +28,12 @@ public class AppSettings
     /// 底下，不需要系統管理員權限），開機後不用手動開一次 FileLocker 就有保護。跟
     /// MinimizeToTrayEnabled 是兩個獨立的開關。預設開啟。</summary>
     public bool LaunchAtStartupEnabled { get; set; } = true;
+
+    /// <summary>標題列視窗控制鈕（關閉／最小化／最大化）的造型，三選一：
+    /// "macos"（圓點、左上角，預設）、"windows-native"（方形貼邊、右上角，貼近 Windows 11
+    /// 原生行為）、"windows-styled"（方角但圓角、右上角，質感跟 macOS 燈號同一套，用 App
+    /// 自己的強調色/危險色而不是 OS 原生紅/灰）。三種都仍是 Vue 畫的（.traffic-light／
+    /// .win-btn／.win-btn-styled 這幾組元件），不是換成原生系統控制項，只是換一套造型。
+    /// 沒有做值驗證（跟 Theme 一樣的既有慣例），前端只會送這三個字串之一。</summary>
+    public string WindowControlStyle { get; set; } = "macos";
 }

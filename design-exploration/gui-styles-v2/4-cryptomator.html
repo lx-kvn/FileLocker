@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>FileLocker — 造型探索 v2-4：Cryptomator 式親和加密風</title>
+<style>
+  :root{
+    --bg:#F7F5FC; --surface:#FFFFFF; --border:#E7E1F5; --border-strong:#D6CBF0;
+    --text:#332B4D; --text-secondary:#756C93; --text-tertiary:#A79FC2;
+    --violet:#7B4FE0; --violet-hover:#6A3FD1; --violet-soft:#EFE8FC; --violet-border:#D9C9F7;
+    --radius:20px; --radius-sm:12px;
+    --font:'IBM Plex Sans',-apple-system,'Segoe UI',sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:var(--font);background:var(--bg);color:var(--text);font-size:14px;}
+  .shell{display:flex;height:100vh;}
+
+  .sidebar{width:200px;background:var(--surface);border-right:1px solid var(--border);padding:24px 14px;display:flex;flex-direction:column;gap:4px;flex-shrink:0;}
+  .brand{display:flex;align-items:center;gap:10px;padding:0 8px 24px;}
+  .brand__mark{width:36px;height:36px;border-radius:12px;background:var(--violet-soft);display:flex;align-items:center;justify-content:center;}
+  .brand__mark svg{width:18px;height:18px;stroke:var(--violet);}
+  .brand__name{font-weight:700;font-size:15px;}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;color:var(--text-secondary);font-weight:550;font-size:13.5px;}
+  .nav-item svg{width:17px;height:17px;stroke-width:1.7;flex-shrink:0;}
+  .nav-item.active{background:var(--violet-soft);color:var(--violet);}
+
+  .main{flex:1;overflow-y:auto;padding:36px 40px;}
+  .page-head{text-align:left;margin-bottom:26px;}
+  .page-title{font-size:24px;font-weight:700;margin:0 0 6px;display:flex;align-items:center;gap:11px;}
+  .page-title__icon{width:30px;height:30px;border-radius:10px;background:var(--violet-soft);display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .page-title__icon svg{width:15px;height:15px;stroke:var(--violet);}
+  .page-sub{color:var(--text-tertiary);font-size:13.5px;margin:0;max-width:520px;line-height:1.6;}
+
+  .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:24px;flex-wrap:wrap;}
+  .seg{display:inline-flex;background:var(--violet-soft);padding:4px;border-radius:999px;}
+  .seg button{border:0;background:none;font:inherit;font-weight:650;font-size:12.5px;padding:7px 16px;border-radius:999px;color:var(--violet);}
+  .seg button.active{background:#fff;box-shadow:0 2px 6px rgba(123,79,224,.18);}
+  .toolbar__spacer{flex:1;}
+  .search{display:flex;align-items:center;gap:8px;background:var(--surface);border:1.5px solid var(--border);border-radius:999px;padding:9px 16px;width:220px;}
+  .search svg{width:14px;height:14px;color:var(--text-tertiary);}
+  .search input{border:0;outline:0;font:inherit;font-size:13px;flex:1;background:none;}
+  .btn{border:1.5px solid var(--border-strong);background:var(--surface);color:var(--text);font:inherit;font-weight:600;font-size:13px;padding:10px 18px;border-radius:999px;cursor:pointer;}
+  .btn--primary{background:var(--violet);border-color:var(--violet);color:#fff;box-shadow:0 6px 16px rgba(123,79,224,.28);}
+
+  /* 大張的保管庫卡片：每個項目給足夠呼吸空間，操作只有一個明確主按鈕，
+     這是 Cryptomator 式「簡單到不會用錯」的核心設計取捨 */
+  .vaults{display:flex;flex-direction:column;gap:14px;}
+  .vault-card{background:var(--surface);border:1.5px solid var(--border);border-radius:var(--radius);padding:20px 24px;display:flex;align-items:center;gap:18px;}
+  .vault-icon{width:52px;height:52px;border-radius:16px;background:var(--violet-soft);display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .vault-icon svg{width:24px;height:24px;stroke:var(--violet);}
+  .vault-body{flex:1;min-width:0;}
+  .vault-name{font-weight:700;font-size:16px;}
+  .vault-meta{color:var(--text-tertiary);font-size:12.5px;margin-top:3px;}
+  .vault-hint{display:inline-block;margin-top:8px;font-size:12px;color:var(--text-secondary);background:#F4F1FB;padding:5px 11px;border-radius:8px;}
+  .vault-hint.warn{color:#96551F;background:#FBEEDD;}
+  .vault-actions{display:flex;gap:8px;flex-shrink:0;}
+  .vault-actions button{border:1.5px solid var(--border-strong);background:var(--surface);font:inherit;font-weight:650;font-size:12.5px;padding:10px 16px;border-radius:999px;cursor:pointer;color:var(--text);}
+  .vault-actions button.unlock{background:var(--violet);border-color:var(--violet);color:#fff;}
+  .vault-badge{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--violet-soft);color:var(--violet);margin-left:8px;}
+
+  .batch-card{background:var(--violet-soft);border:1.5px dashed var(--violet-border);border-radius:var(--radius);padding:16px 22px;display:flex;align-items:center;justify-content:space-between;}
+  .batch-card__label{font-weight:650;color:var(--violet-hover);font-size:13.5px;}
+  .batch-card button{border:1.5px solid var(--violet-border);background:#fff;color:var(--violet-hover);font:inherit;font-weight:650;font-size:12.5px;padding:9px 16px;border-radius:999px;}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><div class="brand__mark"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div><span class="brand__name">FileLocker</span></div>
+    <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><path d="M5 7h14M5 12h14M5 17h9"/></svg>加密檔案</div>
+    <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><path d="M12 3v13m0 0-4-4m4 4 4-4M5 21h14"/></svg>解密檔案</div>
+    <div class="nav-item active"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>已加密清單</div>
+    <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><path d="M12 3 4 6v6c0 5 3.5 7.7 8 9 4.5-1.3 8-4 8-9V6l-8-3Z"/></svg>資料夾防護</div>
+    <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><circle cx="8.5" cy="15.5" r="3.5"/><path d="M11 13 19.5 4.5M19.5 4.5 22 7M17 6.5 19.5 9"/></svg>密碼庫</div>
+    <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9"/></svg>設定</div>
+  </aside>
+
+  <main class="main">
+    <div class="page-head">
+      <h1 class="page-title"><span class="page-title__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span>已加密清單</h1>
+      <p class="page-sub">每一項都已經妥善鎖好，只有你能打開。點一下就能取用，不用擔心弄丟或外流。</p>
+    </div>
+
+    <div class="toolbar">
+      <div class="seg"><button class="active">檔案</button><button>歷史紀錄</button></div>
+      <div class="toolbar__spacer"></div>
+      <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="搜尋" /></div>
+      <button class="btn">重新整理</button>
+      <button class="btn btn--primary">＋ 加密新檔案</button>
+    </div>
+
+    <div class="vaults">
+      <div class="vault-card">
+        <div class="vault-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></div>
+        <div class="vault-body"><div class="vault-name">專案合約書.pdf</div><div class="vault-meta">PDF · 2.4 MB · 08-10 14:22</div><span class="vault-hint">提示：合約相關</span></div>
+        <div class="vault-actions"><button class="unlock">解密</button><button>Passkey 解鎖</button></div>
+      </div>
+      <div class="vault-card">
+        <div class="vault-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg></div>
+        <div class="vault-body"><div class="vault-name">家庭照片備份</div><div class="vault-meta">資料夾 · 28 個檔案 · 1.2 GB · 08-09 09:03</div></div>
+        <div class="vault-actions"><button class="unlock">解密</button></div>
+      </div>
+      <div class="batch-card">
+        <span class="batch-card__label">📦 批次加密：3 個檔案（報稅資料.xlsx、收據掃描.jpg 等）</span>
+        <button>全部解鎖</button>
+      </div>
+      <div class="vault-card">
+        <div class="vault-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 15l4-4 4 4 4-6 4 6"/></svg></div>
+        <div class="vault-body"><div class="vault-name">密碼管理備份.zip<span class="vault-badge">內含 2 層加密</span></div><div class="vault-meta">壓縮檔 · 890 KB · 08-06 21:40</div><span class="vault-hint">提示：常用密碼</span></div>
+        <div class="vault-actions"><button class="unlock">恢復金鑰解鎖</button></div>
+      </div>
+      <div class="vault-card">
+        <div class="vault-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v3"/></svg></div>
+        <div class="vault-body"><div class="vault-name">遠端桌面憑證.pfx</div><div class="vault-meta">憑證檔 · 4 KB · 08-05 11:02</div><span class="vault-hint">提示：公司 VPN</span></div>
+        <div class="vault-actions"><button class="unlock">解密</button><button>Passkey 解鎖</button></div>
+      </div>
+      <div class="vault-card">
+        <div class="vault-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></div>
+        <div class="vault-body"><div class="vault-name">個人日記.docx</div><div class="vault-meta">Word · 156 KB · 07-28 20:11</div><span class="vault-hint warn">⚠ 找不到原始位置的指標檔</span></div>
+        <div class="vault-actions"><button class="unlock">解密</button></div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

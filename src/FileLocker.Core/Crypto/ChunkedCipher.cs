@@ -29,10 +29,21 @@ public static class ChunkedCipher
     // 程式嘗試配置一個荒謬大小的陣列導致記憶體暴衝。
     private const int MaxChunkLengthBytes = 64 * 1024 * 1024; // 64 MB
 
-    public static void EncryptStream(byte[] key, Stream plaintextInput, Stream ciphertextOutput, int chunkSizeBytes = DefaultChunkSizeBytes)
+    /// <summary>
+    /// progress／totalBytes 是選填的：對應信封加密流程要顯示「真實加密進度」（不是裝飾性的固定
+    /// 時長動畫，design-exploration/gui-styles-v2 定案文件 §1.8）。totalBytes 是明文的總位元組數
+    /// （呼叫端事先量好，例如壓縮完成後的暫存 zip 檔大小），每寫完一個 chunk 回報一次
+    /// 「目前寫了多少 / 總共多少」；totalBytes 是 null 或 0（例如空檔案）時整段跳過回報，
+    /// 避免除以零，呼叫端這種情況直接把進度視為瞬間完成即可。
+    /// </summary>
+    public static void EncryptStream(
+        byte[] key, Stream plaintextInput, Stream ciphertextOutput, int chunkSizeBytes = DefaultChunkSizeBytes,
+        IProgress<double>? progress = null, long? totalBytes = null)
     {
         var buffer = new byte[chunkSizeBytes];
         int bytesRead;
+        long bytesProcessed = 0;
+        var canReportProgress = progress is not null && totalBytes is > 0;
 
         while ((bytesRead = ReadFully(plaintextInput, buffer, 0, buffer.Length)) > 0)
         {
@@ -43,6 +54,12 @@ public static class ChunkedCipher
             ciphertextOutput.Write(nonce);
             ciphertextOutput.Write(ciphertext);
             ciphertextOutput.Write(tag);
+
+            if (canReportProgress)
+            {
+                bytesProcessed += bytesRead;
+                progress!.Report(Math.Min(1.0, (double)bytesProcessed / totalBytes!.Value));
+            }
         }
     }
 

@@ -65,6 +65,45 @@ public sealed class VaultProtocolHandlers
         }
     }
 
+    /// <summary>
+    /// 對應信封加密流程 Phase 2b：跟 EncryptBatchAsync 平行的版本，走 2a 做好的
+    /// pending/committed 交易模型（呼叫 LockService.EncryptPendingAsync，不是 EncryptAsync）——
+    /// 完成後只是「安全寫進 Vault」，真正 finalize（寫 marker、刪原始檔）要等呼叫端另外呼叫
+    /// CommitEncryptAsync。progress 這裡只是單純往下傳，不知道也不需要知道呼叫端會怎麼把它變成
+    /// 一個 WebView2 訊息（這一層刻意不依賴任何 WebView2 具體型別，見本檔案開頭的說明）。
+    /// </summary>
+    public async IAsyncEnumerable<EncryptPendingItemResponse> EncryptPendingBatchAsync(
+        IReadOnlyList<string> paths, string password, string? hint,
+        bool enablePasskey, bool enableRecoveryKey, IntPtr ownerWindowHandle,
+        IProgress<double>? progress = null, Action<bool>? onPasskeyVerifying = null)
+    {
+        var batchId = paths.Count > 1 ? Guid.NewGuid().ToString() : null;
+
+        foreach (var path in paths)
+        {
+            var result = await _lockService.EncryptPendingAsync(
+                path, password, string.IsNullOrWhiteSpace(hint) ? null : hint,
+                enablePasskey, ownerWindowHandle, enableRecoveryKey, batchId,
+                progress, onPasskeyVerifying);
+
+            var actuallyPasskeyEnabled = false;
+            if (result.Success)
+            {
+                actuallyPasskeyEnabled = _vaultManager.LoadMetadata(result.Uuid)?.PasskeyEnabled ?? false;
+            }
+
+            yield return new EncryptPendingItemResponse(path, result, enablePasskey, actuallyPasskeyEnabled);
+        }
+    }
+
+    /// <summary>對應「按下最終確認」：薄包裝，直接委派給 LockService（見 2a）。</summary>
+    public Task<LockResult> CommitEncryptAsync(string uuid)
+        => _lockService.CommitEncryptAsync(uuid);
+
+    /// <summary>對應「按下取消」：薄包裝，直接委派給 LockService（見 2a）。</summary>
+    public Task RollbackPendingEncryptAsync(string uuid)
+        => _lockService.RollbackPendingEncryptAsync(uuid);
+
     public Task<UnlockResult> DecryptAsync(string lockedMarkerPath, string password)
         => _lockService.DecryptAsync(lockedMarkerPath, password);
 
@@ -76,6 +115,22 @@ public sealed class VaultProtocolHandlers
 
     public Task<UnlockResult> DecryptByRecoveryKeyAsync(string uuid, string recoveryKeyInput, string? destinationDir)
         => _lockService.DecryptByRecoveryKeyAsync(uuid, recoveryKeyInput, destinationDir);
+
+    /// <summary>獨立解密流程（信封＋Sheet）Verify/Commit/Cancel 三兄弟：薄包裝，直接委派給 LockService（見 §1.11）。</summary>
+    public Task<VerifyPasswordResult> VerifyDecryptPasswordAsync(string uuid, string password)
+        => _lockService.VerifyDecryptPasswordAsync(uuid, password);
+
+    public Task<VerifyPasswordResult> VerifyDecryptByPasskeyAsync(string uuid, IntPtr ownerWindowHandle)
+        => _lockService.VerifyDecryptByPasskeyAsync(uuid, ownerWindowHandle);
+
+    public Task<VerifyPasswordResult> VerifyDecryptByRecoveryKeyAsync(string uuid, string recoveryKeyInput)
+        => _lockService.VerifyDecryptByRecoveryKeyAsync(uuid, recoveryKeyInput);
+
+    public Task<UnlockResult> CommitPendingDecryptAsync(string uuid, string? destinationDir)
+        => _lockService.CommitPendingDecryptAsync(uuid, destinationDir);
+
+    public Task CancelPendingDecryptAsync(string uuid)
+        => _lockService.CancelPendingDecryptAsync(uuid);
 
     /// <summary>對應「已加密清單」頁摺疊群組的「全部解鎖」按鈕，只支援密碼、逐一解密。</summary>
     public async IAsyncEnumerable<DecryptBatchItemResponse> DecryptBatchAsync(IReadOnlyList<string> uuids, string password)
@@ -127,7 +182,8 @@ public sealed class VaultProtocolHandlers
         var metadata = _vaultManager.LoadMetadata(marker.Uuid);
         return new InspectLockedFileResponse(
             metadata is not null, marker.Uuid, metadata?.OriginalName, metadata?.Hint,
-            metadata?.PasskeyEnabled ?? false, metadata?.RecoveryKeyEnabled ?? false);
+            metadata?.PasskeyEnabled ?? false, metadata?.RecoveryKeyEnabled ?? false,
+            metadata?.CreatedAtUtc);
     }
 
     /// <summary>
@@ -173,7 +229,7 @@ public sealed class VaultProtocolHandlers
             .Where(Directory.Exists)
             .Sum(path => FolderArchiver.FindNestedLockedFiles(path).Count));
 
-    public SettingsResponse GetSettings() => new(_settings.VaultPath, _settings.Language, _settings.Theme, IsCriticalActionConfigured, _settings.MinimizeToTrayEnabled, _settings.LaunchAtStartupEnabled);
+    public SettingsResponse GetSettings() => new(_settings.VaultPath, _settings.Language, _settings.Theme, IsCriticalActionConfigured, _settings.MinimizeToTrayEnabled, _settings.LaunchAtStartupEnabled, _settings.WindowControlStyle);
 
     /// <summary>「關鍵操作」目前是否已經設定過 Windows Hello 驗證——不綁定任何特定加密項目，
     /// 目前唯一的呼叫端是「使用紀錄」頁的清除功能，之後如果有其他破壞性動作要加同樣的門檻，
@@ -248,6 +304,9 @@ public sealed class VaultProtocolHandlers
                 break;
             case "launchAtStartupEnabled":
                 _settings.LaunchAtStartupEnabled = value == "true";
+                break;
+            case "windowControlStyle":
+                _settings.WindowControlStyle = value;
                 break;
             default:
                 return new UpdateSettingResponse(false, key, value);

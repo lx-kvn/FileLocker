@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>FileLocker — 金庫門組裝測試</title>
+<style>
+  :root{ --ease-inout: cubic-bezier(0.77,0,0.175,1); --brass:#A8770F; }
+  body{margin:0;background:#EDEEF2;font-family:'IBM Plex Sans',sans-serif;padding:40px;display:flex;gap:40px;flex-wrap:wrap;}
+  .stage{display:flex;flex-direction:column;align-items:center;}
+  .stage-label{font-size:13px;color:#666;margin-bottom:10px;font-weight:600;}
+  .btn{margin-top:16px;border:1px solid var(--brass);background:var(--brass);color:#fff;font:inherit;font-weight:600;font-size:13px;padding:8px 18px;border-radius:6px;cursor:pointer;}
+  .btn:active{transform:scale(0.97);}
+
+  .scene{position:relative;width:320px;height:280px;perspective:1000px;}
+  .scene img.frame{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+  .door{position:absolute;inset:0;width:100%;height:100%;transform-style:preserve-3d;transform-origin:21% 50%;
+    transition:transform 500ms var(--ease-inout);}
+  .door img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+  .wheel{position:absolute;left:50%;top:50%;width:34%;height:34%;transform-style:preserve-3d;
+    transform:translate(-50%,-50%) rotateZ(0deg);}
+  .wheel img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+
+  .scene.door-open .door{transform:rotateY(-70deg);}
+
+  /* 轉盤的「儀式感」拆成兩段，用 @keyframes 分段指定各自的速度曲線（單一條 cubic-bezier
+     沒辦法同時做到「起手不要太快、中段持續重重地減速、到底只有一點點回彈、回彈到定位時
+     瞬間停住」這麼多段落各自不同的要求）：
+     - 第一段（轉盤本體、佔掉大部分時間跟圈數）：起手偏緩、全程持續減速，做出轉盤本身
+       有重量、不是輕飄飄轉過去的感覺。轉到接點時故意轉過頭（比最終停等角度多轉一點），
+       這個「過頭的量」就是回彈的量——量變小＝回彈變小，不用另外調參數控制回彈幅度。
+     - 第二段（最後這一小段時間、只走一點點角度）：短時間內走完一小段距離，讀起來就是
+       「還有一點點動量，但幾乎立刻被吸收停住」——不是真的物理上瞬間變成 0（CSS 曲線本來
+       就沒辦法做到真正不連續的速度），而是靠「這段時間極短＋距離極短」讓眼睛感覺不到還在
+       減速，錯覺成「喀」一聲卡住。
+
+     開鎖第一段這條曲線調過三輪，中間走過兩次彎路：
+     - 第一次選的 cubic-bezier(0.14,0.22,0.88,1)，x2 刻意推很右邊想讓曲線「拖久一點」，
+       結果量出來的實際效果是「中段幾乎等速巡航、到最後才忽然硬煞車」——起手快衝上去之後
+       速度幾乎不太降，一路衝到接近終點才在很短時間內驟降，播起來像是直接衝到底、撞牆
+       彈回來，不是漸漸慢下來。這條曲線視覺上完成的時間點大概落在它自己這段時間的
+       67% 左右（不管怎麼調 x2 往右推、或整段時間拉多長，這個比例大致不變——bezier
+       曲線是跟時間長度無關的，「提早跑完」的比例是曲線形狀本身決定的），所以接點一度
+       設成對齊這個 67%，但只解決了空等，沒解決撞牆感。
+     - 第二次改用參考上鎖曲線形狀調出來的 cubic-bezier(0.16,0.45,0.3,1)，x2 沒有硬推到
+       很右邊，速度連續平滑遞減，解決了撞牆感。
+     - 第三次乾脆直接複製上鎖那條 cubic-bezier(0.18,0.5,0.32,1)，不用另外調一條相近但不同
+       的曲線——開/關的手感區隔改成靠時長跟接點位置維持，不是靠曲線形狀本身。接點一開始
+       對齊量出來的完成比例設成 67%，這樣是不空等了，但收尾那一小段（接點到 100%）算下來
+       有 650ms 的 33%＝約 214ms，跟上鎖收尾只有 780ms 的 10%＝約 78ms 比起來長了快 3 倍，
+       同樣是修正一個小角度，收尾拖那麼久播起來就是軟的，不像上鎖那樣清脆俐落。
+     - 第四次把接點從 67% 往後移到 85%，收尾段縮到 650ms 的 15%＝約 98ms，跟上鎖的 78ms
+       接近，量測結果收尾前也沒有空等（速度連續遞減到收尾那一下才卡住），兩個問題
+       （拖沓＋軟掉）才算真正一起解決。開鎖總時長維持 650ms，上鎖維持 780ms、接點在 90%；
+       轉的角度總量也不一樣（開鎖多轉 1 圈、上鎖少轉一點），兩者播起來還是能感覺出差異，
+       不是完全一樣的動畫正反播放。
+     圈數比最早版本收斂一點（多轉 1 圈），最終停等角度改成 540deg（=360+180，mod 360
+     是 180°，90° 的整數倍——轉盤本來就是四個握把、四等分的造型，停在 90° 的倍數上跟外觀
+     本身的對稱性才對得上，不是隨便選一個角度）。 */
+  @keyframes wheel-spin-open{
+    0%{transform:translate(-50%,-50%) rotateZ(0deg);animation-timing-function:cubic-bezier(0.18,0.5,0.32,1);}
+    85%{transform:translate(-50%,-50%) rotateZ(550deg);animation-timing-function:cubic-bezier(0.3,0.6,0.5,1);}
+    100%{transform:translate(-50%,-50%) rotateZ(540deg);}
+  }
+  @keyframes wheel-spin-close{
+    0%{transform:translate(-50%,-50%) rotateZ(540deg);animation-timing-function:cubic-bezier(0.18,0.5,0.32,1);}
+    90%{transform:translate(-50%,-50%) rotateZ(-9deg);animation-timing-function:cubic-bezier(0.3,0.6,0.5,1);}
+    100%{transform:translate(-50%,-50%) rotateZ(0deg);}
+  }
+  .wheel.spin-open{animation:wheel-spin-open 650ms both;}
+  .wheel.spin-close{animation:wheel-spin-close 780ms both;}
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="stage-label">金庫門動畫測試（轉輪轉完才開門，關門關完才轉回鎖上——接力時序，不重疊）</div>
+    <div class="scene" id="scene">
+      <img class="frame" src="../../assets/Vault_Frame.svg" alt="" />
+      <div class="door">
+        <img src="../../assets/Vault_Door_Slab.svg" alt="" />
+        <div class="wheel" id="wheel"><img src="../../assets/Vault_Wheel.svg" alt="" /></div>
+      </div>
+    </div>
+    <button class="btn" id="toggleBtn">解鎖（播放開門動畫）</button>
+  </div>
+
+<script>
+  const scene = document.getElementById('scene');
+  const wheel = document.getElementById('wheel');
+  const btn = document.getElementById('toggleBtn');
+  const WHEEL_OPEN_MS = 650;  // 對應 wheel-spin-open 的 animation 時長
+  const WHEEL_CLOSE_MS = 780;  // 對應 wheel-spin-close 的 animation 時長
+  const DOOR_MS = 500;         // 對應 .door 的 transition 時長
+  let isOpen = false;
+  let timer = null;
+
+  function restartSpin(className){
+    // 換方向重播時強制 reflow，確保同一個 class 名稱如果剛好連續用兩次也會重新觸發
+    // animation（例如快速連點造成中途被打斷又重新開始的情況），不是只有第一次有效。
+    wheel.classList.remove('spin-open', 'spin-close');
+    void wheel.offsetWidth;
+    wheel.classList.add(className);
+  }
+
+  btn.addEventListener('click', () => {
+    clearTimeout(timer);
+    btn.disabled = true;
+
+    if (!isOpen) {
+      // 解鎖：轉盤先轉開（含衝過頭再回彈卡住），轉完之後門才開始開
+      restartSpin('spin-open');
+      timer = setTimeout(() => {
+        scene.classList.add('door-open');
+        timer = setTimeout(() => { btn.disabled = false; }, DOOR_MS);
+      }, WHEEL_OPEN_MS);
+      btn.textContent = '重新關上';
+    } else {
+      // 上鎖：門先關上，關完轉盤才轉回原位（同樣有回彈卡住的手感）
+      scene.classList.remove('door-open');
+      timer = setTimeout(() => {
+        restartSpin('spin-close');
+        timer = setTimeout(() => { btn.disabled = false; }, WHEEL_CLOSE_MS);
+      }, DOOR_MS);
+      btn.textContent = '解鎖（播放開門動畫）';
+    }
+    isOpen = !isOpen;
+  });
+</script>
+</body>
+</html>

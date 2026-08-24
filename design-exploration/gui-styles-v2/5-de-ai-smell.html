@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>FileLocker — 造型探索 v2-5：去 AI 味「索引台帳」風</title>
+<style>
+  /* 這版刻意對抗常見的「AI 生成網頁」套路，逐條對照：
+     1. 不用藍紫漸層當預設色——換成墨藍＋赭紅，是刻意選的一組對比色，不是隨手拿系統藍。
+     2. 不用純平色塊背景——整頁鋪一層極淡的雜訊紋理（see .grain），紙感、不是無機的塑膠感。
+     3. 不用清一色的統一圓角——按鈕/輸入框用 3px 幾乎直角，卡片用 8px，兩者刻意不同，
+        對應「越接近功能操作、稜角越硬；越接近內容容器、稜角越軟」的邏輯，不是隨機挑一個數字套全部。
+     4. 不用藥丸型（圓角 999px）按鈕——這是目前最浮濫的「AI 感」按鈕形狀，全部換成方角。
+     5. 不用 emoji 當功能圖示——維持跟其他版一致的細線條 SVG 圖示。
+     6. 不用純 Inter/系統字體——標題用襯線字體 Source Serif 4，中繼資料/標籤用等寬字體
+        JetBrains Mono，兩種字體刻意對比，中文則搭配對應的襯線/等寬替代堆疊。
+     7. 不用置中對稱的制式排版——清單改成不對稱的「索引台帳」佈局：左側一欄手動編號索引，
+        右側內容跟操作區塊寬度不對稱，不是把每一列都做成長得一模一樣的卡片方塊。 */
+  :root{
+    --ink:#1B2430; --ink-soft:#4A5568; --ink-tertiary:#8B96A5;
+    --paper:#F6F1E7; --paper-line:#DDD3BE;
+    --rust:#B5482E; --rust-soft:#F3E0D8; --rust-line:#D9A98E;
+    --forest:#2F5D4C; --forest-soft:#DEEAE3;
+    --font-serif:'Source Serif 4','Noto Serif TC',Georgia,serif;
+    --font-mono:'JetBrains Mono','IBM Plex Mono',ui-monospace,monospace;
+    --font-body:'IBM Plex Sans','Noto Sans TC',sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:var(--font-body);color:var(--ink);font-size:14px;background:var(--paper);position:relative;}
+  /* 雜訊紋理：opacity 從 .4 降到 .12——鋪滿整頁的顆粒感太重會變成視覺雜訊，
+     淡到接近閾限、只在放大看才注意得到，才是「紙感」而不是「髒」 */
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.12;mix-blend-mode:multiply;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.35'/%3E%3C/svg%3E");}
+
+  .shell{display:flex;height:100vh;position:relative;}
+
+  /* 側欄：不對稱靠左，索引式編號＋等寬字體標籤，不做浮動玻璃或色塊選中 */
+  .sidebar{width:212px;flex-shrink:0;padding:28px 0 28px 26px;border-right:1px solid var(--paper-line);}
+  .brand{display:flex;align-items:baseline;gap:8px;margin-bottom:34px;}
+  .brand__mark{font-family:var(--font-mono);font-size:11px;font-weight:700;color:var(--rust);letter-spacing:.05em;}
+  .brand__name{font-family:var(--font-serif);font-size:19px;font-weight:600;}
+  .nav-list{display:flex;flex-direction:column;}
+  .nav-item{display:flex;align-items:baseline;gap:10px;padding:9px 18px 9px 0;font-size:13px;color:var(--ink-soft);border-left:2px solid transparent;padding-left:14px;}
+  .nav-item__idx{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-tertiary);width:16px;flex-shrink:0;}
+  .nav-item.active{border-left-color:var(--rust);color:var(--ink);font-weight:600;background:linear-gradient(90deg,var(--rust-soft),transparent);}
+  .nav-item.active .nav-item__idx{color:var(--rust);}
+
+  .main{flex:1;overflow-y:auto;padding:30px 44px 60px 38px;}
+
+  /* 頁首：不對稱兩欄，標題偏左小、右側放中繼資料，不做置中大標 */
+  .page-head{display:flex;align-items:flex-end;justify-content:space-between;border-bottom:1px solid var(--paper-line);padding-bottom:18px;margin-bottom:6px;}
+  .page-title-block{display:flex;align-items:baseline;gap:12px;}
+  .page-index{font-family:var(--font-mono);font-size:12px;color:var(--rust);font-weight:700;}
+  .page-title{font-family:var(--font-serif);font-size:26px;font-weight:600;margin:0;}
+  .page-stats{font-family:var(--font-mono);font-size:11px;color:var(--ink-tertiary);text-align:right;line-height:1.6;}
+
+  .toolbar-row{display:flex;align-items:center;gap:16px;padding:14px 0 20px;border-bottom:1px solid var(--paper-line);margin-bottom:4px;}
+  .tab-underline{display:flex;gap:22px;}
+  .tab-underline button{border:0;background:none;font:inherit;font-family:var(--font-mono);font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-tertiary);padding:0 0 6px;border-bottom:2px solid transparent;}
+  .tab-underline button.active{color:var(--ink);border-bottom-color:var(--rust);}
+  .toolbar-row__spacer{flex:1;}
+  .search-field{display:flex;align-items:center;gap:7px;border:1px solid var(--paper-line);padding:6px 10px;border-radius:3px;background:#FFFDF8;}
+  .search-field svg{width:12px;height:12px;color:var(--ink-tertiary);}
+  .search-field input{border:0;outline:0;background:none;font:inherit;font-size:12px;width:150px;}
+  .btn{border:1px solid var(--paper-line);background:#FFFDF8;color:var(--ink);font:inherit;font-weight:600;font-size:12px;padding:7px 14px;border-radius:3px;cursor:pointer;transition:transform 150ms cubic-bezier(0.23,1,0.32,1),border-color 150ms ease;}
+  .btn:active{transform:scale(0.97);}
+  .btn--primary{background:var(--ink);color:var(--paper);border-color:var(--ink);}
+
+  /* 索引台帳清單：拿掉逐列邊框，靠留白分組——只留最上面一條極淡的起始線定位版塊 */
+  .ledger{border-top:1px solid var(--paper-line);}
+  .ledger-row{display:flex;align-items:center;gap:16px;padding:22px 0;}
+  .ledger-row__idx{font-family:var(--font-mono);font-size:11px;color:#B7BFC9;width:26px;flex-shrink:0;}
+  .ledger-row__icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:#FFFDF8;}
+  .ledger-row__icon svg{width:14px;height:14px;}
+  .ledger-row__body{flex:1;min-width:0;}
+  .ledger-row__name{font-weight:650;font-size:14px;}
+  .ledger-row__meta{font-family:var(--font-mono);color:var(--ink-tertiary);font-size:11px;margin-top:4px;letter-spacing:.01em;}
+  .tag-inline{font-family:var(--font-mono);font-size:10px;font-weight:700;padding:1px 6px;border-radius:3px;margin-left:6px;text-transform:uppercase;letter-spacing:.03em;}
+  .tag-inline--lock{background:var(--forest-soft);color:var(--forest);}
+  .tag-inline--warn{background:var(--rust-soft);color:var(--rust);}
+  .ledger-row__actions{display:flex;gap:8px;flex-shrink:0;}
+  .ledger-row__actions button{border:1px solid var(--paper-line);background:#FFFDF8;font:inherit;font-weight:600;font-size:11.5px;padding:6px 12px;border-radius:3px;color:var(--ink);cursor:pointer;transition:transform 150ms cubic-bezier(0.23,1,0.32,1),border-color 150ms ease;}
+  .ledger-row__actions button:active{transform:scale(0.97);}
+  .ledger-row__actions button.primary{background:var(--ink);color:var(--paper);border-color:var(--ink);}
+
+  /* 批次群組：用方括號意象把幾列「夾」在一起，取代虛線邊框卡片這種常見套路；
+     一樣拿掉底線，靠留白跟前後列分開 */
+  .ledger-batch{display:flex;align-items:stretch;gap:14px;padding:16px 0;}
+  .ledger-batch__bracket{width:26px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-family:var(--font-serif);font-size:26px;color:var(--rust);}
+  .ledger-batch__body{flex:1;display:flex;align-items:center;justify-content:space-between;font-size:12.5px;color:var(--ink-soft);}
+  .ledger-batch__body strong{color:var(--ink);font-weight:650;}
+  .ledger-batch button{border:1px solid var(--rust-line);background:#FFFDF8;color:var(--rust);font:inherit;font-weight:700;font-size:11.5px;padding:6px 12px;border-radius:3px;cursor:pointer;transition:transform 150ms cubic-bezier(0.23,1,0.32,1);}
+  .ledger-batch button:active{transform:scale(0.97);}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand__mark">FL·</span><span class="brand__name">FileLocker</span></div>
+    <nav class="nav-list">
+      <div class="nav-item"><span class="nav-item__idx">01</span>加密檔案</div>
+      <div class="nav-item"><span class="nav-item__idx">02</span>解密檔案</div>
+      <div class="nav-item active"><span class="nav-item__idx">03</span>已加密清單</div>
+      <div class="nav-item"><span class="nav-item__idx">04</span>資料夾防護</div>
+      <div class="nav-item"><span class="nav-item__idx">05</span>密碼庫</div>
+      <div class="nav-item"><span class="nav-item__idx">06</span>設定</div>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <div class="page-head">
+      <div class="page-title-block"><span class="page-index">03 /</span><h1 class="page-title">已加密清單</h1></div>
+      <div class="page-stats">共 6 筆<br>集中管理區 · 1.2 GB</div>
+    </div>
+
+    <div class="toolbar-row">
+      <div class="tab-underline"><button class="active">檔案</button><button>歷史紀錄</button></div>
+      <div class="toolbar-row__spacer"></div>
+      <div class="search-field"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="搜尋檔名或提示" /></div>
+      <button class="btn">重新整理</button>
+      <button class="btn btn--primary">加密新檔案</button>
+    </div>
+
+    <div class="ledger">
+      <div class="ledger-row">
+        <span class="ledger-row__idx">01</span>
+        <div class="ledger-row__icon" style="background:var(--rust-soft);"><svg viewBox="0 0 24 24" fill="none" stroke="var(--rust)" stroke-width="1.7"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></div>
+        <div class="ledger-row__body"><div class="ledger-row__name">專案合約書.pdf</div><div class="ledger-row__meta">PDF · 2.4 MB · 合約相關 · 2026-08-10 14:22</div></div>
+        <div class="ledger-row__actions"><button class="primary">解密</button><button>Passkey</button></div>
+      </div>
+      <div class="ledger-row">
+        <span class="ledger-row__idx">02</span>
+        <div class="ledger-row__icon" style="background:var(--forest-soft);"><svg viewBox="0 0 24 24" fill="none" stroke="var(--forest)" stroke-width="1.7"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg></div>
+        <div class="ledger-row__body"><div class="ledger-row__name">家庭照片備份</div><div class="ledger-row__meta">資料夾 · 28 個檔案 · 1.2 GB · 2026-08-09 09:03</div></div>
+        <div class="ledger-row__actions"><button class="primary">解密</button></div>
+      </div>
+      <div class="ledger-batch">
+        <div class="ledger-batch__bracket">{</div>
+        <div class="ledger-batch__body"><span>批次加密：<strong>3 個檔案</strong>（報稅資料.xlsx、收據掃描.jpg 等）</span><button>全部解鎖</button></div>
+      </div>
+      <div class="ledger-row">
+        <span class="ledger-row__idx">03</span>
+        <div class="ledger-row__icon" style="background:#EFE8FC;"><svg viewBox="0 0 24 24" fill="none" stroke="#7B4FE0" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 15l4-4 4 4 4-6 4 6"/></svg></div>
+        <div class="ledger-row__body"><div class="ledger-row__name">密碼管理備份.zip<span class="tag-inline tag-inline--lock">2 層加密</span></div><div class="ledger-row__meta">壓縮檔 · 890 KB · 常用密碼 · 2026-08-06 21:40</div></div>
+        <div class="ledger-row__actions"><button class="primary">恢復金鑰</button></div>
+      </div>
+      <div class="ledger-row">
+        <span class="ledger-row__idx">04</span>
+        <div class="ledger-row__icon" style="background:#E1EBF7;"><svg viewBox="0 0 24 24" fill="none" stroke="#2B6CB0" stroke-width="1.7"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v3"/></svg></div>
+        <div class="ledger-row__body"><div class="ledger-row__name">遠端桌面憑證.pfx</div><div class="ledger-row__meta">憑證檔 · 4 KB · 公司 VPN · 2026-08-05 11:02</div></div>
+        <div class="ledger-row__actions"><button class="primary">解密</button><button>Passkey</button></div>
+      </div>
+      <div class="ledger-row">
+        <span class="ledger-row__idx">05</span>
+        <div class="ledger-row__icon" style="background:#ECECEC;"><svg viewBox="0 0 24 24" fill="none" stroke="var(--ink-tertiary)" stroke-width="1.7"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></div>
+        <div class="ledger-row__body"><div class="ledger-row__name">個人日記.docx<span class="tag-inline tag-inline--warn">找不到指標檔</span></div><div class="ledger-row__meta">Word 文件 · 156 KB · 2026-07-28 20:11</div></div>
+        <div class="ledger-row__actions"><button class="primary">解密</button></div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

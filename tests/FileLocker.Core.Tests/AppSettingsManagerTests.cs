@@ -31,6 +31,7 @@ public class AppSettingsManagerTests : IDisposable
         Assert.Equal("light", settings.Theme);
         Assert.True(settings.MinimizeToTrayEnabled);
         Assert.True(settings.LaunchAtStartupEnabled);
+        Assert.Equal("macos", settings.WindowControlStyle);
     }
 
     [Fact]
@@ -57,6 +58,18 @@ public class AppSettingsManagerTests : IDisposable
 
         Assert.Equal(original.VaultPath, loaded.VaultPath);
         Assert.Equal(original.Theme, loaded.Theme);
+    }
+
+    [Fact]
+    public void Save_ThenLoad_RoundTripsWindowControlStyle()
+    {
+        var manager = new AppSettingsManager(_filePath);
+        var original = new AppSettings { WindowControlStyle = "windows-styled" };
+
+        manager.Save(original);
+        var loaded = manager.Load();
+
+        Assert.Equal("windows-styled", loaded.WindowControlStyle);
     }
 
     [Fact]

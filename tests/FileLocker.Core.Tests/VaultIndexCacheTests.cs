@@ -237,6 +237,31 @@ public class VaultIndexCacheTests : IDisposable
     }
 
     [Fact]
+    public void GetItems_ExcludesPendingItems_UntilCommitted()
+    {
+        // 對應信封加密流程的 bug 修正：EncryptPendingAsync 階段 metadata.Status 還是 Pending
+        // （原始檔案沒刪、指標檔沒寫），這個中間態不該出現在清單頁——不然使用者會在「信封還沒
+        // 送出」的當下就看到這筆項目，點開卻只會撞見「找不到指標檔」的錯誤。
+        var uuid = Guid.NewGuid().ToString();
+        var metadata = CreateSampleMetadata(uuid);
+        metadata.Status = LockStatus.Pending;
+        _vault.SaveMetadata(metadata);
+
+        using var cache = new VaultIndexCache(_vault, _tempCacheDir.FullName);
+        Assert.Empty(cache.GetItems());
+
+        // Commit：metadata 改成 Committed 並重新寫入，這時才應該出現在清單。
+        metadata.Status = LockStatus.Committed;
+        _vault.SaveMetadata(metadata);
+        var metaPath = Path.Combine(_tempVaultDir.FullName, $"{uuid}.meta.json");
+        cache.OnMetaFileChanged(metaPath);
+
+        var items = cache.GetItems();
+        Assert.Single(items);
+        Assert.Equal(uuid, items[0].Uuid);
+    }
+
+    [Fact]
     public void Dispose_ReleasesUnderlyingSqliteConnection()
     {
         var cache = new VaultIndexCache(_vault, _tempCacheDir.FullName);

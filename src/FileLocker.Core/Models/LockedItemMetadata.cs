@@ -1,12 +1,34 @@
 namespace FileLocker.Core.Models;
 
 /// <summary>
+/// 對應信封加密流程「取消要能安全回滾」的交易模型（design-exploration/gui-styles-v2 定案文件
+/// §1.8）：Pending 代表加密內容已經安全寫進 Vault，但原始檔案還沒被刪除、也還沒放 marker——
+/// 這個狀態下取消永遠是安全的（只要刪掉 Vault 裡這筆暫存項目，原始檔案完全沒被動過）。
+/// Committed 代表已經走完 marker 寫入＋原始檔刪除，是「這筆加密真的完成了」的最終狀態。
+/// 不能用「marker 存不存在」推斷是不是 pending——marker 遺失可能是別的原因（例如使用者手動
+/// 刪除），跟「這筆加密根本還沒 finalize」是兩種不同情境，混用會導致誤刪合法但 marker 遺失的
+/// 加密紀錄。
+/// </summary>
+public enum LockStatus
+{
+    Pending,
+    Committed
+}
+
+/// <summary>
 /// 對應規格文件第 4 節：每個加密項目獨立一份的 {uuid}.meta.json 內容。
 /// 這份物件不是「加密金鑰」本身的載體——PasswordVerificationHash 只拿來驗證密碼是否正確，
 /// 真正的加密金鑰永遠是當下用密碼 + Salt 即時算出來，不會被序列化進這個檔案。
 /// </summary>
 public class LockedItemMetadata
 {
+    /// <summary>
+    /// 預設 Committed，不是 Pending——這樣既有的舊資料（沒有這個欄位的舊版 .meta.json，
+    /// JSON 反序列化時這個欄位會用預設值補上）跟既有測試/呼叫端（EncryptAsync 走的是原本的
+    /// 一次到位流程，不產生 Pending 狀態）都自動視為「已完成」，不需要額外遷移邏輯。
+    /// </summary>
+    public LockStatus Status { get; set; } = LockStatus.Committed;
+
     /// <summary>對應 Vault 內 {Uuid}.enc 檔名。</summary>
     public required string Uuid { get; set; }
 

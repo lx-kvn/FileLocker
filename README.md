@@ -30,6 +30,7 @@
 - **三種互相獨立的解鎖方式**：密碼（必要）、Passkey（Windows Hello，裝置綁定）、恢復金鑰（一次性顯示的備援代碼）。
 - **右鍵選單批次加密**：一次選取多個檔案/資料夾，右鍵直接加密；CLI 也支援批次加密／解密／刪除，安裝完成後直接加入系統 PATH，任何終端機都能用，並提供 `--password-stdin`／`--yes` 等旗標的靜默批次模式，方便寫進指令碼或排程工作。
 - **資料夾防護（Folder Guard）**：獨立於加密之外的第二種保護方式，純粹透過 Windows 存取權限（ACL）限制資料夾，不加密內容——防隨手瀏覽，不防蓄意繞過。右鍵直接上鎖／解鎖，共用密碼＋選配 Passkey；進階選配可開啟「使用 .lockfolder 開啟上鎖資料夾」，雙擊標記檔直接跳出解鎖視窗並自動開啟資料夾；解鎖後也可以設定閒置逾時自動重新上鎖，避免忘記手動上鎖。
+- **密碼庫（Password Locker）**：第三種、完全獨立的保護機制——儲存網站帳密與已加密檔案的密碼，本身不保護檔案或資料夾，驗證方式（密碼／Passkey／恢復金鑰）也跟加密、資料夾防護的憑證各自分開。可選配部件，未安裝也不影響其他功能；搭配瀏覽器擴充功能可在網站上自動填入帳密、支援 TOTP 兩步驟驗證碼。
 - **背景模式**：可選擇關閉視窗後留在系統匣、跟著 Windows 啟動，兩個開關互相獨立。
 - **Vault 可指向雲端同步資料夾**：把 Vault 位置指到 OneDrive／Dropbox／Google Drive 的本機同步資料夾，同步軟體只會看到密文，達到零知識的跨裝置備份效果。
 - **軟體更新檢查**：設定頁一鍵檢查 GitHub 上的新版本，發現更新可直接下載並啟動安裝程式。
@@ -67,7 +68,7 @@
 ### 建置與執行
 
 ```bash
-# 後端測試
+# 後端測試（四個測試專案，目前共約 399 個測試）
 dotnet test
 
 # 前端開發伺服器（Debug 建置會連到 http://localhost:5173）
@@ -86,12 +87,17 @@ cl /LD /EHsc /utf-8 dllmain.cpp /Fe:FileLockerShellExtension.dll /link /DEF:File
 ```
 FileLocker/
 ├── src/
-│   ├── FileLocker.Core/          # 核心邏輯（加解密、Vault、Metadata、安全機制）
-│   ├── FileLocker.App/           # WPF 宿主（視窗、WebView2、單一執行個體、拖放）
-│   ├── FileLocker.Cli/           # CLI
-│   ├── FileLocker.Web/           # Vue 3 + Vite 前端
-│   └── FileLocker.ShellExtension/# C++ COM Shell Extension
-└── tests/FileLocker.Core.Tests/  # xUnit 測試
+│   ├── FileLocker.Core/                     # 核心邏輯（加解密、Vault、Metadata、安全機制）
+│   ├── FileLocker.App/                      # WPF 宿主（視窗、WebView2、單一執行個體、拖放、系統匣）
+│   ├── FileLocker.Cli/                      # CLI（隨安裝程式加入系統 PATH）
+│   ├── FileLocker.ShellExtension/           # C++ COM Shell Extension（右鍵選單）
+│   ├── FileLocker.UpdateRelauncher/         # 軟體更新下載完成後負責重啟主程式的小工具
+│   ├── FileLocker.PluginContracts/          # 可選配部件共用的介面契約
+│   ├── FileLocker.PasswordLocker/           # 密碼庫可選配部件本體
+│   ├── FileLocker.PasswordLockerNativeHost/ # 瀏覽器擴充功能用的 Native Messaging Host
+│   ├── FileLocker.Extension/                # 瀏覽器擴充功能（密碼庫網站自動填入用）
+│   └── FileLocker.Web/                      # Vue 3 + Vite 前端
+└── tests/                                   # xUnit 測試（Core／App／Cli／PasswordLocker 四個專案）
 ```
 
 ### 已知限制
@@ -121,6 +127,7 @@ Grab the latest installer from the [Releases](https://github.com/lx-kvn/FileLock
 - **Three independent unlock methods**: password (required), passkey (Windows Hello, device-bound), and a one-time-shown recovery key.
 - **Batch encryption from the context menu**: select multiple files/folders and encrypt in one right-click; the CLI supports batch encrypt/unlock/delete too, is added to the system PATH by the installer so it works from any terminal, and offers a silent batch mode (`--password-stdin`, `--yes`, etc.) for scripts and scheduled jobs.
 - **Folder Guard**: a second, separate protection method alongside encryption — restricts a folder purely through Windows access permissions (ACL) without encrypting its contents. Stops casual browsing, not a determined attacker. Lock/unlock directly from the right-click menu, with a shared password and optional passkey; an advanced option, "Open locked folders with a .lockfolder file," lets you double-click a marker file to pop up the unlock prompt and open the folder automatically; folders can also be set to relock automatically after an idle timeout so you don't have to remember to relock manually.
+- **Password Locker**: a third, fully independent protection mechanism — stores website credentials and passwords for encrypted files, without protecting any file or folder itself; its unlock method (password/passkey/recovery key) is a separate credential set from encryption and Folder Guard. Ships as an optional component that the rest of the app works fine without; pair it with the browser extension for autofill on websites and TOTP two-factor codes.
 - **Background mode**: optionally stay in the system tray when the window closes, and/or launch at Windows startup — two independent toggles.
 - **Point the Vault at a cloud-synced folder**: OneDrive/Dropbox/Google Drive only ever see ciphertext — zero-knowledge cross-device backup, powered by whatever sync client you already use.
 - **Software update check**: check for new releases on GitHub with one click from Settings, then download and launch the installer directly.
@@ -158,7 +165,7 @@ Full architecture, encryption flow, and IPC protocol details live in [`FileLocke
 ### Build & run
 
 ```bash
-# Backend tests
+# Backend tests (four test projects, ~399 tests total)
 dotnet test
 
 # Frontend dev server (Debug build points to http://localhost:5173)
@@ -177,12 +184,17 @@ cl /LD /EHsc /utf-8 dllmain.cpp /Fe:FileLockerShellExtension.dll /link /DEF:File
 ```
 FileLocker/
 ├── src/
-│   ├── FileLocker.Core/          # Core logic: crypto, Vault, metadata, security
-│   ├── FileLocker.App/           # WPF host (window, WebView2, single instance, drag & drop)
-│   ├── FileLocker.Cli/           # CLI
-│   ├── FileLocker.Web/           # Vue 3 + Vite frontend
-│   └── FileLocker.ShellExtension/# C++ COM Shell Extension
-└── tests/FileLocker.Core.Tests/  # xUnit tests
+│   ├── FileLocker.Core/                     # Core logic: crypto, Vault, metadata, security
+│   ├── FileLocker.App/                      # WPF host (window, WebView2, single instance, drag & drop, tray)
+│   ├── FileLocker.Cli/                      # CLI (added to the system PATH by the installer)
+│   ├── FileLocker.ShellExtension/           # C++ COM Shell Extension (context menu)
+│   ├── FileLocker.UpdateRelauncher/         # Small helper that relaunches the app after an update download
+│   ├── FileLocker.PluginContracts/          # Shared interface contracts for optional components
+│   ├── FileLocker.PasswordLocker/           # Password Locker optional component
+│   ├── FileLocker.PasswordLockerNativeHost/ # Native Messaging Host for the browser extension
+│   ├── FileLocker.Extension/                # Browser extension (autofill for Password Locker)
+│   └── FileLocker.Web/                      # Vue 3 + Vite frontend
+└── tests/                                   # xUnit tests (Core / App / Cli / PasswordLocker, four projects)
 ```
 
 ### Known limitations

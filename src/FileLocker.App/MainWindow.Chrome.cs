@@ -33,6 +33,11 @@ public partial class MainWindow
     //    這裡不搶著回 HTCAPTION，避免跟它打架）。
     private const int DwmwaWindowCornerPreference = 33;
     private const int DwmwcpRound = 2;
+    // 回饋：切到深色模式後，Windows 原生畫的視窗外框（無邊框視窗一樣有這圈，不是只有傳統
+    // 標題列才有）還是亮色的，跟畫面裡已經換成深色的內容格格不入——DWM 不會自己知道
+    // App 換了主題，要透過這個屬性明確告訴它。19041 之後的 Windows 10/11 都吃這個編號 20；
+    // 更舊的版本這個屬性不存在，呼叫會直接失敗，安靜略過即可（跟圓角那個屬性同樣的處理方式）。
+    private const int DwmwaUseImmersiveDarkMode = 20;
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
@@ -122,13 +127,37 @@ public partial class MainWindow
     /// <summary>
     /// 視窗邊緣那圈窄邊（見 MainWindow.xaml 的 WebView2 Margin 說明）是純 WPF 畫的，
     /// 顏色來自 Window.Background，不會自動跟著 HTML 裡的深色模式切換——這裡手動同步一次，
-    /// 顏色數值刻意跟 App.vue 裡 .app--dark 的 --color-surface 對齊，兩邊要一起改。
+    /// 顏色數值刻意跟 App.vue 裡 .app--dark 的 --color-surface 對齊，兩邊要一起改（深色模式
+    /// 底色偏黃的回饋，這裡也要跟著調整，不然這圈窄邊跟裡面新的深色底色又對不起來）。
+    ///
+    /// 這條窄邊只是 WPF 畫的那幾像素——視窗本身最外圈由 DWM 畫的原生外框（無邊框視窗一樣
+    /// 有這圈）是另一回事，DWM 不會自己知道 App 換了主題，要另外呼叫
+    /// DWMWA_USE_IMMERSIVE_DARK_MODE 才會跟著換成深色（回饋抓到的問題：外框沒有跟著變深）。
     /// </summary>
     private void ApplyWindowBackgroundForTheme(string theme)
     {
-        Background = theme == "dark"
-            ? new SolidColorBrush(Color.FromRgb(0x23, 0x24, 0x28))
+        var isDark = theme == "dark";
+        Background = isDark
+            ? new SolidColorBrush(Color.FromRgb(0x22, 0x21, 0x20))
             : new SolidColorBrush(Colors.White);
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
+        {
+            // HWND 還沒建立（例如建構子裡第一次呼叫，早於 OnSourceInitialized）——這種情況下
+            // DWM 屬性沒有視窗控制代碼可以設，OnSourceInitialized 那邊會用當下的主題再補設一次。
+            return;
+        }
+
+        try
+        {
+            var darkModeValue = isDark ? 1 : 0;
+            DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, ref darkModeValue, sizeof(int));
+        }
+        catch (DllNotFoundException)
+        {
+            // Windows 10 或更舊版本可能沒有這支 DLL／這個屬性，安靜略過，不影響其他功能。
+        }
     }
 
     /// <summary>
@@ -141,6 +170,11 @@ public partial class MainWindow
 
         TryRestoreRoundedCorners(hwnd);
         CenterOnScreen(hwnd);
+
+        // 建構子裡第一次呼叫 ApplyWindowBackgroundForTheme 時 HWND 還沒建立，DWM 深色模式
+        // 屬性那段被跳過（見該方法內的說明）——這裡 HWND 剛建好，補設一次，啟動時就是深色
+        // 模式的話，視窗外框從一開始就是深色，不會先亮一下才在使用者操作後才變深。
+        ApplyWindowBackgroundForTheme(_settings.Theme);
 
         var source = HwndSource.FromHwnd(hwnd);
         source?.AddHook(WndProc);

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>轉盤軸心錯覺測試</title>
+<style>
+  body{margin:0;background:#EDEEF2;font-family:'IBM Plex Sans',sans-serif;padding:40px;display:flex;gap:60px;flex-wrap:wrap;}
+  .stage{display:flex;flex-direction:column;align-items:center;}
+  .label{font-size:13px;color:#444;margin-bottom:16px;font-weight:600;max-width:220px;text-align:center;}
+  .wheel-box{width:200px;height:200px;position:relative;}
+  .wheel-box img{position:absolute;inset:0;width:100%;height:100%;}
+  .cross{position:absolute;left:50%;top:0;width:1px;height:100%;background:red;opacity:.5;}
+  .cross2{position:absolute;left:0;top:50%;width:100%;height:1px;background:red;opacity:.5;}
+
+  /* 對照組 1：等速轉動，沒有加速/減速/回彈，純粹看「純轉動」本身圖案準不準 */
+  .constant{animation:spin-constant 2.4s linear infinite;}
+  @keyframes spin-constant{ from{transform:rotateZ(0deg);} to{transform:rotateZ(360deg);} }
+
+  /* 對照組 2：完全複製金庫門實際用的那條「起手快、中段減速、到底回彈」開鎖曲線，
+     單獨拿掉門扇跟外框的干擾，只看轉盤本身這條曲線轉起來是不是會有偏一邊的錯覺 */
+  @keyframes spin-real{
+    0%{ transform:rotateZ(0deg); animation-timing-function:cubic-bezier(0.18,0.5,0.32,1); }
+    85%{ transform:rotateZ(550deg); animation-timing-function:cubic-bezier(0.3,0.6,0.5,1); }
+    100%{ transform:rotateZ(540deg); }
+  }
+  .real{animation:spin-real 650ms both;}
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="label">對照組 1：等速轉動（linear，無加速減速）<br>如果這個看起來是正的，代表圖案本身跟軸心沒問題</div>
+    <div class="wheel-box">
+      <img class="constant" src="../../assets/Vault_Wheel.svg" alt="" />
+      <div class="cross"></div><div class="cross2"></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="label">對照組 2：金庫門實際用的曲線（起手快→中段減速→到底回彈）<br>按按鈕重播，感覺看看是不是這條曲線本身造成「偏一邊」的錯覺</div>
+    <div class="wheel-box">
+      <img class="real" id="realWheel" src="../../assets/Vault_Wheel.svg" alt="" />
+      <div class="cross"></div><div class="cross2"></div>
+    </div>
+    <button id="replayBtn" style="margin-top:16px;padding:6px 16px;">重播</button>
+  </div>
+
+<script>
+  const btn = document.getElementById('replayBtn');
+  const wheel = document.getElementById('realWheel');
+  btn.addEventListener('click', () => {
+    wheel.classList.remove('real');
+    void wheel.offsetWidth;
+    wheel.classList.add('real');
+  });
+</script>
+</body>
+</html>

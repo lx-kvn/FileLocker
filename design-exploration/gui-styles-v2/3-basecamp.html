@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>FileLocker — 造型探索 v2-3：Basecamp 式篝火風</title>
+<style>
+  :root{
+    --bg:#FFFDF7; --surface:#FFFFFF; --border:#3D3929; --border-light:#E7E1CF;
+    --text:#22261F; --text-secondary:#5C5744; --text-tertiary:#8C8570;
+    --yellow:#FFD600; --yellow-soft:#FFF6C9;
+    --navy:#0E3B5C; --navy-soft:#E4EFF7;
+    --coral:#FF6B4A; --coral-soft:#FFE7DF;
+    --green:#2E8B57; --green-soft:#E1F3E8;
+    --radius:16px; --radius-sm:10px;
+    --font:'Roboto Slab','IBM Plex Sans',-apple-system,sans-serif;
+    --font-body:'IBM Plex Sans',-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:var(--font-body);background:var(--bg);color:var(--text);font-size:14px;}
+  .shell{display:flex;flex-direction:column;height:100vh;}
+
+  /* 頂部跳轉列：Basecamp 招牌的彩色圖示方塊導覽，不用細長的側欄 */
+  .jumpbar{display:flex;align-items:center;gap:10px;padding:14px 26px;border-bottom:3px solid var(--border);background:var(--surface);flex-shrink:0;}
+  .jump-logo{width:36px;height:36px;border-radius:10px;background:var(--navy);display:flex;align-items:center;justify-content:center;flex-shrink:0;border:2.5px solid var(--border);}
+  .jump-logo svg{width:18px;height:18px;stroke:#fff;}
+  .jump-name{font-family:var(--font);font-weight:700;font-size:17px;margin-right:6px;}
+  .jump-item{display:flex;align-items:center;gap:7px;padding:8px 13px;border-radius:10px;font-weight:600;font-size:13px;color:var(--text-secondary);border:2px solid transparent;}
+  .jump-item svg{width:16px;height:16px;stroke-width:2;}
+  .jump-item.active{background:var(--yellow-soft);border-color:var(--border);color:var(--text);}
+  .jumpbar__spacer{flex:1;}
+  .avatar-stamp{width:34px;height:34px;border-radius:50%;background:var(--coral);border:2.5px solid var(--border);}
+
+  .main{flex:1;overflow-y:auto;padding:26px 32px 40px;max-width:920px;margin:0 auto;width:100%;}
+  .page-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:6px;}
+  .page-title{font-family:var(--font);font-size:28px;font-weight:700;margin:0;display:flex;align-items:center;gap:10px;}
+  .page-title__badge{width:34px;height:34px;border-radius:10px;background:var(--navy);display:flex;align-items:center;justify-content:center;transform:rotate(-4deg);}
+  .page-title__badge svg{width:17px;height:17px;stroke:#fff;}
+  .page-sub{color:var(--text-tertiary);font-size:13.5px;margin:6px 0 20px;}
+
+  .action-row{display:flex;gap:10px;margin-bottom:18px;}
+  .btn{border:2.5px solid var(--border);background:var(--surface);color:var(--text);font:inherit;font-weight:700;font-size:13px;padding:9px 16px;border-radius:10px;cursor:pointer;box-shadow:3px 3px 0 var(--border);}
+  .btn:active{transform:translate(2px,2px);box-shadow:1px 1px 0 var(--border);}
+  .btn--primary{background:var(--yellow);}
+  .btn--sub{display:flex;gap:6px;background:var(--surface);border:2px solid var(--border-light);box-shadow:none;font-weight:600;}
+  .btn--sub.active{background:var(--navy-soft);border-color:var(--navy);color:var(--navy);}
+
+  .search-strip{margin-bottom:20px;}
+  .search-strip input{width:100%;max-width:320px;padding:9px 14px;border:2.5px solid var(--border-light);border-radius:10px;font:inherit;font-size:13px;background:var(--surface);}
+
+  .cards{display:flex;flex-direction:column;gap:12px;}
+  .item-card{background:var(--surface);border:2.5px solid var(--border);border-radius:var(--radius);padding:16px 18px;display:flex;align-items:center;gap:14px;box-shadow:4px 4px 0 var(--border-light);}
+  .item-stamp{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:2px solid var(--border);transform:rotate(-2deg);}
+  .item-stamp svg{width:20px;height:20px;}
+  .item-body{flex:1;min-width:0;}
+  .item-name{font-weight:700;font-size:15px;font-family:var(--font);}
+  .item-meta{color:var(--text-tertiary);font-size:12px;margin-top:3px;}
+  .tape-tag{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 9px;border-radius:5px;margin-left:6px;transform:rotate(-2deg);border:1.5px solid var(--border);}
+  .tape-tag--lock{background:var(--yellow);}
+  .tape-tag--warn{background:var(--coral-soft);}
+  .item-actions{display:flex;gap:8px;flex-shrink:0;}
+  .item-actions button{border:2px solid var(--border);background:var(--surface);font:inherit;font-weight:700;font-size:12px;padding:8px 13px;border-radius:9px;cursor:pointer;}
+  .item-actions button.primary{background:var(--green-soft);border-color:var(--green);color:#1F5F3C;}
+
+  .batch-card{background:var(--yellow-soft);border:2.5px dashed var(--border);border-radius:var(--radius);padding:14px 18px;display:flex;align-items:center;justify-content:space-between;}
+  .batch-card__label{font-weight:700;font-family:var(--font);font-size:13.5px;}
+  .batch-card button{border:2px solid var(--border);background:var(--surface);font:inherit;font-weight:700;font-size:12px;padding:8px 14px;border-radius:9px;}
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="jumpbar">
+    <div class="jump-logo"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+    <span class="jump-name">FileLocker</span>
+    <div class="jump-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><path d="M5 7h14M5 12h14M5 17h9"/></svg>加密</div>
+    <div class="jump-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><path d="M12 3v13m0 0-4-4m4 4 4-4M5 21h14"/></svg>解密</div>
+    <div class="jump-item active"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>清單</div>
+    <div class="jump-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><path d="M12 3 4 6v6c0 5 3.5 7.7 8 9 4.5-1.3 8-4 8-9V6l-8-3Z"/></svg>防護</div>
+    <div class="jump-item"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><circle cx="8.5" cy="15.5" r="3.5"/><path d="M11 13 19.5 4.5M19.5 4.5 22 7M17 6.5 19.5 9"/></svg>密碼庫</div>
+    <div class="jumpbar__spacer"></div>
+    <div class="avatar-stamp"></div>
+  </div>
+
+  <main class="main">
+    <div class="page-head">
+      <div>
+        <h1 class="page-title"><span class="page-title__badge"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span>已加密清單</h1>
+        <p class="page-sub">你放進來的東西，都好好地鎖著呢 👋</p>
+      </div>
+    </div>
+
+    <div class="action-row">
+      <button class="btn btn--sub active">檔案</button>
+      <button class="btn btn--sub">歷史紀錄</button>
+      <div style="flex:1;"></div>
+      <button class="btn">重新整理</button>
+      <button class="btn btn--primary">＋ 加密新檔案</button>
+    </div>
+
+    <div class="search-strip"><input placeholder="搜尋檔名或提示…" /></div>
+
+    <div class="cards">
+      <div class="item-card">
+        <div class="item-stamp" style="background:var(--coral-soft);"><svg viewBox="0 0 24 24" fill="none" stroke="#B8371E" stroke-width="1.8"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></div>
+        <div class="item-body"><div class="item-name">專案合約書.pdf</div><div class="item-meta">PDF · 2.4 MB · 08-10 14:22 · 提示：合約相關</div></div>
+        <div class="item-actions"><button class="primary">解密</button><button>Passkey</button></div>
+      </div>
+      <div class="item-card">
+        <div class="item-stamp" style="background:var(--navy-soft);"><svg viewBox="0 0 24 24" fill="none" stroke="var(--navy)" stroke-width="1.8"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg></div>
+        <div class="item-body"><div class="item-name">家庭照片備份</div><div class="item-meta">資料夾 · 28 個檔案 · 1.2 GB · 08-09 09:03</div></div>
+        <div class="item-actions"><button class="primary">解密</button></div>
+      </div>
+      <div class="batch-card">
+        <span class="batch-card__label">📦 批次加密：3 個檔案（報稅資料.xlsx、收據掃描.jpg 等）</span>
+        <button>全部解鎖</button>
+      </div>
+      <div class="item-card">
+        <div class="item-stamp" style="background:var(--yellow-soft);"><svg viewBox="0 0 24 24" fill="none" stroke="#8A6D00" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 15l4-4 4 4 4-6 4 6"/></svg></div>
+        <div class="item-body"><div class="item-name">密碼管理備份.zip<span class="tape-tag tape-tag--lock">🔒×2</span></div><div class="item-meta">壓縮檔 · 890 KB · 08-06 21:40 · 提示：常用密碼</div></div>
+        <div class="item-actions"><button class="primary">恢復金鑰</button></div>
+      </div>
+      <div class="item-card">
+        <div class="item-stamp" style="background:var(--green-soft);"><svg viewBox="0 0 24 24" fill="none" stroke="#1F5F3C" stroke-width="1.8"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v3"/></svg></div>
+        <div class="item-body"><div class="item-name">遠端桌面憑證.pfx</div><div class="item-meta">憑證檔 · 4 KB · 08-05 11:02 · 提示：公司 VPN</div></div>
+        <div class="item-actions"><button class="primary">解密</button><button>Passkey</button></div>
+      </div>
+      <div class="item-card">
+        <div class="item-stamp" style="background:var(--border-light);"><svg viewBox="0 0 24 24" fill="none" stroke="#5C5744" stroke-width="1.8"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></div>
+        <div class="item-body"><div class="item-name">個人日記.docx<span class="tape-tag tape-tag--warn">⚠ 留意一下</span></div><div class="item-meta">Word · 156 KB · 07-28 20:11 · 找不到原始位置的指標檔</div></div>
+        <div class="item-actions"><button class="primary">解密</button></div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

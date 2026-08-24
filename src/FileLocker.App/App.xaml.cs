@@ -114,6 +114,24 @@ public partial class App : Application
                 .Where(entry => entry.Status == FolderGuardStatus.Locked)
                 .Select(entry => entry.Path)
                 .ToList());
+
+        // 對應信封加密流程「取消要能安全回滾」交易模型（design-exploration/gui-styles-v2 定案文件
+        // §1.8）：上次 App 意外關閉（例如系統重開機）如果剛好卡在 Pending 狀態（已經寫入 Vault，
+        // 但使用者還沒按下最終確認），這裡在啟動時掃一次、安全清掉這些孤兒項目——原始檔案在
+        // Pending 狀態下從頭到尾沒被動過，回滾永遠是安全的。純背景 I/O，不影響視窗顯示，
+        // 不用 await；吞掉例外是刻意的，這只是盡力而為的清理，失敗了也不該讓整個 App 啟動不起來，
+        // 下次啟動還會再掃一次。
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _lockService.RollbackAllPendingAsync();
+            }
+            catch (Exception)
+            {
+                // 盡力而為，見上方註解。
+            }
+        });
         // 密碼庫（Password Locker）是可選配部件（見 FileLocker_密碼庫_功能規劃.md 第 2 節），
         // 主體完全不編譯期依賴它——這裡只準備好資料目錄跟 vaultItemExists 委派，實際載入交給
         // PasswordLockerPluginLoader。委派裡的 _vaultIndexCache 這時候還沒賦值（下面才建構），

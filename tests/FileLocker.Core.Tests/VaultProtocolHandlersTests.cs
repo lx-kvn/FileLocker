@@ -1,4 +1,5 @@
 using FileLocker.Core.History;
+using FileLocker.Core.Models;
 using FileLocker.Core.Protocol;
 using FileLocker.Core.Security;
 using FileLocker.Core.Settings;
@@ -75,6 +76,74 @@ public class VaultProtocolHandlersTests : IDisposable
         Assert.Contains(results, r => r.Path == pathB);
     }
 
+    // ---- 信封加密流程 Phase 2b：pending/commit/rollback 這一層協定包裝 ----
+    // 底層的交易模型本身（2a）已經在 LockServiceTests 測過，這裡驗證的是協定層有沒有正確接上
+    // LockService 的新方法、有沒有正確把 IProgress<double> 往下傳，不是重複測底層邏輯。
+
+    [Fact]
+    public async Task EncryptPendingBatchAsync_YieldsPendingResultWithEmptyMarkerPath()
+    {
+        var path = CreateWorkFile("待確認.txt", "內容");
+
+        var results = new List<EncryptPendingItemResponse>();
+        await foreach (var item in _handlers.EncryptPendingBatchAsync([path], "correct-password", null, false, false, IntPtr.Zero))
+        {
+            results.Add(item);
+        }
+
+        Assert.Single(results);
+        Assert.True(results[0].Success);
+        Assert.True(File.Exists(path)); // 原始檔案還在，還沒 commit
+    }
+
+    [Fact]
+    public async Task EncryptPendingBatchAsync_ReportsProgressThroughToCaller()
+    {
+        // 檔案大到會切成好幾個 chunk，才有意義驗證進度會遞增（見 ChunkedCipher 預設 1MB chunk）。
+        var path = Path.Combine(_workDir.FullName, "大檔案.bin");
+        File.WriteAllBytes(path, new byte[3 * 1024 * 1024]);
+
+        var reported = new List<double>();
+        var progress = new SyncProgress(reported);
+
+        await foreach (var _ in _handlers.EncryptPendingBatchAsync([path], "correct-password", null, false, false, IntPtr.Zero, progress)) { }
+
+        Assert.NotEmpty(reported);
+        Assert.Equal(1.0, reported[^1]);
+    }
+
+    [Fact]
+    public async Task CommitEncryptAsync_ThenRollbackPendingEncryptAsync_BothDelegateToLockService()
+    {
+        var commitPath = CreateWorkFile("要提交.txt", "內容");
+        EncryptPendingItemResponse? pendingForCommit = null;
+        await foreach (var item in _handlers.EncryptPendingBatchAsync([commitPath], "correct-password", null, false, false, IntPtr.Zero))
+        {
+            pendingForCommit = item;
+        }
+
+        var commitResult = await _handlers.CommitEncryptAsync(pendingForCommit!.Uuid);
+        Assert.True(commitResult.Success);
+        Assert.False(File.Exists(commitPath));
+        Assert.True(File.Exists(commitResult.LockedMarkerPath));
+
+        var rollbackPath = CreateWorkFile("要取消.txt", "內容");
+        EncryptPendingItemResponse? pendingForRollback = null;
+        await foreach (var item in _handlers.EncryptPendingBatchAsync([rollbackPath], "correct-password", null, false, false, IntPtr.Zero))
+        {
+            pendingForRollback = item;
+        }
+
+        await _handlers.RollbackPendingEncryptAsync(pendingForRollback!.Uuid);
+        Assert.True(File.Exists(rollbackPath));
+        Assert.Null(_vaultManager.LoadMetadata(pendingForRollback.Uuid));
+    }
+
+    private sealed class SyncProgress(List<double> sink) : IProgress<double>
+    {
+        public void Report(double value) => sink.Add(value);
+    }
+
     [Fact]
     public async Task ListVaultAsync_AfterEncrypt_ReturnsItemWithMarkerFound()
     {
@@ -139,6 +208,66 @@ public class VaultProtocolHandlersTests : IDisposable
     }
 
     [Fact]
+    public async Task InspectLockedFile_ForValidMarker_ReturnsCreatedAtUtcMatchingMetadata()
+    {
+        // 對應信封加密流程 Phase 2a：獨立解密流程的信封落地後要顯示「檔名＋加密時間」
+        // （design-exploration/gui-styles-v2 定案文件 §1.11），這個時間直接來自 metadata 裡的
+        // CreatedAtUtc，不是另外算的。
+        var path = CreateWorkFile("時間戳記測試.txt", "測試內容");
+        var before = DateTimeOffset.UtcNow;
+        EncryptItemResponse? encrypted = null;
+        await foreach (var item in _handlers.EncryptBatchAsync([path], "correct-password", null, false, false, IntPtr.Zero))
+        {
+            encrypted = item;
+        }
+        var after = DateTimeOffset.UtcNow;
+
+        var result = _handlers.InspectLockedFile(encrypted!.LockedMarkerPath);
+
+        Assert.NotNull(result.CreatedAtUtc);
+        Assert.InRange(result.CreatedAtUtc!.Value, before.AddSeconds(-1), after.AddSeconds(1));
+    }
+
+    [Fact]
+    public async Task VerifyDecryptPasswordAsync_ThenCommitPendingDecryptAsync_RestoresContent()
+    {
+        // 薄包裝測試：只驗證協定層有沒有正確把呼叫轉給 LockService，完整的驗證/提交行為
+        // 已經在 LockServiceTests 測過，這裡不重複測底層邏輯。
+        var path = CreateWorkFile("協定層解密驗證測試.txt", "協定層內容");
+        EncryptItemResponse? encrypted = null;
+        await foreach (var item in _handlers.EncryptBatchAsync([path], "correct-password", null, false, false, IntPtr.Zero))
+        {
+            encrypted = item;
+        }
+
+        var verifyResult = await _handlers.VerifyDecryptPasswordAsync(encrypted!.Uuid, "correct-password");
+        Assert.True(verifyResult.Success);
+        Assert.False(File.Exists(path)); // 驗證階段不還原
+
+        var commitResult = await _handlers.CommitPendingDecryptAsync(encrypted.Uuid, null);
+        Assert.True(commitResult.Success);
+        Assert.Equal("協定層內容", File.ReadAllText(path));
+    }
+
+    [Fact]
+    public async Task CancelPendingDecryptAsync_ThenCommit_ReturnsPendingItemNotFound()
+    {
+        var path = CreateWorkFile("協定層取消測試.txt", "內容");
+        EncryptItemResponse? encrypted = null;
+        await foreach (var item in _handlers.EncryptBatchAsync([path], "correct-password", null, false, false, IntPtr.Zero))
+        {
+            encrypted = item;
+        }
+        await _handlers.VerifyDecryptPasswordAsync(encrypted!.Uuid, "correct-password");
+
+        await _handlers.CancelPendingDecryptAsync(encrypted.Uuid);
+        var commitResult = await _handlers.CommitPendingDecryptAsync(encrypted.Uuid, null);
+
+        Assert.False(commitResult.Success);
+        Assert.Equal(ErrorCodes.PendingItemNotFound, commitResult.ErrorCode);
+    }
+
+    [Fact]
     public void InspectLockedFile_ForNonexistentPath_ReturnsFailure()
     {
         var result = _handlers.InspectLockedFile(Path.Combine(_workDir.FullName, "不存在.locked"));
@@ -174,6 +303,7 @@ public class VaultProtocolHandlersTests : IDisposable
 
         Assert.Equal(_vaultDir.FullName, result.VaultPath);
         Assert.Equal("zh-TW", result.Language);
+        Assert.Equal("macos", result.WindowControlStyle);
     }
 
     [Fact]
@@ -183,6 +313,18 @@ public class VaultProtocolHandlersTests : IDisposable
 
         Assert.True(result.Success);
         Assert.Equal("en", _handlers.GetSettings().Language);
+    }
+
+    [Theory]
+    [InlineData("macos")]
+    [InlineData("windows-native")]
+    [InlineData("windows-styled")]
+    public void UpdateSetting_WindowControlStyle_PersistsChange(string style)
+    {
+        var result = _handlers.UpdateSetting("windowControlStyle", style);
+
+        Assert.True(result.Success);
+        Assert.Equal(style, _handlers.GetSettings().WindowControlStyle);
     }
 
     [Fact]

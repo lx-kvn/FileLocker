@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>FileLocker — 信封蠟封組裝測試</title>
+<style>
+  :root{
+    --ease-inout: cubic-bezier(0.77,0,0.175,1);
+    --ease-out: cubic-bezier(0.23,1,0.32,1);
+    --brass:#A8770F;
+  }
+  body{margin:0;background:#EDEEF2;font-family:'IBM Plex Sans','Noto Sans TC',sans-serif;padding:40px;display:flex;gap:60px;flex-wrap:wrap;align-items:flex-start;}
+  .stage-label{font-size:13px;color:#666;margin-bottom:10px;font-weight:600;}
+  .stage{display:flex;flex-direction:column;align-items:center;}
+  .btn{margin-top:16px;border:1px solid var(--brass);background:#fff;color:var(--brass);font:inherit;font-weight:600;font-size:13px;padding:8px 18px;border-radius:6px;cursor:pointer;position:relative;z-index:10;}
+  .btn:active{transform:scale(0.97);}
+  .btn.primary{background:var(--brass);color:#fff;}
+
+  /*
+    量測依據（讀 assets/Envelope_Body.svg 與 assets/Envelope_Flap.svg 的原始路徑座標算出來的，
+    不是用眼睛猜的）：兩張圖的 viewBox 都是 1024×1024 正方形。
+    - 信封本體矩形：左緣 6.985% / 右緣 93.02% / 上緣 32.073% / 下緣 67.94%（皆為畫布邊長的百分比）
+    - 封口三角形（Envelope_Flap.svg 自己的座標系）：寬邊（鉸鏈線）在自己畫布的 50%（正中心），
+      封口尖端在 27.53%
+    因為兩者的左右邊界完全對齊（都是 6.985%~93.02%），只要把封口整層往上位移
+    (50% - 32.073%) = 17.927%，封口的寬邊就會剛好落在信封本體的上緣，且封口自己的旋轉中心
+    （transform-origin:50% 50%，圖片正中心）也剛好等於這條鉸鏈線，不需要另外手動找鉸鏈位置。
+  */
+  .envelope-outer{position:relative;width:320px;height:250px;overflow:hidden;perspective:900px;}
+  .envelope-canvas{position:absolute;left:0;top:-19px;width:320px;height:320px;transform-style:preserve-3d;}
+  .envelope-canvas img.body{position:absolute;inset:0;width:100%;height:100%;}
+
+  /* 封口紙：這張圖「沒有旋轉」的原始狀態畫的就是打開站立的樣子（不是闔上平躺），
+     所以打開＝0度、闔上＝旋轉到位，跟一般直覺相反，這是量測時確認過的關鍵。
+     闔上要用完整的 -180deg（不是之前的 -135deg）——可動的封口大小跟信封本體上烤進去的
+     那個固定三角形一模一樣，只有轉滿 180 度、完全貼平，兩者的外框才會真正疊合，轉不滿
+     角度會因為透視關係讓封口看起來比固定三角形小一圈，蓋不滿。 */
+  .flap-group{position:absolute;left:0;top:-17.927%;width:100%;height:100%;transform-style:preserve-3d;transform-origin:50% 50%;
+    transition:transform 420ms var(--ease-inout);}
+  .flap-group img.flap{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;}
+  .envelope-outer.is-open .flap-group{transform:rotateX(0deg);}
+  .envelope-outer.is-closed .flap-group{transform:rotateX(-180deg);}
+
+  /* 蠟滴／蠟封現在都是 .flap-group 的子元素，用封口紙自己的本地座標定位
+     （27.53%＝封口尖端在它自己畫布裡的位置），所以會跟著封口紙一起做 3D 旋轉——
+     整個摺疊過程蠟封都黏在封口尖端上，不是動畫播完才瞬間出現在別的位置。
+     DOM 順序決定圖層前後：蠟滴放在 img.flap 之前＝被紙壓在下面（背面蠟滴的邏輯，
+     紙蓋住大部分蠟滴，只露出邊緣）；蠟封放在 img.flap 之後＝壓在紙上面（正面蠟封蓋章
+     的邏輯，蠟封蓋住封口紙）。 */
+  /* 淡出時機刻意延遲到動畫播到一半左右（420ms 的一半＝210ms）——那一刻封口紙正好轉到
+     側面（-90deg），因為 preserve-3d 的關係從正面看幾乎是一條線、什麼都看不到，這時候
+     切換蠟滴／蠟封才不會被看到「換內容」的瞬間。transition 本身故意設得很短（30ms），
+     讓它在那個看不到的瞬間直接切換，而不是整段旋轉過程中慢慢淡出淡入。 */
+  .wax-drip-back{position:absolute;left:50%;top:27.53%;width:38px;height:38px;transform:translate(-50%,-50%);
+    transition:opacity 30ms linear 195ms;pointer-events:none;}
+  .wax-drip-back img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+  .envelope-outer.is-open .wax-drip-back{opacity:1;}
+  .envelope-outer.is-closed .wax-drip-back{opacity:0;}
+
+  /* top 比蠟滴（27.53%）多往下 3 個百分點——蠟封蓋章要落在封口尖端「再過去一點」的
+     位置，貼著尖端但不完全重疊在同一點，肉眼看起來才像蓋在紙上，不是疊在紙的邊緣上。
+     另外加一個 rotateX(180deg) 抵銷父層 .flap-group 闔上時的 -180deg 翻轉——蠟封本身
+     要正著看，不能因為跟著封口紙的容器一起翻轉就跟著上下顛倒。 */
+  .wax-seal{position:absolute;left:50%;top:29.5%;width:42px;height:42px;transform:translate(-50%,-50%) rotateX(180deg);
+    transition:opacity 30ms linear 195ms;pointer-events:none;}
+  .wax-seal img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+  .envelope-outer.is-closed .wax-seal{opacity:1;}
+  .envelope-outer.is-open .wax-seal{opacity:0;}
+
+  /* top:158px 是刻意避開信封本體圖檔裡烤進去的那個小裝飾圖示（三角形凹槽下半部那個
+     信件圖示＋線條，量出來落在畫布 32.07%~54.54% 之間，換算成這個容器＝83.6px~155.5px），
+     表單直接接在裝飾圖示下面，不會疊在一起。 */
+  .form-zone{position:absolute;left:9%;right:9%;top:158px;display:flex;flex-direction:column;gap:10px;align-items:center;justify-content:flex-start;
+    opacity:1;transition:opacity 180ms var(--ease-inout);}
+  .envelope-outer.is-closed .form-zone{opacity:0;pointer-events:none;}
+  .fake-input{width:70%;background:#fff;border:1px solid #E4D7B8;border-radius:6px;padding:8px 12px;font-size:12px;color:#8a8168;box-shadow:inset 0 1px 2px rgba(0,0,0,.05);}
+  .fake-checks{display:flex;gap:14px;font-size:11px;color:#7a7256;}
+
+  .envelope-closed{position:relative;width:320px;height:250px;overflow:hidden;}
+  .envelope-closed .canvas{position:absolute;left:0;top:-19px;width:320px;height:320px;}
+  .envelope-closed .canvas img.body{position:absolute;inset:0;width:100%;height:100%;}
+  .envelope-closed .flap-static{position:absolute;left:0;top:-17.927%;width:100%;height:100%;transform-style:preserve-3d;transform-origin:50% 50%;transform:rotateX(-180deg);}
+  .envelope-closed .flap-static img{position:absolute;inset:0;width:100%;height:100%;}
+  .envelope-closed .flap-static img.seal{position:absolute;left:50%;top:29.5%;transform:translate(-50%,-50%) rotateX(180deg);width:42px;height:42px;object-fit:contain;}
+
+  /* 改版：檔名跟郵戳不是左右同高並排，郵戳（重用 `Postmark_Nested_Lock.svg`，鎖頭+放射狀
+     郵戳線條，本來就是為了這個比喻畫的素材，不是蠟封本身）維持跟蠟封差不多高（同一個
+     top:52.6%），檔名的位置稍微低一點（top 數值更大）。
+     檔名底部的框框改成方形（小圓角，不是藥丸型）。
+     加密時間不是郵戳旁邊的獨立文字，是疊在郵戳圖層「裡面」、放射狀線條下方那塊空間——
+     把郵戳圖示放大到接近蠟封的尺寸（46px），才有足夠空間在下緣塞進一行極小字level的時間
+     文字，視覺上讀起來像蓋章本身就有印上時間，不是圖示旁邊另外貼一行字。
+     水平方向：左右各留 8% 的邊界（信封本體矩形實際只畫到畫布 6.985%~93.02%，量測筆記在
+     檔案開頭），比原本的 5%/6% 更保守，避免標籤／郵戳的內容寬度貼齊或超出信封本體的
+     實際繪製邊緣——上一版就是這裡沒留夠，導致兩組文字視覺上溢出信封輪廓外。 */
+  /* 跟信封邊緣留安全距離——原本 8% 太貼近本體實際繪製邊緣（6.985%），肉眼看起來像貼著
+     邊框，加大到 11%。
+     位置改成跟郵戳同高（top:58%），不再是自己另外算一個「比蠟封低一點」的高度——但蠟封
+     水平方向佔了畫布中央 43.4%~56.6%（寬 42px、置中），跟郵戳同高就代表這個標籤的高度
+     範圍勢必會跟蠟封的高度範圍重疊，所以真正防止疊到的關鍵是「寬度不能碰到蠟封的左緣」，
+     不是高度錯開——max-width 從 37% 縮到 26%，搭配 left:11%，右緣落在 11%+26%=37%，
+     還留了 43.4%-37%=6.4% 的空隙才到蠟封左緣，同時字級／padding 也一起縮小，整體視覺
+     份量跟旁邊縮小後的郵戳配起來比較對等。 */
+  /* 中文字體常見的視覺置中偏差——CJK 字形的實際墨色範圍在 em 框裡偏下，用
+     padding-top/bottom 對稱撐置中算出來的框，肉眼看文字還是會覺得偏下一點。這裡故意用
+     不對稱的 padding（上面留少一點、下面留多一點）把文字整體往上頂 1~2px 去抵銷這個
+     視覺偏差，不是排版算錯。 */
+  .mail-filename{position:absolute;left:11%;top:58%;transform:translateY(-50%);background:#fffaf0;border:1px solid var(--brass);border-radius:3px;padding:1.5px 5px 2.5px;font-size:7.5px;font-weight:600;color:#6b5527;white-space:nowrap;max-width:26%;overflow:hidden;text-overflow:ellipsis;box-shadow:0 1px 2px rgba(0,0,0,.06);}
+
+  /* `Postmark_Nested_Lock.svg` 畫布裡實際畫的內容（雙圈圓框+鎖頭+放射狀郵戳線）只佔
+     1024×1024 畫布的一部分，不是滿版——先試過用 getBBox()+矩陣換算去精算裁切窗，但量出來
+     的數字套上去對不齊（郵戳內容整個跑出容器外），時間已經花了不少，先退回簡單作法：
+     整張圖用 object-fit:contain 完整顯示（不裁切、不放大），容器放大到 64px 讓內容本身
+     看起來夠大。
+     整組郵戳（含底下的時間）繼續往左、往下挪——right 從 14% 加大到 19%，top 從蠟封同高的
+     52.6% 加大到 58%（跟蠟封錯開，不再同一條水平線）。
+     時間文字的水平位置：截圖放大量出郵戳線在容器裡的範圍是 53%~98%，「左側三分之一」的
+     位置＝53%+(98-53)/3≈68%，時間文字改成用 left:68% 對齊「文字最左邊」（不是文字中心，
+     所以拿掉原本的 translateX(-50%)），這樣文字左緣會卡在郵戳線左三分之一處，不是整段
+     文字置中在郵戳線範圍中央。 */
+  .mail-postmark{position:absolute;right:19%;top:58%;transform:translateY(-50%);width:64px;height:64px;}
+  .mail-postmark img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+  .mail-postmark .mail-timestamp{position:absolute;left:68%;top:59%;font-size:6px;font-weight:700;letter-spacing:-0.3px;color:#8a6a1f;white-space:nowrap;font-variant-numeric:tabular-nums;}
+
+  /* 全流程測試（#fullRig）才有「跳進來→打開→關起來」這個時間軸，檔名/郵戳要等使用者
+     輸入完密碼、信封重新闔上蓋章那一刻才出現，不是一開始就貼著——跟定案文件的語意一致
+     （封好才代表這份檔案真的被鎖進去了）。單純飛走／帶文字飛走那兩個測試（#flyOnlyRig、
+     #flyTextRig）沒有這個開闔流程，本來就是從「已經封好」的狀態開始，維持一直顯示。 */
+  #fullRig .mail-filename,
+  #fullRig .mail-postmark{opacity:0;transition:opacity 260ms var(--ease-out);}
+  #fullRig.show-mail-info .mail-filename,
+  #fullRig.show-mail-info .mail-postmark{opacity:1;}
+
+  /* 實測後發現動畫版（.mailaway-rig 裡）蠟封的位置其實跟靜態版一樣落在 52.6%（原本猜想
+     两邊的 3D 情境不同、位置會不一樣，實測結果推翻了這個猜想）——所以不需要另外覆蓋
+     top，兩邊共用同一組數字就好，這裡刻意留言記錄「猜錯過」這件事，避免以後又假設一次。 */
+
+  /* ===== 以下是「寄出」動畫測試（定案文件〈「寄出」動畫與加密交易模型〉那一節）=====
+     兩個測試場景共用同一套結構：在既有 .envelope-outer（開⇄闔折疊）外面再包一層
+     .mailaway-rig，專門負責「這封信在畫面上的整體位置/傾斜/遠近」——折疊動畫改的是
+     封口紙的旋轉，寄出動畫改的是整個信封（連同蠟封）的位置，兩層各自獨立、互不干擾，
+     疊起來播放才不會互相覆蓋對方的 transform。
+
+     容器改成 overflow:visible（原本折疊測試用的是 overflow:hidden，因為那邊只需要
+     裁掉封口翻轉到背面時可能露出的邊緣）——寄出動畫需要飛出容器範圍，裁掉的話動畫
+     播到後段會被畫面邊界硬生生切掉，效果會不完整。 */
+  .mailaway-outer{overflow:visible;height:300px;perspective:3200px;}
+  /* 這版改成「躺下＋沿短邊透視線遠去」：不是把整個信封均勻縮小移向畫面外一點（那是上一版
+     「往上飛」的做法），而是真的用 3D 旋轉把信封放倒，再沿 Z 軸送往深處，讓瀏覽器自己算出
+     正確的透視縮小跟兩條短邊（左右側邊）的收斂效果，不手動模擬 scale。
+     transform-origin 刻意用「正中心」而不是「下緣」——原本想讓下緣當支點（比較貼近「一張
+     卡片往你面前倒下」的直覺），但實測發現 rotateX 疊加大量 translateZ 時，把支點放在下緣
+     會讓整個物件在畫面上的投影位置劇烈飄移（算出來會飄到幾百 px 外、甚至疊到別的測試區塊
+     上面），這是 3D 投影＋離軸旋轉中心疊加的正常數學結果，不是瀏覽器 bug，但視覺上不可控。
+     改用正中心當支點之後飄移幅度小很多、可預期，這是實測比對過`transform-origin:50% 100%`
+     跟`50% 50%`兩版的 bounding box 數字後選的，不是憑感覺。
+
+     旋轉／位移改用獨立的 `rotate` / `translate` CSS 屬性（不是塞在同一個 `transform` 裡）——
+     這兩個是跟 `transform` 平行、各自獨立的屬性，各自可以設定自己的 transition 時間/延遲，
+     這樣才能做到「先倒下、倒完才開始往深處滑遠」這種先後有序的效果；如果全部塞進同一個
+     `transform:rotateX(...) translateZ(...)`，瀏覽器只會把它當成一個值整體內插，角度跟距離
+     只能同進同出、沒辦法分先後，這是前一版「傾倒跟飛遠感覺黏在一起、模糊也跟著太早開始」的
+     根本原因，不是時間長短調一調就能解決的，要換屬性才能真的分階段。 */
+  .mailaway-rig{position:absolute;inset:0;transform-origin:50% 50%;transform-style:preserve-3d;will-change:rotate,translate,filter,opacity;}
+
+  /* 飛走分兩階段：
+     階段一（0~260ms）：只有 rotate 在動——把信封倒下去。rotate:x 用正值，這是使用者
+     明確要求「往前遞信」的方向：下緣往鏡頭方向靠近（顯得比較寬），上緣往深處退（顯得比較
+     窄），跟「從上下等寬變成上窄下寬」的描述對上；上一版用負值做出來是反的（上寬下窄），
+     方向搞錯了。
+     階段二（220ms 起，跟階段一有一點點重疊銜接，不是斷開再開始）：translate 不是只有 Z
+     軸退到深處，另外疊加 Y 軸負值（往上）——單純縮小＋退遠看起來像「原地縮小」，缺了
+     「飛」該有的動能感；加上一點往上的位移，才有「順勢往上帶」的感覺，跟現實中往前遞出去
+     的東西自然會帶一點上揚的弧度是同一個直覺。filter／opacity 也在這個階段才開始動——先讓
+     「倒下」這個動作被看清楚，糊化跟淡出留給「飛遠」這段收尾用，不要一開始就同時糊掉。
+     角度／Z 距離／perspective 數值沿用前一版實測過、飄移幅度可控的那組（35deg／260px／
+     3200px），Y 位移是這次新加的，這幾個數值一樣是測試參考值，定案文件沒有定案精確數字。 */
+  .mailaway-rig.is-flying{
+    transition:
+      rotate 260ms var(--ease-out),
+      translate 500ms var(--ease-inout) 220ms,
+      filter 340ms linear 380ms,
+      opacity 520ms linear 240ms;
+    rotate:x 35deg;
+    translate:0 -130px -260px;
+    filter:blur(7px);
+    opacity:0;
+  }
+
+  /* 出場（跳進來）：從正上方垂直落下，落到定點時輕微超過再回彈——0%~55% 是快速落下
+     （ease-out 感，越接近定點越慢），55%~100% 是超過定點一點點再回彈收斂，模擬真實
+     物體落地的彈簧感。跟飛走動畫一樣，數值是測試用參考值，定案文件裡彈簧參數（阻尼／
+     初速／超過幅度）明確標記「沒有定案數值，只定了概念」。 */
+  @keyframes mail-drop-bounce{
+    0%{transform:translateY(-420px);}
+    55%{transform:translateY(0);}
+    72%{transform:translateY(-16px);}
+    86%{transform:translateY(5px);}
+    100%{transform:translateY(0);}
+  }
+  .mailaway-rig.is-dropping{
+    animation:mail-drop-bounce 820ms cubic-bezier(0.34,1.28,0.64,1) both;
+  }
+
+  .fly-controls{display:flex;gap:10px;margin-top:16px;}
+  .fly-controls .btn{margin-top:0;}
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="stage-label">動畫測試：加密表單（開）⇄ 完成畫面（闔）</div>
+    <div class="envelope-outer is-open" id="scene">
+      <div class="envelope-canvas">
+        <img class="body" src="../../assets/Envelope_Body.svg" alt="" />
+        <div class="flap-group">
+          <div class="wax-drip-back"><img src="../../assets/Wax_Drip_Back.svg" alt="" /></div>
+          <img class="flap" src="../../assets/Envelope_Flap.svg" alt="" />
+          <div class="wax-seal"><img src="../../assets/Envelope_Wax_Seal.svg" alt="" /></div>
+        </div>
+      </div>
+      <div class="form-zone">
+        <input class="fake-input" type="password" placeholder="輸入密碼的地方" disabled />
+        <div class="fake-checks"><label><input type="checkbox" disabled /> 開啟 Passkey</label><label><input type="checkbox" disabled /> 開啟 恢復金鑰</label></div>
+      </div>
+    </div>
+    <button class="btn primary" id="toggleBtn">加密（播放折疊動畫）</button>
+  </div>
+
+  <div class="stage">
+    <div class="stage-label">對照組：完成畫面（純靜態，不含動畫邏輯）</div>
+    <div class="envelope-closed">
+      <div class="canvas">
+        <img class="body" src="../../assets/Envelope_Body.svg" alt="" />
+        <div class="flap-static">
+          <img class="flap" src="../../assets/Envelope_Flap.svg" alt="" />
+          <img class="seal" src="../../assets/Envelope_Wax_Seal.svg" alt="" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-label">對照組＋文字：完成畫面帶檔名／郵戳（蠟封）／加密時間</div>
+    <div class="envelope-closed">
+      <div class="canvas">
+        <img class="body" src="../../assets/Envelope_Body.svg" alt="" />
+        <div class="flap-static">
+          <img class="flap" src="../../assets/Envelope_Flap.svg" alt="" />
+          <img class="seal" src="../../assets/Envelope_Wax_Seal.svg" alt="" />
+        </div>
+        <div class="mail-filename">專案合約書_最終版.pdf</div>
+        <div class="mail-postmark">
+          <img src="../../assets/Postmark_Nested_Lock.svg" alt="" />
+          <span class="mail-timestamp">2026-08-16 14:32</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-label">動畫測試 1：單純信封飛出去（信封已闔上蓋章，直接播放「寄出」那一段）</div>
+    <div class="envelope-outer mailaway-outer is-closed" id="flyOnlyOuter">
+      <div class="mailaway-rig" id="flyOnlyRig">
+        <div class="envelope-canvas">
+          <img class="body" src="../../assets/Envelope_Body.svg" alt="" />
+          <div class="flap-group">
+            <div class="wax-drip-back"><img src="../../assets/Wax_Drip_Back.svg" alt="" /></div>
+            <img class="flap" src="../../assets/Envelope_Flap.svg" alt="" />
+            <div class="wax-seal"><img src="../../assets/Envelope_Wax_Seal.svg" alt="" /></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="fly-controls">
+      <button class="btn primary" id="flyOnlyBtn">寄出（播放飛走動畫）</button>
+      <button class="btn" id="flyOnlyResetBtn">重置</button>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-label">動畫測試 3：帶檔名／郵戳一起飛出去（跟信封本體同一個 rig，一起傾倒、一起模糊淡出）</div>
+    <div class="envelope-outer mailaway-outer is-closed" id="flyTextOuter">
+      <div class="mailaway-rig" id="flyTextRig">
+        <div class="envelope-canvas">
+          <img class="body" src="../../assets/Envelope_Body.svg" alt="" />
+          <div class="flap-group">
+            <div class="wax-drip-back"><img src="../../assets/Wax_Drip_Back.svg" alt="" /></div>
+            <img class="flap" src="../../assets/Envelope_Flap.svg" alt="" />
+            <div class="wax-seal"><img src="../../assets/Envelope_Wax_Seal.svg" alt="" /></div>
+          </div>
+          <div class="mail-filename">專案合約書_最終版.pdf</div>
+          <div class="mail-postmark">
+            <img src="../../assets/Postmark_Nested_Lock.svg" alt="" />
+            <span class="mail-timestamp">2026-08-16 14:32</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="fly-controls">
+      <button class="btn primary" id="flyTextBtn">寄出（播放飛走動畫）</button>
+      <button class="btn" id="flyTextResetBtn">重置</button>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-label">動畫測試 2：全流程（跳進來→打開→關起來→往後躺→飛出去，測試用途自動播放不用按按鈕）</div>
+    <div class="envelope-outer mailaway-outer is-closed" id="fullOuter">
+      <div class="mailaway-rig" id="fullRig">
+        <div class="envelope-canvas">
+          <img class="body" src="../../assets/Envelope_Body.svg" alt="" />
+          <div class="flap-group">
+            <div class="wax-drip-back"><img src="../../assets/Wax_Drip_Back.svg" alt="" /></div>
+            <img class="flap" src="../../assets/Envelope_Flap.svg" alt="" />
+            <div class="wax-seal"><img src="../../assets/Envelope_Wax_Seal.svg" alt="" /></div>
+          </div>
+          <div class="mail-filename">專案合約書_最終版.pdf</div>
+          <div class="mail-postmark">
+            <img src="../../assets/Postmark_Nested_Lock.svg" alt="" />
+            <span class="mail-timestamp">2026-08-16 14:32</span>
+          </div>
+        </div>
+        <div class="form-zone">
+          <input class="fake-input" type="password" placeholder="輸入密碼的地方" disabled />
+          <div class="fake-checks"><label><input type="checkbox" disabled /> 開啟 Passkey</label><label><input type="checkbox" disabled /> 開啟 恢復金鑰</label></div>
+        </div>
+      </div>
+    </div>
+    <div class="fly-controls">
+      <button class="btn primary" id="fullReplayBtn">重新播放全流程</button>
+    </div>
+  </div>
+
+<script>
+  const scene = document.getElementById('scene');
+  const btn = document.getElementById('toggleBtn');
+  btn.addEventListener('click', () => {
+    const opening = scene.classList.contains('is-closed');
+    scene.classList.toggle('is-open', opening);
+    scene.classList.toggle('is-closed', !opening);
+    btn.textContent = opening ? '加密（播放折疊動畫）' : '重新打開';
+  });
+
+  // ===== 測試 1：單純飛走 =====
+  // 信封本來就是闔上蓋章的靜止狀態，按下按鈕只播放「傾斜＋往深處飛走＋模糊淡出」這一段，
+  // 不牽動折疊動畫——用來單獨檢查飛走這段動態本身順不順、角度/模糊/淡出時機對不對，
+  // 不用每次都連著整段流程一起看。
+  (function setupFlyOnly(){
+    const outer = document.getElementById('flyOnlyOuter');
+    const rig = document.getElementById('flyOnlyRig');
+    const flyBtn = document.getElementById('flyOnlyBtn');
+    const resetBtn = document.getElementById('flyOnlyResetBtn');
+
+    flyBtn.addEventListener('click', () => {
+      rig.classList.add('is-flying');
+      flyBtn.disabled = true;
+    });
+    resetBtn.addEventListener('click', () => {
+      rig.classList.remove('is-flying');
+      flyBtn.disabled = false;
+    });
+  })();
+
+  // ===== 測試 3：帶檔名／郵戳一起飛走 =====
+  // 跟測試 1 邏輯完全一樣（單純加一個 class 觸發 .is-flying），差別只在於這個 rig 的
+  // .envelope-canvas 裡多塞了 .mail-filename / .mail-postmark 兩個元素——因為它們是
+  // .mailaway-rig 的後代，會跟著同一個 rig 的 rotate/translate/filter/opacity 一起變化，
+  // 不需要另外寫動畫邏輯去同步，這正是「跟信封本體同一個 rig」這個結構本身要驗證的事。
+  (function setupFlyText(){
+    const rig = document.getElementById('flyTextRig');
+    const flyBtn = document.getElementById('flyTextBtn');
+    const resetBtn = document.getElementById('flyTextResetBtn');
+
+    flyBtn.addEventListener('click', () => {
+      rig.classList.add('is-flying');
+      flyBtn.disabled = true;
+    });
+    resetBtn.addEventListener('click', () => {
+      rig.classList.remove('is-flying');
+      flyBtn.disabled = false;
+    });
+  })();
+
+  // ===== 測試 2：全流程（跳進來→打開→關起來→往後躺→飛出去）=====
+  // 這是測試頁面，不接真實的「按確認才繼續」互動（那是實際串接 App.vue 時才需要的
+  // pending/committed 確認流程，見定案文件），單純從頭到尾自動播一遍，方便反覆重播檢查
+  // 銜接處順不順（尤其是「回彈同時帶開封口」跟「闔上後停頓一下才飛走」這兩個銜接點）。
+  (function setupFullSequence(){
+    const outer = document.getElementById('fullOuter');
+    const rig = document.getElementById('fullRig');
+    const replayBtn = document.getElementById('fullReplayBtn');
+    let timers = [];
+
+    const DROP_MS = 820;          // 對應 mail-drop-bounce 的動畫時長
+    const OPEN_AT = DROP_MS * 0.55; // 落下動畫跑到「回彈開始收斂」那一刻，順勢帶開封口
+    const HOLD_OPEN_MS = 1400;    // 表單畫面停留多久（測試用，模擬使用者填寫/確認的時間）
+    const HOLD_CLOSED_MS = 550;   // 闔上蓋章之後，飛走前的停頓（定案文件：顯示檔名+郵戳後再飛）
+    const FLY_MS = 680;           // 對應 .is-flying 的 transition 時長
+    const RESET_PAUSE_MS = 600;   // 飛走動畫播完之後，重置回起點前的緩衝，避免瞬間跳回很突兀
+
+    function clearTimers(){ timers.forEach(clearTimeout); timers = []; }
+    function after(ms, fn){ timers.push(setTimeout(fn, ms)); }
+
+    function play(){
+      clearTimers();
+      replayBtn.disabled = true;
+
+      // 重置到起點：信封在畫面外上方、闔著、看不見
+      rig.classList.remove('is-flying', 'is-dropping', 'show-mail-info');
+      outer.classList.remove('is-open');
+      outer.classList.add('is-closed');
+      rig.style.transition = 'none';
+      rig.style.transform = 'translateY(-420px)';
+      rig.style.opacity = '1';
+      rig.style.filter = 'none';
+      void rig.offsetWidth; // 強制 reflow，確保上面的重置真的生效，不被下一步的 class 動畫吃掉
+      // 這四個 inline style 都要清掉，不能只清 transition/transform——opacity/filter 沒清掉的話，
+      // 這兩個殘留的 inline 值（style="opacity:1;filter:none"）specificity 比 class 選到的規則高，
+      // 會永久蓋掉 .is-flying 裡的 opacity:0／blur()，變成「角度/距離有在動，但整封信怎麼樣都不會
+      // 透明、不會糊掉」——這個坑真的踩到過：測試時發現全流程那個信封動畫播完之後死不淡出，
+      // 一路查到才發現是這裡忘記重置。
+      rig.style.transition = '';
+      rig.style.transform = '';
+      rig.style.opacity = '';
+      rig.style.filter = '';
+
+      // 階段一：跳進來（垂直落下＋回彈）
+      rig.classList.add('is-dropping');
+
+      // 階段二：回彈收斂的同時帶開封口——不是落地後才另外觸發，是同一段連續動作
+      after(OPEN_AT, () => {
+        outer.classList.remove('is-closed');
+        outer.classList.add('is-open');
+      });
+
+      after(DROP_MS + 20, () => {
+        rig.classList.remove('is-dropping');
+      });
+
+      // 階段三：闔起來（沿用既有的折疊動畫，蠟封同時换回正面）＋這一刻才淡入檔名/郵戳
+      after(DROP_MS + HOLD_OPEN_MS, () => {
+        outer.classList.remove('is-open');
+        outer.classList.add('is-closed');
+        rig.classList.add('show-mail-info');
+      });
+
+      // 階段四：停頓一下（顯示檔名/郵戳的既定語意），再往後躺、飛出去
+      after(DROP_MS + HOLD_OPEN_MS + HOLD_CLOSED_MS, () => {
+        rig.classList.add('is-flying');
+      });
+
+      // 播完整段之後停一下，再自動重置回起點，方便反覆觀察銜接處
+      after(DROP_MS + HOLD_OPEN_MS + HOLD_CLOSED_MS + FLY_MS + RESET_PAUSE_MS, () => {
+        replayBtn.disabled = false;
+      });
+    }
+
+    replayBtn.addEventListener('click', play);
+    play(); // 測試用途：頁面載入就自動播放一次，不用等按鈕
+  })();
+</script>
+</body>
+</html>

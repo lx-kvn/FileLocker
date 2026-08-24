@@ -1,0 +1,1530 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>FileLocker — 造型探索 v2-13：側欄殼子 + 票根撕開改版（v4）</title>
+<style>
+  :root{
+    --vault-steel:#F4F3F0; --vault-steel-dim:#ECEAE5; --vault-line:#E0DDD5; --vault-line-strong:#CFCAC0;
+    --ink:#22221E; --ink-soft:#63604F; --ink-faint:#8B8776;
+    --brass:#A8770F; --brass-deep:#8C630C; --brass-tint:#FBF1DF; --brass-line:#EAD5A6;
+    --void-red:#A23B2A;
+    --paper:#FFFDF8; --line:#E7DCC0;
+    --radius:8px; --radius-sm:5px;
+    --font-stamp:'IBM Plex Mono','JetBrains Mono',ui-monospace,monospace;
+    --font-body:'IBM Plex Sans','Noto Sans TC',-apple-system,sans-serif;
+    --ease-out:cubic-bezier(0.23,1,0.32,1);
+    /* 這個 token 之前漏定義了——8-envelope-assembled.html／12-file-tab-merged.html 的
+       :root 都有 --ease-inout，這份檔案的信封開合轉場（.flap-group）、寄出飛走動畫都
+       直接抄了 var(--ease-inout)，卻沒把這個變數本身抄過來。CSS 對「用到未定義又沒有
+       備援值的 var()」的規則是整條宣告直接失效、退回瀏覽器預設（transition:all 0s，
+       等於瞬間跳過去，不是慢下來變頓，是根本沒有播）——這正是飛走動畫「完全看不到」、
+       開合動畫「感覺卡」的真正原因，不是效能問題，是這個變數從頭到尾沒接上。 */
+    --ease-inout:cubic-bezier(0.77,0,0.175,1);
+    --sidebar-w:200px; --sidebar-w-collapsed:60px;
+  }
+  /* 深色模式：測試用，比照 14-notebook-in-shell.html 已驗證過的機制（切 data-theme，
+     不是跟系統 prefers-color-scheme 走）——信封素材本身維持原色不換深色版（見定案文件
+     §5.2「信封素材維持原色，不跟著深色化」，這裡沒有 Envelope_Body_Drack.svg 這種東西）。 */
+  html[data-theme="dark"]{
+    --vault-steel:#1E1D1A; --vault-steel-dim:#26241F; --vault-line:#38352D; --vault-line-strong:#4A4638;
+    --ink:#EDEAE0; --ink-soft:#B7B09B; --ink-faint:#847D68;
+    --brass-tint:#3A2F17; --brass-line:#5C4A22;
+    --paper:#242119; --line:#3A3327;
+    /* 沒有這個瀏覽器原生控制項（checkbox 等）不會跟著 data-theme 換色，只認
+       prefers-color-scheme——這份 mockup 的深/淺色切換是自訂的 data-theme 機制，跟系統
+       設定無關，所以要手動告訴瀏覽器現在該用哪一套原生控制項外觀，不然打勾方塊在深色
+       模式下還是瀏覽器預設的亮色方塊，對比度很差、跟旁邊深色系介面格格不入。 */
+    color-scheme:dark;
+  }
+  :root{color-scheme:light;}
+  input[type="checkbox"]{accent-color:var(--brass);}
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:var(--font-body);color:var(--ink);font-size:14px;background:var(--vault-steel);}
+  .title-bar__spacer{flex:1;-webkit-app-region:drag;}
+  .theme-toggle{-webkit-app-region:no-drag;border:1px solid var(--vault-line-strong);background:var(--paper);
+    color:var(--ink);width:26px;height:26px;border-radius:50%;cursor:pointer;display:flex;
+    align-items:center;justify-content:center;font-size:13px;flex-shrink:0;}
+
+  /* TODO（實作進 App.vue 時要做的新功能，使用者要求先記下來，這輪還沒有 grilling 過細節）：
+     視窗控制鈕（關閉／最小化／最大化）的風格要能在 macOS／Windows 兩種造型之間切換。
+     不是換成原生控制項——兩種風格都還是用這裡的 Vue（.traffic-light 這組）做，Windows
+     樣式只是把位置（通常在右上角、由左到右依序是最小化／最大化／關閉，跟 macOS 由左到右
+     關閉／最小化／最大化、位置在左上角相反）跟造型（方形圖示按鈕，不是圓點）換成比較接近
+     Windows 原生的樣子。這輪的 mockup 還是固定用 macOS 造型，沒有做這個切換功能。 */
+  .shell{height:100vh;display:flex;flex-direction:column;}
+  .title-bar{height:38px;flex-shrink:0;display:flex;align-items:center;padding:0 14px;
+    -webkit-app-region:drag;border-bottom:1px solid var(--vault-line);background:var(--vault-steel);}
+  .traffic-lights{display:flex;gap:8px;-webkit-app-region:no-drag;}
+  .traffic-light{width:12px;height:12px;border-radius:50%;border:none;padding:0;}
+  .traffic-light--close{background:#FF5F57;} .traffic-light--minimize{background:#FEBC2E;} .traffic-light--maximize{background:#28C840;}
+  .title-bar__brand{margin-left:14px;font-weight:650;font-size:13px;color:var(--ink-soft);}
+
+  .body{flex:1;display:flex;min-height:0;}
+
+  .sidebar{width:var(--sidebar-w);flex-shrink:0;background:var(--vault-steel);border-right:1px solid var(--vault-line);
+    padding:14px 10px;display:flex;flex-direction:column;gap:2px;transition:width 220ms var(--ease-out);overflow:hidden;}
+  .sidebar.is-collapsed{width:var(--sidebar-w-collapsed);padding:14px 8px;}
+  .sidebar__collapse-btn{display:flex;align-items:center;gap:8px;border:1px solid transparent;background:none;
+    color:var(--ink-faint);font:inherit;font-size:12px;font-weight:600;padding:7px 8px;border-radius:var(--radius-sm);
+    cursor:pointer;margin-bottom:14px;transition:background-color 150ms ease,color 150ms ease;white-space:nowrap;}
+  .sidebar__collapse-btn:hover{background:var(--vault-steel-dim);color:var(--ink);}
+  .sidebar__collapse-btn svg{width:15px;height:15px;flex-shrink:0;transition:transform 220ms var(--ease-out);}
+  .sidebar.is-collapsed .sidebar__collapse-btn svg{transform:rotate(180deg);}
+  .sidebar.is-collapsed .sidebar__collapse-btn{justify-content:center;}
+  .sidebar__collapse-btn .label{overflow:hidden;text-overflow:ellipsis;}
+  .sidebar.is-collapsed .sidebar__collapse-btn .label{display:none;}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--radius-sm);
+    color:var(--ink-soft);font-weight:500;font-size:13.5px;text-decoration:none;white-space:nowrap;
+    position:relative;cursor:pointer;}
+  .nav-item svg{width:16px;height:16px;stroke-width:1.7;flex-shrink:0;}
+  .nav-item.active{color:var(--brass);font-weight:600;background:var(--brass-tint);}
+  .nav-item:focus-visible{outline:2px solid var(--brass);outline-offset:-4px;border-radius:var(--radius-sm);}
+  .sidebar.is-collapsed .nav-item{justify-content:center;padding:9px 0;}
+  .sidebar.is-collapsed .nav-item .label{display:none;}
+  .sidebar.is-collapsed .nav-item::after{
+    content:attr(data-label);position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%) scale(0.96);
+    background:var(--ink);color:#fff;font-size:12px;font-weight:500;padding:5px 9px;border-radius:6px;
+    white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 140ms ease,transform 140ms ease;z-index:20;}
+  .sidebar.is-collapsed .nav-item:hover::after{opacity:1;transform:translateY(-50%) scale(1);}
+
+  .main{flex:1;overflow-y:auto;padding:28px 40px 48px;min-width:0;}
+  .page-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:24px;}
+  .page-title{font-size:22px;font-weight:650;margin:0;letter-spacing:-.01em;display:flex;align-items:center;gap:10px;}
+  .page-title svg{width:19px;height:19px;color:var(--brass);}
+  .page-stats{font-family:var(--font-stamp);font-size:11.5px;color:var(--ink-faint);}
+  .toolbar-row{display:flex;align-items:center;gap:14px;margin-bottom:22px;}
+  .tabs{display:flex;gap:20px;}
+  .tabs button{border:0;background:none;font:inherit;font-weight:600;font-size:13px;color:var(--ink-faint);
+    padding:0 0 8px;border-bottom:2px solid transparent;cursor:pointer;}
+  .tabs button.active{color:var(--ink);border-bottom-color:var(--brass);}
+  .toolbar-row__spacer{flex:1;}
+  .btn{border:1px solid var(--vault-line-strong);background:var(--paper);color:var(--ink);font:inherit;font-weight:600;
+    font-size:12.5px;padding:8px 15px;border-radius:var(--radius-sm);cursor:pointer;transition:transform 150ms var(--ease-out),background-color 150ms ease,border-color 150ms ease;}
+  .btn:active{transform:scale(0.97);}
+  .btn--primary{background:var(--brass);border-color:var(--brass);color:#fff;}
+  .btn:disabled{opacity:0.45;cursor:not-allowed;}
+  .btn:disabled:active{transform:none;}
+  .btn--reset{border-color:var(--void-red);color:var(--void-red);}
+
+  .hint{font-size:12px;color:var(--ink-faint);margin:-8px 0 18px;line-height:1.6;}
+
+  /* ============ 票根列 v4 ============
+     v3 → v4 改動：
+     1. 撕線太短、圖示太大看起來像蟑螂鬚——撕線現在貫穿整張票根卡片的全高（`.ticket__seal`
+        用 align-self:stretch 撐滿整列高度），圖示縮小一點，線本身看得更清楚是一條真正的
+        「貫穿卡片」的虛線，不是圖示旁邊兩根短短的裝飾。
+     2. 撕開範圍要包含承載文字內容的白色卡片本身——上一版只有內容（文字/按鈕）被複製兩份
+        裁切，卡片的白底+邊框留在原地不動，看起來像「內容飄在卡片上面裂開」，不夠有說服力。
+        這版把整張 `.ticket`（含背景/邊框/圓角）拿去複製裁切，撕開時看到的是兩個各自完整
+        的半張卡片（各自帶著自己那一側的白底/邊框）飛開，才是真的「卡片本身裂成兩半」。
+     3. 郵戳徽章（找不到指標檔／巢狀鎖定）改成直接照抄 9-envelope-list.html 的尺寸與文字
+        擺放邏輯（80×80 大圖示＋文字並排，獨立固定寬度欄位，圖示用 position:absolute 疊出
+        列高之外，不會把整列撐高）。
+     4. 撕開動畫播完，比照〈信封清單虛線的互動〉原本定案的收尾：整張（已經裂開的兩半合在
+        一起當一個單位）往旁邊飛走、淡出，下面的列跟著往上補位——不是像上一版那樣自動彈回
+        原地。因為這是測試不是真的刪除，右上角加一顆「重置清單」把所有列復原，方便重複測試。 ============ */
+  .list{display:flex;flex-direction:column;}
+
+  /* v4 → v5：原本 `.ticket-wrap` 一直帶著 `overflow:hidden` + 寫死的 `max-height:200px`，
+     兩個問題都出在這裡——①窄視窗時文字換行需要的高度一旦超過 200px 就直接被裁掉，列看起來
+     矮了一截；②飛走動畫的位移（translateX）也會被同一個 overflow:hidden 攔腰截斷，看起來
+     像卡到外面去。改成平常完全不設高度限制／不裁切（自然高度，會隨內容換行正常撐高），
+     只有「真的要收合讓下面的列補位」那一刻才由 JS 量測當下實際高度、暫時鎖住當成收合動畫
+     的起點，而且要等飛走＋淡出動畫真的播完（畫面上已經看不到東西）才開始收合，兩段動畫
+     前後接續、不重疊，收合的當下沒有任何可見內容會被裁到。 */
+  .ticket-wrap{margin-bottom:10px;}
+  .ticket-wrap.is-collapsing{overflow:hidden;transition:max-height 360ms var(--ease-out),margin-bottom 360ms var(--ease-out);}
+  .ticket-wrap.is-collapsing.is-gone{max-height:0 !important;margin-bottom:0;}
+
+  .ticket-stage{position:relative;transition:transform 380ms var(--ease-out),opacity 340ms ease;}
+  .ticket-wrap.is-leaving .ticket-stage{transform:translateX(90px) rotate(2.5deg);opacity:0;}
+
+  /* 撕線／圖示（`.ticket__seal`）改成用 position:absolute 直接掛在 `.ticket` 上，脫離
+     原本受卡片自己 padding 限制的 flex 排版——這樣它才能真的頂到卡片白底的上下邊緣
+     （absolute 子元素的 top/bottom 是相對容器的 padding box 量，不受 `.ticket` 自己的
+     padding 影響），不是被內距框住、停在文字內容一樣高的範圍。右邊 padding-left 留出
+     seal 的寬度＋間距，其餘內容（文字/郵戳/按鈕）照舊走 flex 排版，只是往右挪出這塊空間。 */
+  .ticket{position:relative;background:var(--paper);border:1px solid var(--line);border-radius:10px;
+    display:flex;align-items:center;gap:16px;padding:10px 20px 10px 76px;
+    transition:border-color 150ms var(--ease-out),opacity 200ms ease;}
+  .ticket-stage:hover .ticket{border-color:var(--vault-line-strong);}
+  .ticket-wrap.is-tearing .ticket,
+  .ticket-wrap.is-peeking .ticket{opacity:0;}
+
+  .ticket__half{position:absolute;inset:0;display:flex;align-items:center;gap:16px;padding:10px 20px 10px 76px;
+    opacity:0;pointer-events:none;transition:transform 420ms var(--ease-out);}
+  .ticket-wrap.is-tearing .ticket__half,
+  .ticket-wrap.is-peeking .ticket__half{opacity:1;}
+  .ticket__half--left{transform-origin:bottom left;}
+  .ticket__half--right{transform-origin:bottom right;}
+
+  /* 「撕一小角」原本只有轉一下圖示＋線變紅，跟真正撕開的動作沒有視覺上的關聯，看起來
+     像另一個不相干的小動畫。改成直接借用撕開機制本身，只是位移／角度縮到很小（真正撕開的
+     四分之一左右）＋更快的過場時間（160ms，不是完整撕開用的 420ms）——播的其實是「撕開
+     動畫的最前面一小段」，不是另外設計一套獨立的回饋動作，驗證通過後接著播的完整撕開才會
+     感覺是同一個動作的延續，不是切成兩段不同的東西。 */
+  .ticket-wrap.is-peeking .ticket__half{transition:transform 160ms var(--ease-out);}
+  .ticket-wrap.is-peeking .ticket__half--left{transform:translateX(-0.75px) rotate(-0.35deg);}
+  .ticket-wrap.is-peeking .ticket__half--right{transform:translateX(0.75px) rotate(0.3deg);}
+  .ticket-wrap.is-tearing.is-open .ticket__half--left{transform:translateX(-9px) rotate(-3.5deg);}
+  .ticket-wrap.is-tearing.is-open .ticket__half--right{transform:translateX(9px) rotate(2.5deg);}
+
+  .ticket__seal{position:absolute;left:0;top:0;bottom:0;width:56px;
+    display:flex;align-items:center;justify-content:center;border:none;background:none;cursor:pointer;
+    padding:0;border-radius:8px;transition:background-color 150ms ease;}
+  .ticket .ticket__seal:hover{background:rgba(34,34,30,0.035);}
+  .ticket .ticket__seal:focus-visible{outline:2px solid var(--brass);outline-offset:2px;}
+
+  /* 撕線貫穿整個 seal（top:0;bottom:0），seal 本身又是貼齊卡片上下邊緣的 absolute 元素——
+     等於撕線直接頂到卡片白底的邊緣，讀起來才像真正的票根騎縫線貫穿整張票根，不是一小段
+     浮在圖示旁邊、被內距框住的裝飾線。 */
+  .ticket__tear-line{position:absolute;left:50%;top:0;bottom:0;width:0;
+    border-left:2px dashed var(--ink-faint);transform:translateX(-50%);transition:border-color 160ms ease;}
+  .ticket-wrap.is-peeking .ticket .ticket__tear-line,
+  .ticket-wrap.is-tearing .ticket__tear-line{border-color:var(--void-red);}
+
+  /* 撕開的兩半各自帶著自己那一份撕線的複製（因為左右半邊本來就是整張卡片各自的完整複製，
+     撕線也在複製範圍內）。平常兩邊的撕線疊在正中間、看起來就是同一條線；撕開時要讓兩邊
+     各自留一條線在自己的切邊旁邊，不是這條共用的線被攔腰裁成兩段（裁在正中央的話，兩邊
+     各自只分到線寬的一半，很容易其中一邊視覺上完全看不到）。左右半邊各自把線往自己那一側
+     推開一點點，撕線裁切邊界（50%）左右各留出完整一條線的空間。 */
+  .ticket__half--left .ticket__tear-line{left:calc(50% - 2px);}
+  .ticket__half--right .ticket__tear-line{left:calc(50% + 2px);}
+
+  /* 圖示比上一版縮小（38px→32px），邊線維持——沒有邊線色塊看起來像印刷上去的，
+     不像「貼上去」的貼紙／蠟封；縮小之後跟貫穿全高的撕線比例才協調，不會頭重腳輕。 */
+  .ticket__icon{position:relative;z-index:2;width:32px;height:32px;border-radius:50%;
+    border:1.6px solid currentColor;background:var(--paper);display:flex;align-items:center;justify-content:center;
+    box-shadow:0 1px 2px rgba(34,34,30,0.08);transition:transform 150ms var(--ease-out),background-color 150ms ease;}
+  .ticket__icon svg{width:14px;height:14px;}
+  .ticket-wrap.is-peeking .ticket .ticket__icon{transform:rotate(-6deg);}
+
+  .info{min-width:0;flex:1;align-self:center;}
+  .name{font-weight:650;font-size:14px;color:var(--ink);}
+  .meta{font-size:11.5px;color:var(--ink-soft);margin-top:3px;white-space:nowrap;}
+  .meta span+span::before{content:"·";margin:0 6px;color:var(--vault-line-strong);}
+
+  /* 郵戳徽章——直接照抄 9-envelope-list.html 的尺寸／文字擺放（80px 大圖示＋文字並排，
+     獨立固定寬度欄位，圖示用 absolute 疊出列高之外，不撐開整列高度）。 */
+  .postmark-slot{position:relative;align-self:center;width:90px;height:36px;flex-shrink:0;}
+  .postmark{position:absolute;left:0;top:50%;width:90px;transform:translateY(-50%);display:flex;align-items:center;gap:6px;}
+  .postmark img{width:56px;height:56px;object-fit:contain;flex-shrink:0;}
+  .postmark .pm-text{font-size:11px;font-weight:800;letter-spacing:-.01em;line-height:1.25;white-space:normal;max-width:40px;}
+  .postmark.lock .pm-text{color:var(--brass-deep);}
+  .postmark.warn .pm-text{color:var(--void-red);}
+
+  /* 固定寬度＋靠右對齊（照抄 9-envelope-list.html 的既有作法）：不管這一列的動作按鈕是
+     1 顆還是 2 顆，.actions 這個欄位的寬度都一樣、按鈕永遠貼著欄位右緣——這樣緊接在它
+     前面的郵戳欄位（.postmark-slot）水平位置才會真正固定，不會因為隔壁按鈕數量不同、
+     .info 那個 flex:1 欄位跟著吸收/釋放空間，把郵戳擠著跟著飄移。寬度抓 180px，足夠容納
+     「解密」+「Passkey」兩顆按鈕還有間距。 */
+  .actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-shrink:0;
+    align-self:center;width:180px;}
+  .actions button{border:1px solid var(--vault-line-strong);background:var(--paper);font:inherit;font-weight:600;
+    font-size:12px;padding:7px 13px;border-radius:var(--radius-sm);color:var(--ink);cursor:pointer;
+    transition:transform 150ms var(--ease-out),background-color 150ms ease,border-color 150ms ease;}
+  .actions button:active{transform:scale(0.97);}
+  /* 動作按鈕全部統一成白底外框，不特別標示哪一顆是「主要」——每一列實際會開放哪些按鈕
+     本來就不固定（有的列 2 顆、有的列 1 顆），如果金色實心只套在其中一顆，那顆金色按鈕
+     在畫面上的左右位置會隨列而變，看起來像色塊亂跳，反而更亂，不如統一成同一種樣式。 */
+
+  /* ============================================================================
+     以下：第 5 節〈信封加密流程接入側欄殼子〉＋第 1.11 節〈獨立解密流程（信封＋Sheet）〉
+     這兩節決策的 mockup 實作。素材/座標系直接沿用 12-file-tab-merged.html（420px 畫布）
+     跟 8-envelope-assembled.html（開合動畫、落下回彈、檔名/郵戳/時間戳記顯示）已經驗證過
+     的數字，不重新量測。 ============================================================ */
+
+  /* overflow-y:auto 是防呆——信封＋Sheet 疊起來的總高度在比較矮的視窗下可能超出可視範圍，
+     .overlay 是 fixed 疊層、置中對齊、本身沒有滾動能力，內容一旦比視窗高，超出的部分
+     （通常是最下緣）會直接被視窗邊界切掉、沒有任何辦法看到——這就是使用者反映「信封本體
+     最下緣的邊緣線好像被切到」最可能的原因（不是某個容器設錯 overflow:hidden 裁切，
+     是根本沒有地方可以捲動）。加這個之後，矮視窗下至少可以捲動看到完整內容，不會整段
+     消失在視窗邊界外。 */
+  .overlay{position:fixed;inset:0;background:rgba(34,34,30,0.35);backdrop-filter:blur(3px);
+    display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;
+    overflow-y:auto;transition:opacity 200ms var(--ease-out);z-index:80;}
+  .overlay.is-open{opacity:1;pointer-events:auto;}
+  /* 之前為了「清單長高不要讓信封跟著跳」加了 flex-start + padding-top，結果使用者反映
+     信封整組貼在視窗最上緣，跟預期的「停在視窗正中間」不符——重新檢查後發現當初擔心的
+     「跳動」問題其實已經被 .picked-list 自己的固定高度＋內部捲動解決了（見下面已選檔案
+     清單的既有註解：筆數變化只影響清單內部捲動，不影響 .sheet 自己的外層高度），
+     flex-start 這個補丁是多餘的、而且直接造成「貼在最上面」這個新問題。移除，兩個疊層
+     統一用 .overlay 基底的 align-items:center 真正置中。 */
+
+  /* 信封本體＋封口／蠟封／蠟滴——座標系跟 12-file-tab-merged.html 完全一致（420px 畫布，
+     信封可視輪廓落在 32.073%~67.94%，裝飾三角形在 32.07%~54.54%），開合動畫（flap-group
+     的 rotateX）跟落下回彈／寄出飛走都直接照抄 8-envelope-assembled.html 的既有結構。
+
+     修正：第一版把 perspective 跟 .is-dropping 動畫套在同一個元素（.envelope-outer）上，
+     結果動畫播起來會頓——8-envelope-assembled.html 原本的結構是刻意分兩層的：
+     .envelope-outer 只負責「建立 perspective 觀察座標系」，真正被 transform 動畫牽動的是
+     裡面另一層 .mailaway-rig，兩者職責分開，瀏覽器才不用每一影格重算「perspective 座標系
+     本身也在動」這種複合情境。這裡照抄回這個分層，不再省略 .mailaway-rig。 */
+  .envelope-outer{position:relative;width:420px;overflow:visible;perspective:1600px;}
+  .mailaway-rig{position:relative;z-index:1;width:420px;transform-origin:50% 50%;transform-style:preserve-3d;
+    will-change:transform,filter,opacity;}
+  .envelope-canvas{position:relative;width:420px;height:420px;transform-style:preserve-3d;}
+  .envelope-canvas img.body{position:absolute;inset:0;width:100%;height:100%;}
+  /* backface-visibility:hidden 拿掉了——之前為了穩定開合閃爍加的，結果副作用更大：
+     闔上時封口轉滿 -180 度，瀏覽器在這個角度會判定「背面朝向使用者」，直接把整個封口
+     藏起來，底下信封本體烤進去的裝飾圖示（原本該被闔上的封口蓋住）就這樣透出來，使用者
+     實測抓到這個「封口圖層跑到後面去了」的現象。封口本身沒有靠 backface 切換內容（正反
+     兩面的蠟滴/蠟封是另外兩個獨立元素疊上去處理的，見上面蠟滴/蠟封的既有註解），不需要
+     這個設定，拿掉不影響原本的蠟封機制，只是不再意外把整個封口藏起來。 */
+  .flap-group{position:absolute;left:0;top:-17.927%;width:100%;height:100%;
+    transform-style:preserve-3d;transform-origin:50% 50%;transition:transform 420ms var(--ease-inout);
+    will-change:transform;}
+  .flap-group img.flap{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;}
+  .envelope-outer.is-open .flap-group{transform:rotateX(0deg);}
+  .envelope-outer.is-closed .flap-group{transform:rotateX(-180deg);}
+  .wax-drip-back{position:absolute;left:50%;top:27.53%;width:44px;height:44px;transform:translate(-50%,-50%);
+    transition:opacity 30ms linear 195ms;pointer-events:none;}
+  .wax-drip-back img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+  .envelope-outer.is-open .wax-drip-back{opacity:1;}
+  .envelope-outer.is-closed .wax-drip-back{opacity:0;}
+  .wax-seal{position:absolute;left:50%;top:29.5%;width:42px;height:42px;
+    transform:translate(-50%,-50%) rotateX(180deg);transition:opacity 30ms linear 195ms;pointer-events:none;}
+  .wax-seal img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+  .envelope-outer.is-closed .wax-seal{opacity:1;}
+  .envelope-outer.is-open .wax-seal{opacity:0;}
+
+  /* 落下＋回彈開場，照抄 8-envelope-assembled.html 的 mail-drop-bounce keyframe（820ms），
+     套在 .mailaway-rig 上（不是 .envelope-outer）。 */
+  @keyframes mail-drop-bounce{
+    0%{transform:translateY(-420px);}
+    55%{transform:translateY(0);}
+    72%{transform:translateY(-16px);}
+    86%{transform:translateY(5px);}
+    100%{transform:translateY(0);}
+  }
+  .mailaway-rig.is-dropping{animation:mail-drop-bounce 820ms cubic-bezier(0.34,1.28,0.64,1) both;}
+
+  /* 寄出飛走——原本照抄 8-envelope-assembled.html 的完整版（3D rotate＋translate＋
+     filter:blur()＋opacity 四種屬性疊在一起播），使用者實測發現整個動畫「卡到不行」。
+     `filter:blur()` 是這裡面成本最高的一項——模糊是少數沒辦法純靠 GPU 合成層處理的
+     CSS 效果，瀏覽器得每一影格重新算模糊後的像素，疊加在本來就有 3D perspective／
+     preserve-3d 的巢狀結構上（多層各自建立獨立的合成上下文）會讓成本再往上疊；這不是
+     「CSS 天生比 JS 慢」，同樣的視覺效果換 JS 動畫函式庫來做一樣要吃這個合成成本，問題
+     出在效果本身（模糊＋多層 3D），不是實作動畫用的語言。
+     這裡先拿掉 filter:blur() 這個最貴的部分，只保留 rotate＋translate＋opacity（都是
+     GPU 合成友善的屬性），犧牲一點「越飛越模糊」的視覺細節換取實際流暢度——如果拿掉
+     blur 之後還是卡，代表瓶頸在別的地方（例如巢狀 preserve-3d 太多層、或整層 overlay
+     的 backdrop-filter:blur(3px) 疊加），要再往下查。 */
+  .envelope-outer.mailaway-outer{perspective:3200px;}
+  .mailaway-rig.is-flying{
+    transition:
+      rotate 260ms var(--ease-out),
+      translate 500ms var(--ease-inout) 220ms,
+      opacity 460ms linear 240ms;
+    rotate:x 35deg;
+    translate:0 -130px -260px;
+    opacity:0;
+  }
+
+  /* 選檔案 dropzone——「選擇檔案」按鈕原本放在信封畫布裡（top:50%），跟深疊進來的 Sheet
+     搶位置，之前用「往上挪」硬閃過去；使用者這輪直接指出根本解法：按鈕不屬於信封這個
+     純展示/拖放目標，應該收進 Sheet（Sheet 本來就是操作面板的角色，取消/下一步/繼續新增
+     都在那裡）。信封現在只剩下純文字提示，不再放任何互動元素，位置維持在裝飾三角形
+     （32%~54.54%）正中間，不用再閃避 Sheet 的疊入範圍。按鈕本體搬到 #pickedSheet 裡，
+     見下面 markup 跟 JS。 */
+  /* 靠 DOM 順序、靠 translateZ 調整 3D 深度都試過，量測後都沒用——flap-group 旋轉軸心在
+     自己中心，轉滿 180 度後整個平面其實還是回到 Z=0，跟同樣停在 Z=0 附近的扁平文字沒有
+     真正拉開夠明顯的深度差，瀏覽器的 3D 排序在這個情境下不可靠。改用最直接、保證有效的
+     做法：不靠 3D 疊放猜測，直接用「信封開／關」這個狀態本身控制文字的透明度——闔上時
+     opacity 直接歸零，跟封口實際轉到哪個角度、疊放算得準不準完全無關。
+     淡入的時機還要再修一次：class 一切換就立刻開始淡入，但封口本身的轉場（FLAP_MS＝
+     420ms）還在播，文字會在封口都還沒轉完的時候就先冒出來，看起來很突兀。開合兩個方向
+     故意用不同的 transition：闔上（.is-closed 那條規則）不delay、很快淡出，封口一開始
+     闔就趕快把文字藏起來；打開（base 規則，也就是 .is-closed 被移除、退回這條）加一個
+     跟 FLAP_MS 對齊的 420ms transition-delay，等封口實際轉完、信封「完整」打開了，文字
+     才開始淡入，不是跟著封口一起半開半淡。 */
+  .dropzone p{position:absolute;left:50%;top:43%;transform:translate(-50%,-50%);margin:0;
+    font-size:11.5px;color:var(--ink-soft);white-space:nowrap;
+    opacity:1;transition:opacity 160ms ease 420ms;}
+  .envelope-outer.is-closed .dropzone p{opacity:0;transition:opacity 100ms ease;}
+
+  /* 檔名／郵戳／加密時間——闔上蓋章之後才淡入（.show-mail-info），照抄
+     8-envelope-assembled.html 的 top:58%（信封可視輪廓下緣附近）。上一輪一度把這幾個
+     元素往上挪到 48%，是為了閃開會深疊進來的 Sheet——使用者明確反映不需要閃，Sheet
+     蓋住/壓住這些元素是可以接受的（跟 dropzone 那個互動按鈕不一樣，檔名/郵戳只是
+     展示用途，被蓋住不影響操作），所以移回原本照抄 8 的座標，也拿掉先前為了閃避
+     加的「信封打開就淡出」那條規則（不再需要）。
+     解密流程的信封從一開始就是闔著的，不需要等蓋章動畫，直接常駐顯示（見下面
+     .decrypt-envelope 的覆蓋規則）。 */
+  .mail-filename,.mail-postmark{opacity:0;transition:opacity 260ms var(--ease-out);}
+  .envelope-outer.show-mail-info .mail-filename,
+  .envelope-outer.show-mail-info .mail-postmark{opacity:1;}
+  .envelope-outer.decrypt-envelope .mail-filename,
+  .envelope-outer.decrypt-envelope .mail-postmark{opacity:1;transition:none;}
+  /* 檔名標籤：座標／字級沿用 8-envelope-assembled.html，但那份原稿的畫布是 320px，這裡的
+     畫布放大到 420px（×1.3125）——字級/內距沒有跟著等比放大的話，相對整個信封看起來明顯
+     偏小，這裡照畫布放大比例把 font-size／padding 一起放大。
+     對齊方式改成「右緣固定、往左長」（right 屬性，不是 left+max-width）——原本 left:11%
+     +max-width:26% 是左緣固定往右長，字數變動時標籤會在信封上飄移；改成右緣固定在跟原本
+     同一個位置（100%−(11%+26%)=63%），字數變動只會讓左緣進退，右緣位置不變。
+     max-width 維持 26%，超過還是省略號截斷，不是無限制變長。 */
+  .mail-filename{position:absolute;right:63%;top:58%;transform:translateY(-50%);background:#fffaf0;
+    border:1px solid var(--brass);border-radius:4px;padding:2px 7px 3.5px;font-size:10px;font-weight:600;
+    color:#6b5527;white-space:nowrap;max-width:26%;overflow:hidden;text-overflow:ellipsis;
+    box-shadow:0 1px 2px rgba(0,0,0,.06);}
+  .mail-postmark{position:absolute;right:19%;top:58%;transform:translateY(-50%);width:64px;height:64px;}
+  .mail-postmark img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+  .mail-postmark .mail-timestamp{position:absolute;left:68%;top:59%;font-size:6px;font-weight:700;
+    letter-spacing:-0.3px;color:#8a6a1f;white-space:nowrap;font-variant-numeric:tabular-nums;}
+
+  /* ============ 共用元件：Sheet 兩段式滑動進場／退場 ============
+     整輪唯一沒有先例、要從零設計的動畫（12-file-tab-merged.html 的 .sheet 只有 scale+fade，
+     見〈GUI 造型探索_定案文件〉§5.2）。
+
+     第四次修正——找到根本問題了：前幾輪一直用「negative margin（把 Sheet 拉近信封）
+     +transform:translateY()（兩段式滑動）」疊加在一起，這兩者疊加會讓 Sheet 在動畫過程
+     中的實際位置變成「相對於它自己被 margin 拉近後的靜止點再位移」，而 margin 本身又會
+     讓 .envelope-outer 整個容器的版面高度縮水（負邊距會讓後面的內容往上吃）——這連鎖
+     反應在加上「整層疊層要置中」之後徹底失控：使用者截圖顯示 Sheet 出場時整個飄到視窗
+     很下面、跟信封完全脫鉤，就是這個連鎖反應的結果，不是單純數值選錯。
+
+     改用完全不同的做法：**Sheet 不再參與 .envelope-outer 的版面排版**（不用 margin 疊加、
+     不佔版面高度），直接用 `position:absolute` 釘死在信封本體上的一個固定座標，用
+     `top`（不是 margin）決定要疊多深，動畫純粹是這個固定基準點上下位移。這樣
+     .envelope-outer 的版面高度永遠只由信封本體（420px）決定，不會被 Sheet 的位置或
+     動畫狀態影響——「信封置中」才會是真正穩定、可預期的置中，不會因為 Sheet 疊多深、
+     動畫播到哪一格而跟著飄移。
+     - 基準點：top:245px（信封 420px 畫布高度的 58% 左右），對應「疊進信封可視範圍
+       （32%~68%）下半段」這個使用者用 Affinity 示範過的深度。
+     - sheet--hidden：不可見（opacity:0），停在基準點（跟 settle 同一個位置），代表
+       「還沒抽出來、被信封擋住」——只是透明，不是真的移到別的地方去。
+     - sheet--reveal：從基準點往下位移 200px（translateY(200px)），讓卡片完全清出信封
+       420px 畫布盒子的下緣之外，這是唯一會產生明顯位移的中繼姿態。
+     - sheet--settle：位移歸零，回到基準點——也就是疊進信封可視範圍內、蓋在信封上方
+       （z-order 在前）的最終定位。
+     水平置中用 `left:50%` + `translateX(-50%)`（原本是 margin:auto，改成跟垂直位移
+     共用同一個 transform，避免又混用兩種置中機制）。
+     進場＝hidden→reveal→settle（先滑出露臉，再收回疊上信封）；退場＝settle→reveal→hidden
+     （反過來播，紙條塞回信封後面）。曲線用 cubic-bezier(0.32, 0.72, 0, 1)（iOS 風格抽屜
+     曲線），呼應 emil-design-eng skill 提供的 --ease-drawer token，不用彈簧式 JS 動畫函式庫
+     ——這是一次性、觸發後播到底的動畫，沒有使用者持續拖曳、隨時可能被打斷的情境，CSS 曲線
+     已經足夠（見定案文件 §5.2 決策理由）。 */
+  .sheet{position:absolute;left:50%;top:245px;z-index:2;width:fit-content;box-sizing:border-box;
+    background:var(--paper);border-radius:9px;box-shadow:0 4px 10px rgba(34,34,30,.16);
+    padding:12px 14px 13px;transform:translate(-50%,0);opacity:1;
+    transition:transform 280ms cubic-bezier(0.32,0.72,0,1),opacity 160ms ease;}
+  .sheet .btn{font-size:11.5px;padding:6px 12px;}
+  .sheet--hidden{opacity:0;pointer-events:none;transform:translate(-50%,0);transition:none;}
+  .sheet--reveal{opacity:1;pointer-events:none;transform:translate(-50%,200px);
+    transition:transform 280ms cubic-bezier(0.32,0.72,0,1),opacity 160ms ease;}
+  .sheet--settle{opacity:1;pointer-events:auto;transform:translate(-50%,0);
+    transition:transform 280ms cubic-bezier(0.32,0.72,0,1);}
+  /* 退場專用的第二段——跟 sheet--hidden 最終視覺結果一樣（位置歸零、opacity:0），但這裡
+     要有轉場動畫（sheet--hidden 那個 transition:none 是刻意設計給「進場前瞬間重置起點」
+     用的，不能拿來播退場，播退場會變成「滑下去之後直接瞬間消失」，沒有真的滑回去疊上
+     信封——這正是使用者這輪抓到的問題）。退場播完之後 JS 會再切到 sheet--hidden 收尾，
+     兩者最終視覺狀態相同，這個切換不會有任何可見的跳動。 */
+  .sheet--retreat{opacity:0;pointer-events:none;transform:translate(-50%,0);
+    transition:transform 280ms cubic-bezier(0.32,0.72,0,1),opacity 200ms ease;}
+
+  /* 兩張 Sheet 之間的「連貫翻頁」——不是每次換 Sheet 都要抽出/躲回，那套語言代表「這個
+     東西被收起來、換了一件不相干的事」；使用者實測反映「選檔案」→「設密碼」這兩步是
+     同一個連貫流程的前後兩頁，不是各自獨立的物件，連續兩次抽出/躲回反而讓人覺得心路
+     歷程被打斷。改用單純淡出淡入（同一個位置原地交叉淡化），跟 decrypt-sheet 內部
+     page1/page2 用左右滑動翻頁是同一個判斷原則：同一段任務裡的步驟切換用「翻頁」，
+     一段任務真正結束、要收起來才用「抽出/躲回」（見下面 JS 的 playSheetCrossfade，
+     跟只用在「步驟二送出」那個真正的段落結尾的 playSheetTwoPhaseExit 分工）。 */
+  /* 使用者明確要求：不要用模糊遮蓋轉場，要一整套「真正的縮放動畫」把過渡本身做完整，
+     模糊是取巧、縮放才是真正在講「這塊東西在變形」這件事。拿掉 filter，縮放輻度也從
+     原本很保守的 0.96 放大到 0.88，讓「先縮小消失、再從縮小長回全尺寸」這個動作本身
+     看得出來、感覺得到，不是靠模糊糊掉細節去騙眼睛；退場跟進場各自用不同的曲線（照
+     emil-design-eng skill 的判斷原則——退場/離場用一般 ease，進場用強 ease-out
+     cubic-bezier(0.23,1,0.32,1)，讓「長出來」那一下有俐落的起步感，不是兩段用同一條
+     曲線各退一半）。 */
+  .sheet--morph-start{opacity:0;pointer-events:none;transform:translate(-50%,0) scale(0.88);
+    transition:none;}
+  .sheet--fade-out{opacity:0;pointer-events:none;transform:translate(-50%,0) scale(0.88);
+    transition:opacity 200ms ease,transform 200ms ease;}
+  .sheet--fade-in{opacity:1;pointer-events:auto;transform:translate(-50%,0) scale(1);
+    transition:opacity 260ms cubic-bezier(0.23,1,0.32,1),transform 260ms cubic-bezier(0.23,1,0.32,1);}
+
+  /* 已選檔案清單（照抄 12-file-tab-merged.html） */
+  .picked-list-frame{border:1px solid var(--line);border-radius:8px;padding:6px;margin-bottom:8px;background:var(--vault-steel-dim);}
+  .picked-list{list-style:none;margin:0;padding:0;width:268px;display:flex;flex-direction:column;gap:6px;height:112px;overflow-y:auto;}
+  .picked-list li{display:flex;align-items:center;justify-content:space-between;background:var(--paper);
+    border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:12px;color:var(--ink);}
+  .picked-list li button{border:none;background:none;color:var(--void-red);font:inherit;font-size:11px;cursor:pointer;}
+  .link-more{border:none;background:none;color:var(--brass-deep);font:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:0;}
+  /* 取消／下一步這排永遠都在（不管現在是「選擇檔案」空狀態、還是已選清單狀態），跟上面
+     內容之間加一條分隔線＋留白，讀起來才是「上面是內容、下面是這張卡片固定的操作列」，
+     不是一串按鈕擠在一起分不出層次。 */
+  .add-file-actions{display:flex;justify-content:center;gap:8px;padding-top:12px;
+    margin-top:2px;border-top:1px solid var(--line);}
+  #pickedWrap{margin-bottom:2px;}
+  /* 「選擇檔案」按鈕 ↔ 已選檔案清單這組切換，套同一套縮放語言（見 JS playPanelMorphSwap）——
+     跟 Sheet 之間的轉場用同一組數值（0.88 縮放、退場 200ms 一般 ease、進場 260ms 強
+     ease-out），維持整體節奏一致，不是又另外發明一組數字。 */
+  .panel-morph-out{opacity:0;transform:scale(0.88);transition:opacity 200ms ease,transform 200ms ease;}
+  .panel-morph-start{opacity:0;transform:scale(0.88);transition:none;}
+  .panel-morph-in{opacity:1;transform:scale(1);
+    transition:opacity 260ms cubic-bezier(0.23,1,0.32,1),transform 260ms cubic-bezier(0.23,1,0.32,1);}
+  /* 「選擇檔案」是空狀態下唯一有意義的動作，比照「下一步」用實心金色（.btn--primary）
+     給它該有的視覺份量，不是跟「取消」同一種次要外框樣式；寬度撐滿跟已選清單同寬
+     （268px），不是縮在自己文字大小的小按鈕，跟下面的卡片寬度也對得齊。 */
+  #fakePickBtn{display:block;width:268px;margin:0 auto 14px;padding:10px 15px;}
+
+  /* 選檔案（已經有選檔案）／設密碼這兩個狀態統一撐到同一個高度——這兩者才是交叉縮放/
+     模糊/淡化「液態」轉場（見 playSheetCrossfade）實際切換的前後兩個畫面，高度不一樣的話
+     中途還是感覺得到「這張卡片突然變矮/變高」，不夠像同一塊東西在變形。
+     一開始還沒選檔案、只有「選擇檔案」按鈕那個空狀態刻意不套這個最小高度——使用者明確
+     反映空狀態被拉這麼高很奇怪：那個狀態本來就不會直接跟設密碼畫面交叉切換（要先選了
+     檔案、「下一步」才會啟用），沒有「兩者要看起來像同一塊東西」這個理由，維持自己原本
+     緊湊的高度就好。用 JS 依「有沒有選檔案」切換 .has-files 這個 class 來決定要不要套用
+     這個最小高度（見 renderPickedList）。 */
+  #pickedSheet.has-files, #step2Sheet{min-height:224px;display:flex;flex-direction:column;justify-content:space-between;}
+
+  /* 步驟二（密碼／Passkey／恢復金鑰）——排版時試過塞進信封輪廓內（比照
+     8-envelope-assembled.html 的 .form-zone），欄位（密碼欄＋2 個核取方塊＋按鈕）疊起來
+     還是會頂到信封下緣、跟裝飾三角形搶位置；改用跟步驟一同一套 Sheet 容器最省事、風險最低
+     ——定案文件 §5.2 把這個排版決定留給實作時量測，這裡選 Sheet 這條路，記下來避免以後
+     誤以為漏做了「塞進信封輪廓」這個選項。 */
+  .step2-form{display:flex;flex-direction:column;gap:10px;width:240px;}
+  .step2-form label{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink);}
+  .step2-form input[type="password"]{width:100%;box-sizing:border-box;border:1px solid var(--line);
+    border-radius:6px;padding:8px 10px;font:inherit;font-size:13px;background:var(--paper);color:var(--ink);}
+  /* 輸入框的強調色改用 #DCC289——跟信封本體那圈邊緣線同一個顏色，讓「聚焦中的輸入框」
+     視覺上跟信封素材本身的線條掛勾，不是預設瀏覽器藍色/系統色那種毫無關聯的顏色。
+     outline 拿掉、改用 border-color+box-shadow 做聚焦樣式，圓角矩形的外框光暈才會跟著
+     input 本身 6px 圓角走，不會被瀏覽器預設方形 outline 破壞圓角視覺。 */
+  .step2-form input[type="password"]:focus,
+  .decrypt-sheet input[type="password"]:focus,
+  .decrypt-sheet input[type="text"]:focus{
+    outline:none;border-color:#DCC289;box-shadow:0 0 0 3px rgba(220,194,137,.35);}
+  /* 跟 .add-file-actions 同一套「分隔線＋留白」語言——原本按鈕直接貼在核取方塊下面，
+     使用者反映擠在一起，補上跟步驟一那張卡片一致的間距/分隔線處理，兩張卡片的操作列
+     讀起來也更像同一套系統，不是兩種不同的排版邏輯。 */
+  .step2-actions{display:flex;justify-content:center;gap:8px;padding-top:14px;
+    margin-top:6px;border-top:1px solid var(--line);}
+
+  /* 恢復金鑰揭露 Sheet——一次性金鑰揭露，不能點外面關閉，只能按「已存檔/關閉」明確按鈕，
+     跟現有 App.vue 的 recoveryKeyDisplay 彈窗同一條規則（見定案文件 §5.2）。 */
+  .recovery-key-value{font-family:var(--font-stamp);font-size:13px;font-weight:700;letter-spacing:.03em;
+    background:var(--vault-steel-dim);border:1px solid var(--line);border-radius:6px;padding:10px 12px;
+    text-align:center;color:var(--ink);width:240px;box-sizing:border-box;}
+  .sheet-note{font-size:11px;color:var(--ink-faint);text-align:center;width:240px;line-height:1.5;margin:0;}
+
+  /* ============ 獨立解密流程（第 1.11 節） ============ */
+  /* overflow:hidden 是關鍵——.decrypt-sheet__pages 裡兩「頁」用 flex 並排（各 240px，
+     合計 480px），沒有這行的話 Sheet 本身雖然設了 width:240px，兩頁還是會一起被看到
+     （密碼欄跟恢復金鑰欄擠在一起「穿幫」），要靠 overflow:hidden 把超出 240px 可視窗口
+     的部分裁掉，只露出 translateX 移到可視範圍內的那一頁。 */
+  /* 抓錯過一次寬度：.decrypt-sheet 是 border-box，含 .sheet 基底的左右各 14px padding，
+     裡面的 .decrypt-sheet__page 卻也設成跟外層一樣的 240px，等於內容寬度比實際可用的
+     內距空間多出 28px，往右邊溢出、被 overflow:hidden 硬生生切掉一半（使用者截圖裡看到的
+     密碼欄右緣露出一截圓角就是這個）。外層改成 240(內容)+28(左右內距)=268px，內層維持
+     240px，兩者才對得上。
+     還有第二個坑：CSS 的 overflow:hidden 只在「padding 邊界」外才真的裁切，`.decrypt-sheet`
+     本身的 padding 內距（左右各 14px）不算在裁切範圍內——page2 的左緣剛好卡在這段 padding
+     裡面（緊接在 page1 240px 右緣之後），這 14px 縫隙沒被裁到，變成使用者截圖看到的
+     「輸...」那截穿幫文字。改成在 .decrypt-sheet__pages 這一層（緊貼 page1 實際內容寬度、
+     沒有多餘 padding）另外設一次 overflow:hidden + 明確寬度 240px，裁切邊界才會剛好卡在
+     page1／page2 的交界，不會多算進外層的內距空間。 */
+  .decrypt-sheet{width:268px;overflow:hidden;}
+  .decrypt-sheet__page{display:flex;flex-direction:column;gap:10px;}
+  /* 密碼欄／恢復金鑰欄兩「頁」用 translateX 左右滑動切換，同一張卡片內部翻頁，不是抽出
+     新的一張——曲線跟 Sheet 進出場共用同一條，維持整體節奏一致（見定案文件 §1.11）。 */
+  .decrypt-sheet__pages{display:flex;width:240px;overflow:hidden;
+    transition:transform 280ms cubic-bezier(0.32,0.72,0,1);}
+  .decrypt-sheet__pages .decrypt-sheet__page{width:240px;flex-shrink:0;}
+  .decrypt-sheet--page2 .decrypt-sheet__pages{transform:translateX(-240px);}
+  .decrypt-sheet input[type="password"],
+  .decrypt-sheet input[type="text"]{width:100%;box-sizing:border-box;border:1px solid var(--line);
+    border-radius:6px;padding:8px 10px;font:inherit;font-size:13px;background:var(--paper);color:var(--ink);}
+  .decrypt-sheet__alt-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;
+    box-sizing:border-box;border:1px solid var(--vault-line-strong);background:var(--paper);color:var(--ink);
+    font:inherit;font-weight:600;font-size:12.5px;padding:8px 10px;border-radius:6px;cursor:pointer;
+    transition:transform 150ms var(--ease-out);}
+  .decrypt-sheet__alt-btn:active{transform:scale(0.97);}
+  .decrypt-sheet__alt-btn img{width:16px;height:16px;}
+  .decrypt-sheet__link{border:none;background:none;color:var(--ink-faint);font:inherit;font-size:12px;
+    cursor:pointer;padding:0;text-align:center;text-decoration:underline;}
+  .decrypt-sheet__submit{width:100%;}
+  .decrypt-sheet__hint{font-size:11px;color:var(--void-red);margin:0;line-height:1.5;}
+
+  /* 驗證中（Passkey 自動觸發）／驗證成功——蓋掉 Sheet 內容，不是另開一張新卡片。 */
+  .decrypt-sheet__status{display:none;flex-direction:column;align-items:center;gap:10px;padding:14px 0;text-align:center;}
+  .decrypt-sheet.is-verifying .decrypt-sheet__pages,
+  .decrypt-sheet.is-success .decrypt-sheet__pages{display:none;}
+  .decrypt-sheet.is-verifying .decrypt-sheet__status--verifying,
+  .decrypt-sheet.is-success .decrypt-sheet__status--success{display:flex;}
+  .spinner{width:26px;height:26px;border-radius:50%;border:2.5px solid var(--vault-line-strong);
+    border-top-color:var(--brass);animation:spin 800ms linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .check-mark{width:30px;height:30px;border-radius:50%;background:#1F5C34;color:#fff;
+    display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;}
+
+  /* 存檔位置 Sheet——單一按鈕＋次要的取消文字連結，取消放在按鈕正下方（不是並排，避免
+     兩顆並列看起來像同一份量的雙選項，見定案文件 §1.11 決策記錄）。
+     取消行為這輪簡化過：使用者走查後反映「按取消退回『信封開著、空的』狀態，又跳出一模
+     一樣的按鈕組」讀起來像卡住重複——改成按取消直接整個關閉這個流程（等同放棄這次解密），
+     不再保留「退回空狀態、留兩個出口」這個中間態，見這次的修正決策。 */
+  .destination-sheet{display:flex;flex-direction:column;align-items:center;gap:10px;width:220px;}
+  .destination-sheet__body{display:flex;flex-direction:column;align-items:center;gap:10px;}
+  .destination-sheet__body .btn{width:100%;}
+  .destination-sheet__success{display:none;font-size:12.5px;color:#1F5C34;font-weight:600;}
+  .destination-sheet.is-done .destination-sheet__body{display:none;}
+  .destination-sheet.is-done .destination-sheet__success{display:block;}
+
+  /* 「測試用」除錯控制——比照 #themeToggle 的既有慣例（小、灰階、明確標註測試用），
+     不是正式功能的一部分。 */
+  .debug-row{display:flex;align-items:center;gap:14px;font-size:11.5px;color:var(--ink-faint);margin:-6px 0 18px;}
+  .debug-row label{display:flex;align-items:center;gap:5px;cursor:pointer;}
+  .debug-fail-btn{border:1px dashed var(--ink-faint);background:none;color:var(--ink-faint);
+    font:inherit;font-size:11px;padding:4px 9px;border-radius:5px;cursor:pointer;}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="title-bar">
+    <div class="traffic-lights">
+      <button class="traffic-light traffic-light--close"></button>
+      <button class="traffic-light traffic-light--minimize"></button>
+      <button class="traffic-light traffic-light--maximize"></button>
+    </div>
+    <span class="title-bar__brand">FileLocker</span>
+    <div class="title-bar__spacer"></div>
+    <button class="theme-toggle" id="themeToggle" type="button" title="測試用：切換深/淺色">☀</button>
+  </header>
+
+  <div class="body">
+    <aside class="sidebar" id="sidebar">
+      <button class="sidebar__collapse-btn" id="collapseBtn" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 5 9 12l6 7"/></svg>
+        <span class="label">收合側欄</span>
+      </button>
+      <nav>
+        <div class="nav-item active" data-label="加密">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M6 10V8a6 6 0 1 1 12 0v2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="4" y="10" width="16" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="15" r="1.6" fill="currentColor"/></svg>
+          <span class="label">加密</span>
+        </div>
+        <div class="nav-item" data-label="資料夾防護">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"><path d="M12 3 4 6v6c0 5 3.5 7.7 8 9 4.5-1.3 8-4 8-9V6l-8-3Z"/></svg>
+          <span class="label">資料夾防護</span>
+        </div>
+        <div class="nav-item" data-label="密碼庫">
+          <svg viewBox="0 0 24 24" fill="none"><circle cx="8" cy="8" r="4.25" stroke="currentColor" stroke-width="1.8"/><path d="M11 11l9.5 9.5M16.5 15.5l3-3M19 18l2.5-2.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="label">密碼庫</span>
+        </div>
+        <div class="nav-item" data-label="設定">
+          <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="label">設定</span>
+        </div>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <div class="page-head">
+        <h1 class="page-title"><svg viewBox="0 0 24 24" fill="none"><path d="M6 10V8a6 6 0 1 1 12 0v2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="4" y="10" width="16" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="15" r="1.6" fill="currentColor"/></svg>加密</h1>
+        <div class="page-stats">6 張憑證 · 集中管理區使用 1.2 GB</div>
+      </div>
+
+      <div class="toolbar-row">
+        <div class="tabs"><button class="active">清單</button><button>歷史紀錄</button></div>
+        <div class="toolbar-row__spacer"></div>
+        <button class="btn">重新整理</button>
+        <button class="btn" id="openDecryptBtn" type="button">選擇要解密的檔案</button>
+        <button class="btn btn--primary" id="openEncryptBtn" type="button">加密新檔案</button>
+        <button class="btn btn--reset" id="resetBtn" type="button">重置清單</button>
+      </div>
+
+      <p class="hint">點圖示（撕線貫穿卡片全高、圖示疊在正中間，點哪裡都算）試試撕開動畫——
+        先撕一小角、停一下（正式版這裡會跳密碼／Passkey 驗證），驗證通過才整張裂開，
+        裂開後整列會飛走、下面的列往上補位（這是測試，用右上角「重置清單」復原）。</p>
+
+      <!-- 測試用：控制「選擇要解密的檔案」流程模擬出來的假 metadata，方便手動測到
+           Passkey 自動驗證／恢復金鑰兩條分支，正式功能不會有這排控制項。 -->
+      <div class="debug-row">
+        <span>測試用（不是正式功能）：</span>
+        <label><input type="checkbox" id="dbgHasPasskey" checked /> 模擬檔案有 Passkey</label>
+        <label><input type="checkbox" id="dbgHasRecoveryKey" checked /> 模擬檔案有恢復金鑰</label>
+      </div>
+
+      <!-- TODO（實作進 App.vue 時要做的邏輯，這裡只是先用固定顏色/圖形手刻示意，這輪還沒
+           grilling 過細節，記下來避免之後忘記）：
+           1. 判斷檔案類型（PDF／壓縮檔／Word 文件／圖片／憑證檔／資料夾…）的邏輯——目前
+              每一列的圖示、圈色都是寫死在這個 mockup 裡的範例資料，正式串接時要依實際檔案
+              （副檔名／MIME type／是不是資料夾）判斷出檔案類型。
+           2. 圖示比對邏輯——判斷出類型之後，要對到哪一個線條圖示、用哪個識別色，需要一份
+              「類型 → 圖示／顏色」的對照表，不是每個檔案類型各自散落寫在畫面裡，也要決定
+              「未知/不支援的類型」要顯示哪一種預設圖示（這輪 mockup 沒有這個 fallback）。 -->
+      <div class="list" id="list">
+        <div class="ticket-wrap">
+          <div class="ticket-stage">
+            <div class="ticket">
+              <button class="ticket__seal" type="button">
+                <span class="ticket__tear-line"></span>
+                <span class="ticket__icon" style="color:#C1502F;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></span>
+              </button>
+              <div class="info">
+                <div class="name">專案合約書.pdf</div>
+                <div class="meta"><span>PDF · 2.4 MB</span><span>合約相關</span><span>2026-08-10 14:22</span></div>
+              </div>
+              <span class="postmark-slot"></span>
+              <div class="actions"><button>解密</button><button>Passkey</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ticket-wrap">
+          <div class="ticket-stage">
+            <div class="ticket">
+              <button class="ticket__seal" type="button">
+                <span class="ticket__tear-line"></span>
+                <span class="ticket__icon" style="color:var(--brass);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg></span>
+              </button>
+              <div class="info">
+                <div class="name">家庭照片備份</div>
+                <div class="meta"><span>資料夾 · 28 個檔案</span><span>1.2 GB</span><span>2026-08-09 09:03</span></div>
+              </div>
+              <span class="postmark-slot"></span>
+              <div class="actions"><button>解密</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ticket-wrap">
+          <div class="ticket-stage">
+            <div class="ticket" style="background:var(--brass-tint);border-color:var(--brass-line);">
+              <button class="ticket__seal" type="button">
+                <span class="ticket__tear-line" style="border-left-color:var(--brass-deep);"></span>
+                <span class="ticket__icon" style="color:var(--brass);background:var(--paper);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3a4 4 0 0 1 4 4v10a2 2 0 1 1-4 0V8"/><path d="M11 3a4 4 0 0 1 4 4v6"/></svg></span>
+              </button>
+              <div class="info" style="color:var(--ink-soft);font-size:13px;">批次加密：<strong style="color:var(--ink);font-weight:650;">3 個檔案</strong>（報稅資料.xlsx、收據掃描.jpg 等）</div>
+              <span class="postmark-slot"></span>
+              <div class="actions"><button>全部解鎖</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ticket-wrap">
+          <div class="ticket-stage">
+            <div class="ticket">
+              <button class="ticket__seal" type="button">
+                <span class="ticket__tear-line"></span>
+                <span class="ticket__icon" style="color:#4F7A52;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 15l4-4 4 4 4-6 4 6"/></svg></span>
+              </button>
+              <div class="info">
+                <div class="name">密碼管理備份.zip</div>
+                <div class="meta"><span>壓縮檔 · 890 KB</span><span>常用密碼</span><span>2026-08-06 21:40</span></div>
+              </div>
+              <span class="postmark-slot"><div class="postmark lock" title="巢狀鎖定 ×2"><img src="../../assets/Postmark_Nested_Lock.svg" alt="" /><span class="pm-text">×2</span></div></span>
+              <div class="actions"><button>恢復金鑰</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ticket-wrap">
+          <div class="ticket-stage">
+            <div class="ticket">
+              <button class="ticket__seal" type="button">
+                <span class="ticket__tear-line"></span>
+                <span class="ticket__icon" style="color:#2B6CB0;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v3"/></svg></span>
+              </button>
+              <div class="info">
+                <div class="name">遠端桌面憑證.pfx</div>
+                <div class="meta"><span>憑證檔 · 4 KB</span><span>公司 VPN</span><span>2026-08-05 11:02</span></div>
+              </div>
+              <span class="postmark-slot"></span>
+              <div class="actions"><button>解密</button><button>Passkey</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ticket-wrap">
+          <div class="ticket-stage">
+            <div class="ticket">
+              <button class="ticket__seal" type="button">
+                <span class="ticket__tear-line"></span>
+                <span class="ticket__icon" style="color:var(--ink-faint);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg></span>
+              </button>
+              <div class="info">
+                <div class="name">個人日記.docx</div>
+                <div class="meta"><span>Word 文件 · 156 KB</span><span>2026-07-28 20:11</span></div>
+              </div>
+              <span class="postmark-slot"><div class="postmark warn" title="找不到原始位置的指標檔"><img src="../../assets/Postmark_Warning.svg" alt="" /><span class="pm-text">指標遺失</span></div></span>
+              <div class="actions"><button>解密</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ===== 覆蓋層 1：加密新檔案（信封彈出，第 5 節〈信封加密流程接入側欄殼子〉） ===== -->
+<div class="overlay" id="addFileOverlay">
+  <div class="envelope-outer mailaway-outer is-closed" id="encryptEnvelope">
+    <div class="mailaway-rig" id="encryptRig">
+      <div class="envelope-canvas">
+        <img class="body" id="encryptBodyImg" src="../../assets/Envelope_Body_Empty.svg" alt="" />
+        <!-- 純文字提示（不再放互動按鈕，選檔案按鈕搬進下面的 #pickedSheet 了，見上面
+             .dropzone 註解）。仍然是拖放的視覺目標——DOM 順序刻意排在 .flap-group「前面」，
+             沒有明確 z-index 的絕對定位元素預設照 DOM 順序疊放，這樣封口闔上（蓋住這塊
+             區域）時文字才會真的被蓋住，不會不管開關都穿幫飄在封口上面。 -->
+        <div class="dropzone" id="dropzone">
+          <p>拖曳檔案，或到下方選擇檔案</p>
+        </div>
+        <div class="flap-group">
+          <div class="wax-drip-back"><img src="../../assets/Wax_Drip_Back.svg" alt="" /></div>
+          <img class="flap" src="../../assets/Envelope_Flap.svg" alt="" />
+          <div class="wax-seal"><img src="../../assets/Envelope_Wax_Seal.svg" alt="" /></div>
+        </div>
+        <div class="mail-filename" id="encryptMailFilename"></div>
+        <div class="mail-postmark">
+          <img src="../../assets/Postmark_Nested_Lock.svg" alt="" />
+          <span class="mail-timestamp" id="encryptMailTimestamp"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 步驟一：選檔案／已選檔案清單 Sheet——「選擇檔案」按鈕跟已選清單互斥（沿用
+         App.vue encrypt 步驟一既有邏輯，只是原本跟 dropzone 互斥，現在兩者都收進同一張
+         Sheet 裡互斥）。 -->
+    <div class="sheet sheet--hidden" id="pickedSheet">
+      <button class="btn btn--primary" id="fakePickBtn" type="button">選擇檔案</button>
+      <div id="pickedWrap" style="display:none;">
+        <div class="picked-list-frame">
+          <ul class="picked-list" id="pickedList"></ul>
+        </div>
+        <button class="link-more" id="fakePickBtnMore" type="button">＋ 繼續新增</button>
+      </div>
+      <div class="add-file-actions">
+        <button class="btn" id="addFileCancel" type="button">取消</button>
+        <button class="btn btn--primary" id="addFileNext" type="button" disabled>下一步</button>
+      </div>
+    </div>
+
+    <!-- 步驟二：密碼／Passkey／恢復金鑰勾選 Sheet（排版時試過塞進信封輪廓內，欄位塞不下，
+         改用跟步驟一同一套 Sheet 容器——見上面 CSS .step2-form 註解） -->
+    <div class="sheet sheet--hidden" id="step2Sheet">
+      <div class="step2-form">
+        <input type="password" id="step2Password" placeholder="輸入密碼" />
+        <label><input type="checkbox" id="step2Passkey" /> 開啟 Passkey 解鎖</label>
+        <label><input type="checkbox" id="step2RecoveryKey" /> 開啟恢復金鑰</label>
+      </div>
+      <div class="step2-actions">
+        <button class="btn" id="step2Back" type="button">返回</button>
+        <button class="btn btn--primary" id="step2Submit" type="button">加密</button>
+      </div>
+    </div>
+
+    <!-- 恢復金鑰揭露 Sheet——一次性金鑰揭露，不能點外面關閉，只能按「已存檔/關閉」明確
+         按鈕（見定案文件 §5.2）。 -->
+    <div class="sheet sheet--hidden" id="recoveryKeySheet">
+      <div style="display:flex;flex-direction:column;gap:10px;align-items:center;">
+        <p class="sheet-note" style="margin:0;font-weight:600;color:var(--ink);">請妥善保存這組恢復金鑰</p>
+        <div class="recovery-key-value" id="recoveryKeyValue">XXXX-XXXX-XXXX-XXXX-XXXX-XXXX</div>
+        <p class="sheet-note">遺失這組金鑰、又忘記密碼、也沒開 Passkey 的話，這份檔案將永久無法復原。</p>
+        <button class="btn btn--primary" id="recoveryKeyClose" type="button">已存檔／關閉</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 覆蓋層 2：獨立解密流程（第 1.11 節〈獨立解密流程（信封＋Sheet）〉） ===== -->
+<div class="overlay" id="decryptOverlay">
+  <div class="envelope-outer is-closed decrypt-envelope" id="decryptEnvelope">
+    <div class="mailaway-rig" id="decryptRig">
+      <div class="envelope-canvas">
+        <img class="body" src="../../assets/Envelope_Body.svg" alt="" />
+        <div class="flap-group">
+          <div class="wax-drip-back"><img src="../../assets/Wax_Drip_Back.svg" alt="" /></div>
+          <img class="flap" src="../../assets/Envelope_Flap.svg" alt="" />
+          <div class="wax-seal"><img src="../../assets/Envelope_Wax_Seal.svg" alt="" /></div>
+        </div>
+        <div class="mail-filename" id="decryptMailFilename"></div>
+        <div class="mail-postmark">
+          <img src="../../assets/Postmark_Nested_Lock.svg" alt="" />
+          <span class="mail-timestamp" id="decryptMailTimestamp"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 解密驗證 Sheet：page1 密碼／Passkey／恢復金鑰入口，page2 恢復金鑰輸入
+         （同一張卡片內部左右滑動翻頁，不是抽出新的一張，見定案文件 §1.11） -->
+    <div class="sheet sheet--hidden decrypt-sheet" id="decryptSheet">
+      <div class="decrypt-sheet__pages" id="decryptSheetPages">
+        <div class="decrypt-sheet__page">
+          <input type="password" id="decryptPassword" placeholder="輸入密碼" />
+          <button class="btn btn--primary decrypt-sheet__submit" id="decryptPasswordSubmit" type="button">解鎖</button>
+          <button class="decrypt-sheet__alt-btn" id="decryptPasskeyBtn" type="button">
+            <img id="decryptPasskeyIcon" src="../../src/FileLocker.Web/src/assets/Passkey_Black.svg" alt="" />
+            使用 Passkey
+          </button>
+          <button class="decrypt-sheet__alt-btn" id="decryptRecoveryKeyBtn" type="button">
+            <img id="decryptRecoveryKeyIcon" src="../../src/FileLocker.Web/src/assets/Recovery_Key_Black.svg" alt="" />
+            使用恢復金鑰
+          </button>
+          <p class="decrypt-sheet__hint" id="decryptHint" style="display:none;"></p>
+        </div>
+        <div class="decrypt-sheet__page">
+          <input type="text" id="decryptRecoveryKeyInput" placeholder="輸入恢復金鑰" />
+          <button class="btn btn--primary decrypt-sheet__submit" id="decryptRecoveryKeySubmit" type="button">解鎖</button>
+          <button class="decrypt-sheet__link" id="decryptRecoveryKeyBack" type="button">返回</button>
+        </div>
+      </div>
+      <div class="decrypt-sheet__status decrypt-sheet__status--verifying">
+        <div class="spinner"></div>
+        <span>Passkey 驗證中…</span>
+        <!-- 測試用：模擬 Passkey 失敗，正式功能沒有這顆按鈕。 -->
+        <button class="debug-fail-btn" id="dbgSimulatePasskeyFail" type="button">測試：模擬 Passkey 失敗</button>
+      </div>
+      <div class="decrypt-sheet__status decrypt-sheet__status--success">
+        <div class="check-mark">✓</div>
+        <span>驗證成功</span>
+      </div>
+    </div>
+
+    <!-- 存檔位置 Sheet -->
+    <div class="sheet sheet--hidden destination-sheet" id="destinationSheet">
+      <div class="destination-sheet__body">
+        <button class="btn btn--primary" id="destinationPickBtn" type="button">選擇存檔位置</button>
+        <button class="decrypt-sheet__link" id="destinationCancel" type="button">取消</button>
+      </div>
+      <div class="destination-sheet__success" id="destinationSuccess">已還原到指定位置</div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const sidebar = document.getElementById('sidebar');
+  document.getElementById('collapseBtn').addEventListener('click', () => sidebar.classList.toggle('is-collapsed'));
+
+  // 測試用深/淺色切換——照抄 14-notebook-in-shell.html 已驗證過的機制，正式功能應該跟著
+  // 既有的 settingsTheme 走，這裡只是方便截圖驗證兩種模式。
+  (function setupThemeToggle(){
+    const themeToggle = document.getElementById('themeToggle');
+    themeToggle.addEventListener('click', () => {
+      const isDark = document.documentElement.dataset.theme === 'dark';
+      document.documentElement.dataset.theme = isDark ? 'light' : 'dark';
+      themeToggle.textContent = isDark ? '☀' : '☾';
+      updatePasskeyRecoveryIcons();
+    });
+  })();
+
+  const tickets = [];
+
+  document.querySelectorAll('.ticket-wrap').forEach((wrap) => {
+    const stage = wrap.querySelector('.ticket-stage');
+    const card = stage.querySelector('.ticket');
+    const seal = card.querySelector('.ticket__seal');
+    const seamX = seal.offsetLeft + seal.offsetWidth / 2;
+
+    const left = card.cloneNode(true);
+    const right = card.cloneNode(true);
+    left.classList.add('ticket__half', 'ticket__half--left');
+    right.classList.add('ticket__half', 'ticket__half--right');
+    left.style.clipPath = `inset(0 calc(100% - ${seamX}px) 0 0)`;
+    right.style.clipPath = `inset(0 0 0 ${seamX}px)`;
+    stage.appendChild(left);
+    stage.appendChild(right);
+
+    let state = 'idle'; // idle | peeking | tearing | leaving | gone
+    let timers = [];
+    function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+
+    function playSequence() {
+      if (state !== 'idle') return;
+      clearTimers();
+      state = 'peeking';
+      wrap.classList.add('is-peeking');
+      // 撕一小角，停等——正式版這裡是跳密碼／Passkey 驗證視窗，這個 demo 只是單純等待。
+      timers.push(setTimeout(() => {
+        wrap.classList.remove('is-peeking');
+        wrap.classList.add('is-tearing');
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          wrap.classList.add('is-open');
+          state = 'tearing';
+          // 裂開後停留一下，讓使用者看清楚裂開的樣子，再整個飛走。
+          timers.push(setTimeout(() => {
+            wrap.classList.add('is-leaving');
+            state = 'leaving';
+            // 飛走＋淡出動畫（380ms transform／340ms opacity）要完全播完、畫面上已經看不到
+            // 任何內容了，才開始收合高度——不能在飛走途中就疊加收合，那樣 overflow:hidden
+            // 會把還沒飛完、還看得到的內容硬生生裁掉。收合起點用 JS 量測當下真實高度，
+            // 不是猜一個寫死的數字，這樣不管視窗多窄、文字換幾行，收合動畫都對得上實際尺寸。
+            timers.push(setTimeout(() => {
+              const measuredHeight = wrap.scrollHeight;
+              wrap.style.maxHeight = `${measuredHeight}px`;
+              wrap.classList.add('is-collapsing');
+              requestAnimationFrame(() => requestAnimationFrame(() => {
+                wrap.classList.add('is-gone');
+                state = 'gone';
+              }));
+            }, 400));
+          }, 550));
+        }));
+      }, 1000));
+    }
+
+    function reset() {
+      clearTimers();
+      wrap.classList.remove('is-peeking', 'is-tearing', 'is-open', 'is-leaving', 'is-collapsing', 'is-gone');
+      wrap.style.maxHeight = '';
+      state = 'idle';
+    }
+
+    seal.addEventListener('click', playSequence);
+    tickets.push({ reset });
+  });
+
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    tickets.forEach((t) => t.reset());
+  });
+
+  // ============================================================================
+  // 以下：第 5 節〈信封加密流程接入側欄殼子〉＋第 1.11 節〈獨立解密流程（信封＋Sheet）〉
+  // 純 mockup 工程，假資料、不接真實 IPC/後端（見計畫〈已查證的關鍵事實〉）。
+  // ============================================================================
+
+  const SHEET_PHASE_MS = 280;   // Sheet 兩段式滑動每一段的時長
+  const SETTLE_HOLD_MS = 500;   // 信封落地後／驗證成功打勾後的停等時間，兩處共用同一個數字
+  const DROP_MS = 820;          // mail-drop-bounce 動畫時長
+  const FLAP_MS = 420;          // .flap-group rotateX transition 時長
+  const PASSKEY_VERIFY_MS = 1300; // 模擬 Passkey 驗證中的假延遲
+  const FLY_MS = 680;           // .is-flying transition 時長，照抄 8-envelope-assembled.html
+
+  // 點疊層背景（不是點信封／Sheet 本身）等同「取消目前動作」，立即整個關閉、不播放任何
+  // 收尾動畫——使用者走查明確要求「按信封外面要能退出，效果同直接取消，不要播收尾動畫」，
+  // 跟一次性金鑰揭露卡片刻意不能點外面關閉（見定案文件 §5.2）是兩種不同情境，不衝突：
+  // 這裡管的是整層疊層本身要不要關掉，恢復金鑰卡那條規則管的是「卡片開著的時候」不能被
+  // 點外面誤觸關閉——兩者分屬疊層跟疊層內某張卡片，不是同一層。
+  function wireClickOutsideToClose(overlayEl, onClose){
+    overlayEl.addEventListener('click', (e) => {
+      if (e.target === overlayEl) onClose();
+    });
+  }
+
+  function updatePasskeyRecoveryIcons(){
+    const isDark = document.documentElement.dataset.theme === 'dark';
+    const passkeyIcon = document.getElementById('decryptPasskeyIcon');
+    const recoveryIcon = document.getElementById('decryptRecoveryKeyIcon');
+    if (passkeyIcon) passkeyIcon.src = `../../src/FileLocker.Web/src/assets/Passkey_${isDark ? 'White' : 'Black'}.svg`;
+    if (recoveryIcon) recoveryIcon.src = `../../src/FileLocker.Web/src/assets/Recovery_Key_${isDark ? 'White' : 'Black'}.svg`;
+  }
+
+  // ============ 共用元件：Sheet 兩段式滑動進場／退場（見上面 CSS 註解，這裡是驅動它的 JS） ============
+  // 世代標記機制——這些動畫函式都是用「setTimeout 排接下來要做的事」串起來的，沒有掛進
+  // 各分頁自己的 timers/clearTimers 追蹤（那組只認得同一個分頁 IIFE 內部用 after() 排的
+  // 計時器，這些共用函式在 IIFE 外面，clearTimers 清不到）。使用者實測抓到：動畫還沒播完
+  // 就又觸發下一輪（例如很快點兩次「加密新檔案」），舊那輪排定的後續步驟還是會照時間到了
+  // 執行，插進新一輪動畫播到一半的中間，把 class 改回舊的狀態。
+  // 解法：每個 Sheet 元素各自記一個世代編號，每次「重新開始對這個元素做動畫」就把編號加一；
+  // 排定的後續步驟執行前，先確認自己記住的編號是不是還是這個元素目前最新的編號——不是的話
+  // 代表已經有更新一輪的動畫接管了這個元素，舊回呼直接放棄（不套用 class、直接 resolve
+  // 收尾，新那輪自己會負責把 Promise resolve 掉），不會再插手。
+  const sheetAnimGen = new WeakMap();
+  function bumpGen(el){
+    const g = (sheetAnimGen.get(el) || 0) + 1;
+    sheetAnimGen.set(el, g);
+    return g;
+  }
+  function isCurrentGen(el, g){
+    return sheetAnimGen.get(el) === g;
+  }
+
+  function playSheetTwoPhaseEntrance(sheetEl){
+    const gen = bumpGen(sheetEl);
+    return new Promise((resolve) => {
+      sheetEl.classList.remove('sheet--settle');
+      sheetEl.classList.add('sheet--hidden');
+      void sheetEl.offsetWidth; // 強制 reflow，確保 hidden 這個無 transition 的起點真的生效
+      sheetEl.classList.remove('sheet--hidden');
+      sheetEl.classList.add('sheet--reveal'); // 第一段：滑出、完全清出信封範圍
+      setTimeout(() => {
+        if (!isCurrentGen(sheetEl, gen)) { resolve(); return; }
+        sheetEl.classList.remove('sheet--reveal');
+        sheetEl.classList.add('sheet--settle'); // 第二段：反向滑回、疊上信封
+        setTimeout(() => {
+          if (!isCurrentGen(sheetEl, gen)) { resolve(); return; }
+          resolve();
+        }, SHEET_PHASE_MS);
+      }, SHEET_PHASE_MS);
+    });
+  }
+  function playSheetTwoPhaseExit(sheetEl){
+    const gen = bumpGen(sheetEl);
+    return new Promise((resolve) => {
+      sheetEl.classList.remove('sheet--settle');
+      sheetEl.classList.add('sheet--reveal'); // 第一段：先滑到「清出」位置，露出全貌
+      setTimeout(() => {
+        if (!isCurrentGen(sheetEl, gen)) { resolve(); return; }
+        sheetEl.classList.remove('sheet--reveal');
+        // 第二段：真正播動畫滑回信封範圍內、同時淡出（不能直接跳 sheet--hidden，那個
+        // class 故意沒有 transition，是給「進場前重置起點」用的，退場需要看得到滑回去
+        // 的過程，不是瞬間消失）。
+        sheetEl.classList.add('sheet--retreat');
+        setTimeout(() => {
+          if (!isCurrentGen(sheetEl, gen)) { resolve(); return; }
+          // 動畫播完，換成 sheet--hidden 收尾——視覺上跟 sheet--retreat 播完的結果完全
+          //一樣（位置歸零、opacity:0），只是換回「隨時可以無動畫重置」的狀態，不會有
+          // 任何可見跳動。
+          sheetEl.classList.remove('sheet--retreat');
+          sheetEl.classList.add('sheet--hidden');
+          resolve();
+        }, SHEET_PHASE_MS);
+      }, SHEET_PHASE_MS);
+    });
+  }
+  function hideSheetInstant(sheetEl){
+    bumpGen(sheetEl); // 作廢任何還在跑的舊動畫，這是瞬間重置，不是又一輪要接續的動畫
+    sheetEl.classList.remove('sheet--reveal', 'sheet--settle');
+    sheetEl.classList.add('sheet--hidden');
+  }
+
+  const MORPH_OUT_MS = 200;  // 跟 .sheet--fade-out 的 transition 時長一致
+  const MORPH_IN_MS = 260;   // 跟 .sheet--fade-in 的 transition 時長一致
+
+  // 同一段任務裡「連貫翻頁」用的完整縮放動畫——不用模糊遮蓋轉場，是真的先把舊畫面縮小
+  // 淡出、完全消失之後，才把新畫面從縮小狀態長回全尺寸（不是兩者疊在一起交叉淡化）。
+  // 讀起來像同一塊東西「先收起來、再長出新的樣子」，不是「收起一個東西、換一個新的」
+  // 那種硬切換，也不是靠模糊糊掉細節的取巧做法。
+  function playSheetCrossfade(fromSheetEl, toSheetEl){
+    const fromGen = bumpGen(fromSheetEl);
+    const toGen = bumpGen(toSheetEl);
+    return new Promise((resolve) => {
+      fromSheetEl.classList.remove('sheet--settle');
+      fromSheetEl.classList.add('sheet--fade-out'); // 第一段：舊畫面縮小＋淡出
+      setTimeout(() => {
+        if (!isCurrentGen(fromSheetEl, fromGen) || !isCurrentGen(toSheetEl, toGen)) { resolve(); return; }
+        fromSheetEl.classList.remove('sheet--fade-out');
+        fromSheetEl.classList.add('sheet--hidden');
+        // 第二段：舊畫面完全消失之後，才讓新畫面從縮小狀態長出來——用
+        // sheet--morph-start 明確建立「縮小+透明」這個起點（transition:none，強制
+        // reflow 讓瀏覽器真的記錄下這個瞬間狀態），再切到 sheet--fade-in 才會有完整
+        // 的 0.88→1／opacity 0→1 可以動畫，不是憑空從某個不確定的中間值開始跳。
+        toSheetEl.classList.remove('sheet--hidden');
+        toSheetEl.classList.add('sheet--morph-start');
+        void toSheetEl.offsetWidth;
+        toSheetEl.classList.remove('sheet--morph-start');
+        toSheetEl.classList.add('sheet--fade-in');
+        setTimeout(() => {
+          if (!isCurrentGen(toSheetEl, toGen)) { resolve(); return; }
+          toSheetEl.classList.remove('sheet--fade-in');
+          toSheetEl.classList.add('sheet--settle');
+          resolve();
+        }, MORPH_IN_MS);
+      }, MORPH_OUT_MS);
+    });
+  }
+
+  // 同一個縮放語言，套在「選擇檔案」按鈕 ↔ 已選檔案清單這組切換上（使用者明確要求）——
+  // 這兩個是同一張 Sheet 裡的普通區塊（不是像 Sheet 之間那樣用絕對定位疊在同一個點），
+  // 用 display:none/'' 直接切換沒有任何動畫；這裡一樣先把舊區塊縮小淡出，等它徹底
+  // 從版面上消失（display:none）之後，才切換 display 讓新區塊出現、從縮小狀態長出來，
+  // 這樣兩個區塊不會同時佔用版面空間造成排版跳動。
+  function playPanelMorphSwap(fromEl, toEl){
+    const fromGen = bumpGen(fromEl);
+    const toGen = bumpGen(toEl);
+    return new Promise((resolve) => {
+      fromEl.classList.add('panel-morph-out');
+      setTimeout(() => {
+        if (!isCurrentGen(fromEl, fromGen) || !isCurrentGen(toEl, toGen)) { resolve(); return; }
+        fromEl.classList.remove('panel-morph-out');
+        fromEl.style.display = 'none';
+        toEl.style.display = '';
+        toEl.classList.add('panel-morph-start');
+        void toEl.offsetWidth;
+        toEl.classList.remove('panel-morph-start');
+        toEl.classList.add('panel-morph-in');
+        setTimeout(() => {
+          if (!isCurrentGen(toEl, toGen)) { resolve(); return; }
+          toEl.classList.remove('panel-morph-in');
+          resolve();
+        }, MORPH_IN_MS);
+      }, MORPH_OUT_MS);
+    });
+  }
+
+  function formatFakeTimestamp(){
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  // ============ 覆蓋層 1：加密新檔案 ============
+  (function setupEncryptFlow(){
+    const overlay = document.getElementById('addFileOverlay');
+    const envelope = document.getElementById('encryptEnvelope');
+    const rig = document.getElementById('encryptRig');
+    const flapGroup = envelope.querySelector('.flap-group');
+    const bodyImg = document.getElementById('encryptBodyImg');
+    const dropzone = document.getElementById('dropzone');
+    const fakePickBtn = document.getElementById('fakePickBtn');
+    const pickedList = document.getElementById('pickedList');
+    const pickedWrap = document.getElementById('pickedWrap');
+    const pickedSheet = document.getElementById('pickedSheet');
+    const nextBtn = document.getElementById('addFileNext');
+    const step2Sheet = document.getElementById('step2Sheet');
+    const step2Password = document.getElementById('step2Password');
+    const step2Passkey = document.getElementById('step2Passkey');
+    const step2RecoveryKey = document.getElementById('step2RecoveryKey');
+    const recoveryKeySheet = document.getElementById('recoveryKeySheet');
+    const mailFilename = document.getElementById('encryptMailFilename');
+    const mailTimestamp = document.getElementById('encryptMailTimestamp');
+
+    const fakeNames = ['季度報告.docx', '員工名冊.xlsx', '掃描件_0816.pdf', '設計稿.fig'];
+    let counter = 0;
+    let timers = [];
+    function after(ms, fn){ timers.push(setTimeout(fn, ms)); }
+    function clearTimers(){ timers.forEach(clearTimeout); timers = []; }
+
+    // 信封本體依「選了幾個檔案」分四級（0/1/2/3 以上），照抄 12-file-tab-merged.html。
+    function bodyImgFor(count){
+      if (count <= 0) return '../../assets/Envelope_Body_Empty.svg';
+      if (count === 1) return '../../assets/Envelope_Body_One.svg';
+      if (count === 2) return '../../assets/Envelope_Body_Two.svg';
+      return '../../assets/Envelope_Body.svg';
+    }
+    let pickedSheetHadFiles = false;
+    function renderPickedList(){
+      const count = pickedList.children.length;
+      const hasFiles = count > 0;
+      nextBtn.disabled = count === 0;
+      dropzone.style.display = count === 0 ? '' : 'none';
+      // 只有「已經選了檔案」這個狀態要跟設密碼畫面撐同一個高度（見上面 CSS 註解）——
+      // 還沒選檔案的空狀態維持自己原本緊湊的高度，不套用這個 class。
+      pickedSheet.classList.toggle('has-files', hasFiles);
+      bodyImg.src = bodyImgFor(count);
+      // 「選擇檔案」按鈕 ↔ 已選清單這組切換只在跨越「有沒有檔案」這條邊界時才播放縮放
+      // 動畫（見 playPanelMorphSwap）——中途在清單裡增減筆數（一路都還在「有檔案」這個
+      // 狀態內）不用重播，只有第一次真的從 0 筆變成有筆、或整份清單被清空回到 0 筆，
+      // 才是「畫面內容真的換了一種東西」的時刻。
+      if (hasFiles !== pickedSheetHadFiles) {
+        if (hasFiles) {
+          playPanelMorphSwap(fakePickBtn, pickedWrap);
+        } else {
+          playPanelMorphSwap(pickedWrap, fakePickBtn);
+        }
+        pickedSheetHadFiles = hasFiles;
+      } else {
+        fakePickBtn.style.display = hasFiles ? 'none' : '';
+        pickedWrap.style.display = hasFiles ? '' : 'none';
+      }
+    }
+    function addFakeFile(){
+      const name = fakeNames[counter % fakeNames.length];
+      counter++;
+      const li = document.createElement('li');
+      li.innerHTML = `<span>${name}</span>`;
+      const removeBtn = document.createElement('button');
+      removeBtn.textContent = '移除';
+      removeBtn.addEventListener('click', () => { li.remove(); renderPickedList(); });
+      li.appendChild(removeBtn);
+      pickedList.appendChild(li);
+      renderPickedList();
+    }
+    function resetEncryptState(){
+      clearTimers();
+      pickedList.innerHTML = '';
+      counter = 0;
+      // 重置要瞬間完成，不能觸發 playPanelMorphSwap 那套動畫（那是給「使用者操作造成的
+      // 狀態跨越」用的，不是給「整批重置回起點」用的）——先把追蹤旗標歸零、清掉任何
+      // 上一輪可能殘留的縮放動畫 class，renderPickedList() 才會走同步（無動畫）那條路。
+      pickedSheetHadFiles = false;
+      // 世代標記也要一起作廢（見 playPanelMorphSwap 的註解）——不然上一輪如果剛好在
+      // 播「選擇檔案→已選清單」這段切換到一半就被打斷重置，舊的 setTimeout 回呼還是會
+      // 照時間執行，把 class 改回它自己那一輪的樣子，蓋掉這裡剛做的同步重置。
+      bumpGen(fakePickBtn);
+      bumpGen(pickedWrap);
+      fakePickBtn.classList.remove('panel-morph-out', 'panel-morph-start', 'panel-morph-in');
+      pickedWrap.classList.remove('panel-morph-out', 'panel-morph-start', 'panel-morph-in');
+      renderPickedList();
+      dropzone.style.display = '';
+      step2Password.value = '';
+      step2Passkey.checked = false;
+      step2RecoveryKey.checked = false;
+      // 這裡的「關閉」要瞬間完成，不能讓封口播 420ms 的關闔轉場——如果使用者上一輪是在
+      // 信封「開著」的時候按取消（例如填到一半按取消），這裡改回 is-closed 的當下如果
+      // 用正常轉場，緊接著馬上按下一次「加密新檔案」時，新的落下動畫會在封口還沒真的
+      // 轉完的時候就搶著開始播，畫面上看起來就是「信封開著飛下來」——使用者實測抓到的
+      // 這個現象。
+      // 使用者這輪又抓到一個更深的坑：第二次以後重播，蠟封（.wax-seal）疊放順序會跑到
+      // 封口三角形（.flap-group／img.flap）下面去——這幾層（flap-group 本身／蠟滴／
+      // 蠟封）疊在同一個 preserve-3d 3D 情境裡，瀏覽器對「重複使用同一批 DOM 元素、
+      // 反覆觸發轉場」這種情境的合成層（compositing layer）疊放順序計算不是每次都
+      // 從頭重算，第一輪算對了不代表之後幾輪也一定對。不是只重置 flap-group 一個
+      // 元素就夠，這三層（flap-group／wax-drip-back／wax-seal）全部要一起經過
+      // 「暫時關掉 transition、強制 reflow、還原」這個週期，逼瀏覽器每次重開都重新
+      // 從頭算一次疊放順序，不是延用上一輪可能已經算錯、或算法不穩定的結果。 */
+      const waxDripBackEl = flapGroup.querySelector('.wax-drip-back');
+      const waxSealEl = flapGroup.querySelector('.wax-seal');
+      const layersToReset = [flapGroup, waxDripBackEl, waxSealEl];
+      layersToReset.forEach((el) => { el.style.transition = 'none'; });
+      envelope.classList.remove('is-open', 'show-mail-info');
+      envelope.classList.add('is-closed');
+      layersToReset.forEach((el) => { void el.offsetWidth; }); // 逐一強制 reflow，確保每一層都真的被記錄下這個瞬間狀態
+      layersToReset.forEach((el) => { el.style.transition = ''; });
+      rig.classList.remove('is-dropping', 'is-flying');
+      hideSheetInstant(pickedSheet);
+      hideSheetInstant(step2Sheet);
+      hideSheetInstant(recoveryKeySheet);
+    }
+
+    // 一次性金鑰揭露畫面開著的時候，點疊層外面不能關掉（見定案文件 §5.2，跟現有
+    // App.vue 的 recoveryKeyDisplay 規則一致）；其餘時候點外面＝立即取消目前動作，
+    // 不播放任何收尾動畫（使用者明確要求）。
+    function closeImmediately(){
+      if (!recoveryKeySheet.classList.contains('sheet--hidden')) return;
+      overlay.classList.remove('is-open');
+    }
+    wireClickOutsideToClose(overlay, closeImmediately);
+
+    // 寄出飛走——闔上蓋章、顯示完檔名/郵戳/時間戳記（含恢復金鑰卡收掉之後）才觸發，
+    // 照抄 8-envelope-assembled.html 的 .is-flying，播完才真正關閉疊層、重置狀態。
+    function playMailAway(){
+      return new Promise((resolve) => {
+        rig.classList.add('is-flying');
+        after(FLY_MS + 60, () => {
+          overlay.classList.remove('is-open');
+          resolve();
+        });
+      });
+    }
+
+    fakePickBtn.addEventListener('click', addFakeFile);
+    document.getElementById('fakePickBtnMore').addEventListener('click', addFakeFile);
+
+    document.getElementById('openEncryptBtn').addEventListener('click', () => {
+      resetEncryptState();
+      overlay.classList.add('is-open');
+      // 開場分鏡（使用者明確指定，不是先前那版「全程闔著、落地才開」）：
+      // 開場分鏡（使用者訂正過：不是「開著落下」，是全程闔著，落地後才播放打開動畫）：
+      // 落下＋回彈全程維持闔著（resetEncryptState 已經把信封設回 is-closed），完全靜止
+      // 之後才觸發開封口的轉場——兩段 3D 動畫錯開、不同時播，也避免了先前那版「回彈跟
+      // 開封口同時播」導致疊放順序算錯的視覺閃爍問題。
+      rig.classList.add('is-dropping');
+      after(DROP_MS + 20, () => {
+        rig.classList.remove('is-dropping');
+        envelope.classList.remove('is-closed');
+        envelope.classList.add('is-open');
+      });
+      after(DROP_MS + FLAP_MS + SETTLE_HOLD_MS, () => playSheetTwoPhaseEntrance(pickedSheet));
+    });
+
+    document.getElementById('addFileCancel').addEventListener('click', () => {
+      overlay.classList.remove('is-open');
+    });
+
+    // 選檔案（步驟一）⇄ 設密碼（步驟二）是同一段連貫任務的前後兩頁，不是各自獨立的
+    // 物件——用交叉淡化「翻頁」，不用抽出/躲回（見上面 playSheetCrossfade 註解，使用者
+    // 明確反映連續兩次抽出/躲回會打斷心路歷程）。
+    document.getElementById('step2Back').addEventListener('click', async () => {
+      await playSheetCrossfade(step2Sheet, pickedSheet);
+    });
+
+    nextBtn.addEventListener('click', async () => {
+      if (nextBtn.disabled) return;
+      await playSheetCrossfade(pickedSheet, step2Sheet);
+    });
+
+    document.getElementById('step2Submit').addEventListener('click', async () => {
+      // 這裡才是「這段任務真的結束了、東西要收起來」的時間點——原本用瞬間隱藏
+      // （hideSheetInstant），使用者明確指出這裡反而該補上抽出/躲回的退場動畫，跟
+      // 上面兩步之間的「翻頁」明確區隔開。
+      await playSheetTwoPhaseExit(step2Sheet);
+      // 闔上信封、蓋章——闔上動畫播完才淡入檔名/郵戳/時間戳記（假資料）。
+      envelope.classList.remove('is-open');
+      envelope.classList.add('is-closed');
+      const firstFile = pickedList.children[0]
+        ? pickedList.children[0].querySelector('span').textContent
+        : '未命名檔案';
+      mailFilename.textContent = firstFile;
+      mailTimestamp.textContent = formatFakeTimestamp();
+      after(FLAP_MS + 40, () => {
+        envelope.classList.add('show-mail-info');
+        if (step2RecoveryKey.checked) {
+          // 蓋章闔上的收尾動畫播完後，緊接著自動出現，不等使用者額外點選（見定案文件 §5.2）。
+          after(SETTLE_HOLD_MS, () => {
+            document.getElementById('recoveryKeyValue').textContent =
+              'XK7Q-2M9P-VT4R-8LH1-QN3D-5FYE';
+            playSheetTwoPhaseEntrance(recoveryKeySheet);
+          });
+        } else {
+          // 沒開恢復金鑰，停留一下讓使用者看清楚檔名/郵戳，接著直接寄出飛走（見定案文件
+          // §1.8「寄出」動畫，這輪補上這段原本被省略的收尾）。
+          after(SETTLE_HOLD_MS, () => playMailAway());
+        }
+      });
+    });
+
+    // 恢復金鑰卡不能點外面關閉，只能按「已存檔/關閉」——按下後才觸發寄出飛走收尾。
+    document.getElementById('recoveryKeyClose').addEventListener('click', () => {
+      hideSheetInstant(recoveryKeySheet);
+      playMailAway();
+    });
+
+    resetEncryptState();
+  })();
+
+  // ============ 覆蓋層 2：獨立解密流程 ============
+  (function setupDecryptFlow(){
+    const overlay = document.getElementById('decryptOverlay');
+    const envelope = document.getElementById('decryptEnvelope');
+    const rig = document.getElementById('decryptRig');
+    const flapGroup = envelope.querySelector('.flap-group');
+    const waxDripBackEl = flapGroup.querySelector('.wax-drip-back');
+    const waxSealEl = flapGroup.querySelector('.wax-seal');
+    const mailFilename = document.getElementById('decryptMailFilename');
+    const mailTimestamp = document.getElementById('decryptMailTimestamp');
+    const decryptSheet = document.getElementById('decryptSheet');
+    const decryptSheetPages = document.getElementById('decryptSheetPages');
+    const decryptPassword = document.getElementById('decryptPassword');
+    const decryptHint = document.getElementById('decryptHint');
+    const destinationSheet = document.getElementById('destinationSheet');
+    const destinationSuccess = document.getElementById('destinationSuccess');
+
+    let timers = [];
+    function after(ms, fn){ const id = setTimeout(fn, ms); timers.push(id); return id; }
+    function clearTimers(){ timers.forEach(clearTimeout); timers = []; }
+    let passkeyFailRequested = false;
+    let currentFakeFile = null;
+
+    const decryptPasskeyBtn = document.getElementById('decryptPasskeyBtn');
+    const decryptRecoveryKeyBtn = document.getElementById('decryptRecoveryKeyBtn');
+
+    function resetDecryptState(){
+      clearTimers();
+      passkeyFailRequested = false;
+      currentFakeFile = null;
+      // 跟加密流程同一個坑、同一套修法（見 setupEncryptFlow 的 resetEncryptState 註解）：
+      // 上一輪如果是在信封已經打開（驗證成功、正在選存檔位置）的狀態被取消，這裡改回
+      // is-closed 不能播正常轉場，也要連同蠟滴／蠟封一起經過瞬間重置，不然下一次選檔案
+      // 落下的時候封口可能還沒真的關好、疊放順序也可能沒有重新算乾淨。
+      const decryptLayersToReset = [flapGroup, waxDripBackEl, waxSealEl];
+      decryptLayersToReset.forEach((el) => { el.style.transition = 'none'; });
+      envelope.classList.remove('is-open');
+      envelope.classList.add('is-closed');
+      decryptLayersToReset.forEach((el) => { void el.offsetWidth; });
+      decryptLayersToReset.forEach((el) => { el.style.transition = ''; });
+      rig.classList.remove('is-dropping');
+      decryptSheet.classList.remove('is-verifying', 'is-success', 'decrypt-sheet--page2');
+      decryptPassword.value = '';
+      decryptHint.style.display = 'none';
+      destinationSheet.classList.remove('is-done');
+      hideSheetInstant(decryptSheet);
+      hideSheetInstant(destinationSheet);
+    }
+
+    // 一次性選檔案流程進行中不禁止點外面（跟恢復金鑰揭露卡不同，這裡沒有「揭露後遺失就
+    // 救不回來」的風險），點外面＝立即取消，不播放收尾動畫（使用者明確要求）。
+    wireClickOutsideToClose(overlay, () => overlay.classList.remove('is-open'));
+
+    // 選檔案完成後跳出的假 metadata——正式功能會呼叫唯讀 metadata 讀取（見定案文件 §1.11，
+    // 技術規格已查證 App.vue 其實已經有 inspectLockedFile 這個雛形，只差時間戳記沒回傳），
+    // 這個 mockup 直接用固定假資料 + 「測試用」核取方塊控制 hasPasskey/hasRecoveryKey。
+    // 檔名不帶 .locked 副檔名——信封上顯示的是「這份東西原本叫什麼」，不是指標檔本身的
+    // 檔案系統路徑，跟清單列（顯示原始檔名）保持一致。
+    function fakePickLockedFile(){
+      return new Promise((resolve) => {
+        after(500, () => {
+          resolve({
+            filename: '合約掃描件.pdf',
+            hasPasskey: document.getElementById('dbgHasPasskey').checked,
+            hasRecoveryKey: document.getElementById('dbgHasRecoveryKey').checked,
+          });
+        });
+      });
+    }
+
+    function showDecryptSheetPage1(){
+      decryptSheetPages.parentElement.classList.remove('decrypt-sheet--page2');
+    }
+
+    function startVerifyingIfPasskey(){
+      if (!currentFakeFile.hasPasskey) return;
+      decryptSheet.classList.add('is-verifying');
+      passkeyFailRequested = false;
+      after(PASSKEY_VERIFY_MS, () => {
+        if (passkeyFailRequested) {
+          decryptSheet.classList.remove('is-verifying');
+          decryptHint.textContent = 'Passkey 驗證未完成，可以重試或改用密碼。';
+          decryptHint.style.display = 'block';
+        } else {
+          onVerifySuccess();
+        }
+      });
+    }
+
+    async function onVerifySuccess(){
+      decryptSheet.classList.remove('is-verifying');
+      decryptSheet.classList.add('is-success');
+      await new Promise((r) => after(SETTLE_HOLD_MS, r));
+      decryptSheet.classList.remove('is-success');
+      await playSheetTwoPhaseExit(decryptSheet);
+      envelope.classList.remove('is-closed');
+      envelope.classList.add('is-open');
+      after(FLAP_MS + 40, () => showDestinationSheet());
+    }
+
+    function showDestinationSheet(){
+      destinationSheet.classList.remove('is-done');
+      playSheetTwoPhaseEntrance(destinationSheet);
+    }
+
+    document.getElementById('openDecryptBtn').addEventListener('click', async () => {
+      resetDecryptState();
+      currentFakeFile = await fakePickLockedFile();
+      overlay.classList.add('is-open');
+      mailFilename.textContent = currentFakeFile.filename;
+      mailTimestamp.textContent = formatFakeTimestamp();
+      // 只在有對應驗證方式時才顯示按鈕，見使用者走查回饋（不能兩顆一律都顯示）。
+      decryptPasskeyBtn.style.display = currentFakeFile.hasPasskey ? '' : 'none';
+      decryptRecoveryKeyBtn.style.display = currentFakeFile.hasRecoveryKey ? '' : 'none';
+      // 信封落下＋回彈，但停在闔上狀態，不打開封口（跟加密流程的差異，見定案文件 §1.11）。
+      rig.classList.add('is-dropping');
+      after(DROP_MS + 20, () => rig.classList.remove('is-dropping'));
+      after(DROP_MS + SETTLE_HOLD_MS, async () => {
+        showDecryptSheetPage1();
+        await playSheetTwoPhaseEntrance(decryptSheet);
+        startVerifyingIfPasskey();
+      });
+    });
+
+    document.getElementById('decryptPasswordSubmit').addEventListener('click', () => {
+      if (!decryptPassword.value.trim()) return;
+      onVerifySuccess();
+    });
+    decryptPassword.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('decryptPasswordSubmit').click();
+    });
+    document.getElementById('decryptPasskeyBtn').addEventListener('click', () => startVerifyingIfPasskey());
+    document.getElementById('decryptRecoveryKeyBtn').addEventListener('click', () => {
+      decryptSheetPages.parentElement.classList.add('decrypt-sheet--page2');
+    });
+    document.getElementById('decryptRecoveryKeyBack').addEventListener('click', () => showDecryptSheetPage1());
+    document.getElementById('decryptRecoveryKeySubmit').addEventListener('click', () => {
+      const input = document.getElementById('decryptRecoveryKeyInput');
+      if (!input.value.trim()) return;
+      onVerifySuccess();
+    });
+    document.getElementById('dbgSimulatePasskeyFail').addEventListener('click', () => {
+      passkeyFailRequested = true;
+    });
+
+    document.getElementById('destinationPickBtn').addEventListener('click', () => {
+      after(650, async () => {
+        destinationSheet.classList.add('is-done');
+        await new Promise((r) => after(900, r));
+        overlay.classList.remove('is-open');
+      });
+    });
+    // 取消＝放棄這次解密，直接整個關閉（原本設計是退回「信封開著、空的」中間態、留兩個
+    // 出口，使用者走查後反映那個中間態讀起來像瞬間重複出現、卡住，改成直接關閉最乾脆）。
+    document.getElementById('destinationCancel').addEventListener('click', () => {
+      overlay.classList.remove('is-open');
+    });
+
+    resetDecryptState();
+  })();
+
+  updatePasskeyRecoveryIcons();
+</script>
+</body>
+</html>

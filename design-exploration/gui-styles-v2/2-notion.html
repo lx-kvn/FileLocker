@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>FileLocker — 造型探索 v2-2：Notion 式暖中性風</title>
+<style>
+  :root{
+    --bg:#FFFFFF; --sidebar-bg:#FBFBFA; --surface:#FFFFFF; --border:#EBEAE8; --border-strong:#DEDDDA;
+    --text:#37352F; --text-secondary:#787774; --text-tertiary:#9B9A97;
+    --accent:#2383E2; --accent-soft:#E7F3FC;
+    --radius:8px; --radius-sm:6px;
+    --font:'Inter','IBM Plex Sans',-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:var(--font);background:var(--bg);color:var(--text);font-size:14px;}
+  .shell{display:flex;height:100vh;}
+
+  .sidebar{width:236px;background:var(--sidebar-bg);border-right:1px solid var(--border);padding:10px 8px;display:flex;flex-direction:column;flex-shrink:0;}
+  .workspace{display:flex;align-items:center;gap:8px;padding:6px 8px 14px;font-weight:600;font-size:13.5px;}
+  .workspace__icon{width:20px;height:20px;border-radius:5px;background:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .workspace__icon svg{width:12px;height:12px;stroke:#fff;}
+  .nav-item{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:5px;color:var(--text-secondary);font-size:13.5px;font-weight:450;}
+  .nav-item svg{width:16px;height:16px;stroke-width:1.6;flex-shrink:0;}
+  .nav-item.active{background:rgba(55,53,47,.08);color:var(--text);font-weight:600;}
+  .nav-item .emoji{font-size:14px;width:16px;text-align:center;}
+  .sidebar__section-label{font-size:11px;color:var(--text-tertiary);font-weight:600;padding:14px 8px 4px;}
+
+  .main{flex:1;overflow-y:auto;}
+  .page-head{padding:40px 64px 0;max-width:900px;}
+  .breadcrumb{font-size:12.5px;color:var(--text-tertiary);margin-bottom:10px;display:flex;align-items:center;gap:4px;}
+  .page-title{font-size:30px;font-weight:700;margin:0 0 6px;display:flex;align-items:center;gap:12px;}
+  .page-title-emoji{font-size:32px;}
+  .page-sub{color:var(--text-tertiary);font-size:13.5px;margin:0 0 22px;}
+
+  .props-row{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;}
+  .prop-chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text-secondary);padding:3px 8px;border-radius:5px;background:#F1F1EF;}
+
+  .toolbar{display:flex;align-items:center;gap:10px;padding:14px 64px 0;max-width:900px;border-top:1px solid var(--border);margin-top:10px;}
+  .tab{font-size:13.5px;font-weight:600;color:var(--text-tertiary);padding:8px 2px;border-bottom:2px solid transparent;margin-right:18px;}
+  .tab.active{color:var(--text);border-bottom-color:var(--text);}
+  .toolbar__spacer{flex:1;}
+  .icon-btn{width:26px;height:26px;border-radius:5px;border:none;background:none;display:flex;align-items:center;justify-content:center;color:var(--text-tertiary);}
+  .icon-btn svg{width:15px;height:15px;stroke-width:1.8;}
+  .new-btn{display:flex;align-items:center;gap:5px;background:var(--accent);color:#fff;border:none;font:inherit;font-weight:550;font-size:12.5px;padding:6px 12px;border-radius:5px;}
+
+  .table-wrap{padding:14px 64px 60px;max-width:900px;}
+  table{width:100%;border-collapse:collapse;border:1px solid var(--border);border-radius:6px;overflow:hidden;}
+  th{text-align:left;font-size:12px;font-weight:500;color:var(--text-tertiary);padding:6px 10px;background:#FBFBFA;border-bottom:1px solid var(--border);border-right:1px solid var(--border);}
+  th:last-child{border-right:none;}
+  td{padding:8px 10px;border-bottom:1px solid var(--border);border-right:1px solid var(--border);font-size:13px;vertical-align:middle;}
+  td:last-child{border-right:none;}
+  tr:last-child td{border-bottom:none;}
+  tr:hover td{background:#FAFAF9;}
+  .name-cell{display:flex;align-items:center;gap:8px;}
+  .name-cell__emoji{font-size:15px;}
+  .name-primary{font-weight:500;}
+  .prop-tag{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:500;padding:1px 7px;border-radius:4px;}
+  .prop-tag--pdf{background:#FDE4E1;color:#9A3B2E;}
+  .prop-tag--folder{background:#DDEBFF;color:#245493;}
+  .prop-tag--zip{background:#EAE4FA;color:#5B3A9E;}
+  .prop-tag--cert{background:#DFF3E8;color:#1F6E45;}
+  .prop-tag--doc{background:#F1F1EF;color:#787774;}
+  .badge-warn{font-size:11px;font-weight:600;color:#9A6324;background:#FBECD9;padding:1px 7px;border-radius:4px;margin-left:6px;}
+  .row-actions{display:flex;gap:6px;justify-content:flex-end;}
+  .row-actions button{border:1px solid var(--border-strong);background:#fff;font:inherit;font-size:12px;padding:4px 9px;border-radius:5px;cursor:pointer;color:var(--text);}
+  .row-actions button:hover{background:#F7F7F5;}
+  .group-row td{background:#FBFBFA;color:var(--text-secondary);font-style:italic;}
+  .group-row__inner{display:flex;align-items:center;justify-content:space-between;font-style:normal;}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="workspace"><div class="workspace__icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>FileLocker</div>
+    <div class="nav-item"><span class="emoji">📄</span>加密檔案</div>
+    <div class="nav-item"><span class="emoji">🔓</span>解密檔案</div>
+    <div class="nav-item active"><span class="emoji">🗂️</span>已加密清單</div>
+    <div class="nav-item"><span class="emoji">🛡️</span>資料夾防護</div>
+    <div class="nav-item"><span class="emoji">🔑</span>密碼庫</div>
+    <div class="sidebar__section-label">系統</div>
+    <div class="nav-item"><span class="emoji">⚙️</span>設定</div>
+  </aside>
+
+  <main class="main">
+    <div class="page-head">
+      <div class="breadcrumb">FileLocker 工作區 / 已加密清單</div>
+      <h1 class="page-title"><span class="page-title-emoji">🗂️</span>已加密清單</h1>
+      <p class="page-sub">共 6 個項目 · 上次更新 08-10</p>
+    </div>
+
+    <div class="toolbar">
+      <div class="tab active">檔案</div>
+      <div class="tab">歷史紀錄</div>
+      <div class="toolbar__spacer"></div>
+      <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></button>
+      <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 8 0 0 1 14.6-4.6M20 12a8 8 0 0 1-14.6 4.6M4 4v5h5M20 20v-5h-5"/></svg></button>
+      <button class="new-btn">＋ 加密新檔案</button>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>名稱</th><th>類型</th><th>大小</th><th>提示</th><th>加密時間</th><th></th></tr></thead>
+        <tbody>
+          <tr>
+            <td><div class="name-cell"><span class="name-cell__emoji">📕</span><span class="name-primary">專案合約書.pdf</span></div></td>
+            <td><span class="prop-tag prop-tag--pdf">PDF 文件</span></td><td>2.4 MB</td><td>合約相關</td><td>08-10 14:22</td>
+            <td><div class="row-actions"><button>解密</button><button>Passkey</button></div></td>
+          </tr>
+          <tr>
+            <td><div class="name-cell"><span class="name-cell__emoji">📁</span><span class="name-primary">家庭照片備份</span></div></td>
+            <td><span class="prop-tag prop-tag--folder">資料夾</span></td><td>1.2 GB</td><td>—</td><td>08-09 09:03</td>
+            <td><div class="row-actions"><button>解密</button></div></td>
+          </tr>
+          <tr class="group-row">
+            <td colspan="6"><div class="group-row__inner"><span>▸ 批次加密：3 個檔案（報稅資料.xlsx、收據掃描.jpg 等）</span><button style="border:1px solid var(--border-strong);background:#fff;font:inherit;font-size:12px;padding:4px 9px;border-radius:5px;">全部解鎖</button></div></td>
+          </tr>
+          <tr>
+            <td><div class="name-cell"><span class="name-cell__emoji">🗜️</span><span class="name-primary">密碼管理備份.zip</span><span class="badge-warn">🔒×2</span></div></td>
+            <td><span class="prop-tag prop-tag--zip">壓縮檔</span></td><td>890 KB</td><td>常用密碼</td><td>08-06 21:40</td>
+            <td><div class="row-actions"><button>恢復金鑰</button></div></td>
+          </tr>
+          <tr>
+            <td><div class="name-cell"><span class="name-cell__emoji">🔐</span><span class="name-primary">遠端桌面憑證.pfx</span></div></td>
+            <td><span class="prop-tag prop-tag--cert">憑證檔</span></td><td>4 KB</td><td>公司 VPN</td><td>08-05 11:02</td>
+            <td><div class="row-actions"><button>解密</button><button>Passkey</button></div></td>
+          </tr>
+          <tr>
+            <td><div class="name-cell"><span class="name-cell__emoji">📃</span><span class="name-primary">個人日記.docx</span><span class="badge-warn">⚠ 需留意</span></div></td>
+            <td><span class="prop-tag prop-tag--doc">Word 文件</span></td><td>156 KB</td><td>—</td><td>07-28 20:11</td>
+            <td><div class="row-actions"><button>解密</button></div></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+</div>
+</body>
+</html>

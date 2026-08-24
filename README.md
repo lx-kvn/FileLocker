@@ -51,16 +51,16 @@
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/encrypt.png" alt="加密頁籤" /><p align="center">加密</p></td>
-    <td width="50%"><img src="docs/screenshots/decrypt.png" alt="解密頁籤" /><p align="center">解密</p></td>
+    <td width="50%"><img src="docs/screenshots/zh-TW/encrypt.png" alt="加密頁籤" /><p align="center">加密</p></td>
+    <td width="50%"><img src="docs/screenshots/zh-TW/decrypt.png" alt="解密頁籤" /><p align="center">解密</p></td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/screenshots/vault-list.png" alt="已加密清單" /><p align="center">已加密清單</p></td>
-    <td width="50%"><img src="docs/screenshots/settings.png" alt="設定頁" /><p align="center">設定</p></td>
+    <td width="50%"><img src="docs/screenshots/zh-TW/vault-list.png" alt="已加密清單" /><p align="center">已加密清單</p></td>
+    <td width="50%"><img src="docs/screenshots/zh-TW/settings.png" alt="設定頁" /><p align="center">設定</p></td>
   </tr>
   <tr>
     <td width="50%"><img src="docs/screenshots/context-menu.png" alt="右鍵選單" /><p align="center">檔案總管右鍵選單</p></td>
-    <td width="50%"><img src="docs/screenshots/recovery-key.png" alt="恢復金鑰彈窗" /><p align="center">恢復金鑰顯示彈窗</p></td>
+    <td width="50%"><img src="docs/screenshots/zh-TW/recovery-key.png" alt="恢復金鑰彈窗" /><p align="center">恢復金鑰顯示彈窗</p></td>
   </tr>
 </table>
 
@@ -148,16 +148,16 @@ Full architecture, encryption flow, and IPC protocol details live in [`FileLocke
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/encrypt.png" alt="Encrypt tab" /><p align="center">Encrypt</p></td>
-    <td width="50%"><img src="docs/screenshots/decrypt.png" alt="Decrypt tab" /><p align="center">Decrypt</p></td>
+    <td width="50%"><img src="docs/screenshots/en/encrypt.png" alt="Encrypt tab" /><p align="center">Encrypt</p></td>
+    <td width="50%"><img src="docs/screenshots/en/decrypt.png" alt="Decrypt tab" /><p align="center">Decrypt</p></td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/screenshots/vault-list.png" alt="Vault list" /><p align="center">Vault list</p></td>
-    <td width="50%"><img src="docs/screenshots/settings.png" alt="Settings tab" /><p align="center">Settings</p></td>
+    <td width="50%"><img src="docs/screenshots/en/vault-list.png" alt="Vault list" /><p align="center">Vault list</p></td>
+    <td width="50%"><img src="docs/screenshots/en/settings.png" alt="Settings tab" /><p align="center">Settings</p></td>
   </tr>
   <tr>
     <td width="50%"><img src="docs/screenshots/context-menu.png" alt="Explorer context menu" /><p align="center">Explorer context menu</p></td>
-    <td width="50%"><img src="docs/screenshots/recovery-key.png" alt="Recovery key modal" /><p align="center">Recovery key reveal</p></td>
+    <td width="50%"><img src="docs/screenshots/en/recovery-key.png" alt="Recovery key modal" /><p align="center">Recovery key reveal</p></td>
   </tr>
 </table>
 

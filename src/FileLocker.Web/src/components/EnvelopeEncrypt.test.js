@@ -131,6 +131,47 @@ describe('EnvelopeEncrypt', () => {
     expect(wrapper.emitted('update:password')).toEqual([['hunter2']])
   })
 
+  it('確認密碼欄位離開焦點時，兩次密碼不一致要顯示提示文字', async () => {
+    const wrapper = mountEnvelope({ paths: ['C:\\a.txt'], password: 'hunter2', passwordConfirm: 'hunter3' })
+    await vi.advanceTimersByTimeAsync(2000)
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-action="next"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(500)
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-hint="password-mismatch"]').exists()).toBe(false)
+
+    await wrapper.find('[data-field="passwordConfirm"]').trigger('blur')
+    expect(wrapper.find('[data-hint="password-mismatch"]').exists()).toBe(true)
+    expect(wrapper.find('[data-hint="password-mismatch"]').text()).toBe('encrypt.passwordMismatch')
+  })
+
+  it('確認密碼欄位是空的時，離開焦點也不該顯示不一致提示（使用者還沒開始打，不是打錯）', async () => {
+    const wrapper = mountEnvelope({ paths: ['C:\\a.txt'], password: 'hunter2', passwordConfirm: '' })
+    await vi.advanceTimersByTimeAsync(2000)
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-action="next"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(500)
+    await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-field="passwordConfirm"]').trigger('blur')
+    expect(wrapper.find('[data-hint="password-mismatch"]').exists()).toBe(false)
+  })
+
+  it('顯示提示後，改到兩次密碼一致，提示要立刻消失，不用再次離開焦點', async () => {
+    const wrapper = mountEnvelope({ paths: ['C:\\a.txt'], password: 'hunter2', passwordConfirm: 'hunter3' })
+    await vi.advanceTimersByTimeAsync(2000)
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-action="next"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(500)
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-field="passwordConfirm"]').trigger('blur')
+    expect(wrapper.find('[data-hint="password-mismatch"]').exists()).toBe(true)
+
+    await wrapper.setProps({ passwordConfirm: 'hunter2' })
+    expect(wrapper.find('[data-hint="password-mismatch"]').exists()).toBe(false)
+  })
+
   it('phase 是 confirming 時顯示確認/取消按鈕，點確認會 emit confirm', async () => {
     const wrapper = mountEnvelope({ phase: 'confirming', pendingSummary: '測試檔案.txt' })
     await wrapper.find('[data-action="confirm"]').trigger('click')

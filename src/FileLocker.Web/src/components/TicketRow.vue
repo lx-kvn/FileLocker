@@ -248,6 +248,17 @@ onUnmounted(clearAllTimers)
   position: relative;
 }
 
+/* 回饋（使用者實測抓到）：撕開／撐開過程中兩個半邊（.ticket__half）因為旋轉角度，實際
+   渲染範圍會比自己這一列的高度略高一點（撐開時往上下微幅超出），批次群組展開清單裡
+   這一列跟上面那一列是普通 flex 手足，沒有明確 z-index 的情況下按照文件順序疊放，
+   超出範圍的部分會被「畫面上排在後面、但 DOM 順序在前面」的上一列蓋住，看起來像是
+   撕開動畫被上面的項目擋到一角。撕開／撐一角期間主動墊高自己的堆疊順序，確保這個過程
+   的視覺一定蓋在其他靜止的手足上面，不管它是清單裡的第幾筆。 */
+.ticket-wrap.is-peeking,
+.ticket-wrap.is-tearing {
+  z-index: 1;
+}
+
 .ticket-stage {
   position: relative;
   transition: transform 380ms var(--ease-out, ease), opacity 340ms ease;

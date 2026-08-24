@@ -60,6 +60,19 @@ const SHEET_PHASE_MS = 280
 const showPassword = ref(false)
 const showPasswordConfirm = ref(false)
 
+// 兩次密碼不一致的提示（使用者回饋：原本只有按鈕變灰、沒有任何文字說明為什麼，猜不到
+// 是密碼打錯）。用「確認密碼欄位離開過焦點」當觸發時機，不是每打一個字就即時比對——
+// 使用者才剛開始打第二個密碼欄位，兩邊字數本來就會暫時不一樣，這是正常過程不是錯誤，
+// 太早跳提示會很煩。一旦顯示過，之後改成一致要立刻消失（不用再次離開焦點才收回），
+// 靠 computed 天生的響應式就能做到，不需要額外邏輯。
+const passwordConfirmTouched = ref(false)
+function onPasswordConfirmBlur() {
+  passwordConfirmTouched.value = true
+}
+const passwordMismatch = computed(() =>
+  passwordConfirmTouched.value && props.passwordConfirm.length > 0 && props.password !== props.passwordConfirm
+)
+
 const isDropping = ref(true)
 const isOpen = ref(false)
 const sheetPage = ref('picker') // 'picker' | 'password'
@@ -516,6 +529,7 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
             :value="passwordConfirm"
             :placeholder="t('encrypt.passwordConfirmLabel')"
             @input="emit('update:passwordConfirm', $event.target.value)"
+            @blur="onPasswordConfirmBlur"
           />
           <button
             type="button"
@@ -527,6 +541,7 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
             <svg v-else viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M9.9 5.1A10.7 10.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.1 17.1 0 0 1-3.15 4.05M6.5 6.9C4.1 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.1 0 2.1-.2 3-.55M14.1 14.1a2.75 2.75 0 0 1-3.9-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
         </div>
+        <p v-if="passwordMismatch" data-hint="password-mismatch" class="field-error-hint">{{ t('encrypt.passwordMismatch') }}</p>
         <input
           data-field="hint"
           type="text"
@@ -944,6 +959,16 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
   outline: none;
   border-color: #DCC289;
   box-shadow: 0 0 0 3px rgba(220, 194, 137, 0.35);
+}
+
+/* 兩次密碼不一致的提示文字——緊接在確認密碼欄位下面，用負的上邊距把它拉近欄位本身
+   （.step2-form 的 flex gap 是給「不同欄位之間」用的間距，這裡要更貼近，不是另一個獨立欄位），
+   下面接的提示（hint）欄位維持原本的 gap 不用跟著改。 */
+.field-error-hint {
+  margin: -4px 0 0;
+  font-size: 12px;
+  color: var(--color-danger);
+  line-height: 1.4;
 }
 
 .step2-form label {

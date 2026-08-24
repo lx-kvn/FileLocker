@@ -225,6 +225,19 @@ function handleGlobalKeydown(event) {
 
 onMounted(() => {
   window.addEventListener('keydown', handleGlobalKeydown)
+
+  // 回饋（使用者實測抓到）：已加密清單開機時是空的，要手動按「重新整理」才會跳出來——
+  // activeTab 預設值本身就是 'list'，App 一開機就已經停在這個值上，下面 watch(activeTab)
+  // 永遠等不到「值改變」這個觸發時機。跟前面 isRunningInWebView2 區塊裡
+  // refreshPasswordLockerModuleStatus() 是同一種坑，但這裡不能放在那個區塊裡一起呼叫——
+  // refreshList() 用到的 listLoadStartedAt 是這個檔案後段才宣告的 let 變數，那個區塊是
+  // <script setup> 最上層、跟著整份腳本由上到下執行的一般敘述（不是等掛載後才跑的回呼），
+  // 執行到那裡時 listLoadStartedAt 還沒宣告，會直接丟「Cannot access before initialization」
+  // 例外。onMounted 的回呼本來就是等整份 setup() 腳本（含所有 let/const 宣告）都跑完、
+  // 元件真的掛載之後才觸發，沒有這個時序問題，才是安全的呼叫時機。
+  if (isRunningInWebView2) {
+    refreshList()
+  }
 })
 
 onUnmounted(() => {
@@ -510,11 +523,20 @@ function onEncryptFlyAwayComplete() {
   encryptPendingItems.value = []
   showEncryptOverlay.value = false
   activeTab.value = 'list'
-  // 使用者原本就在清單頁的話（最常見的情境：從清單頁點「加密」），上面這行 activeTab 賦值
-  // 不會觸發 watch(activeTab)（值沒變），清單就永遠不會自動重新整理——這裡直接補呼叫一次，
-  // 不能只依賴那個 watcher。
-  refreshList()
-  maybeOfferSaveEncryptedFilesToLocker(passwordUsed, successItems)
+  // 回饋（使用者實測抓到）：原本 refreshList() 跟 maybeOfferSaveEncryptedFilesToLocker() 是
+  // 平行觸發，如果密碼庫部件已安裝且設定過密碼，maybeOfferSaveEncryptedFilesToLocker 會跳出
+  // 「要不要存密碼」確認彈窗——那個彈窗背景會整個模糊暗化，剛好蓋住清單這時候正在播的
+  // 新項目滑入動畫，使用者實際上完全看不到。改成先等 maybeOfferSaveEncryptedFilesToLocker
+  // 整個處理完（不管有沒有真的跳出彈窗、使用者按確認還是取消）才呼叫 refreshList()，滑入
+  // 動畫才會等到背景真的乾淨了才播放。沒裝密碼庫部件／沒設定過密碼的情境，
+  // maybeOfferSaveEncryptedFilesToLocker 內部很快就會提早 return（只有一兩個本機 IPC
+  // 來回，不是網路請求），幾乎不會有感覺得到的延遲，等於維持原本「立刻重新整理」的體感。
+  maybeOfferSaveEncryptedFilesToLocker(passwordUsed, successItems).finally(() => {
+    // 使用者原本就在清單頁的話（最常見的情境：從清單頁點「加密」），上面 activeTab 賦值
+    // 不會觸發 watch(activeTab)（值沒變），清單就永遠不會自動重新整理——這裡直接補呼叫一次，
+    // 不能只依賴那個 watcher。
+    refreshList()
+  })
 }
 const isEncrypting = ref(false)
 
@@ -3876,24 +3898,32 @@ const isAnyBlockingModalOpen = computed(() =>
                       {{ decryptingBatchIds.has(group.batchId) ? t('list.unlockAllInProgress') : t('list.unlockAll') }}
                     </button>
                   </div>
-                  <div v-if="expandedGroups.has(group.batchId)" class="ticket-group__items">
-                    <TicketRow
-                      v-for="item in group.items"
-                      :key="item.uuid"
-                      :item="item"
-                      :t="t"
-                      :decrypting="decryptingUuids.has(item.uuid)"
-                      :tearing="tearingUuids.has(item.uuid)"
-                      :translate-error="translateError"
-                      :format-size="formatSize"
-                      :format-date="formatDate"
-                      :type-label="typeLabel"
-                      @decrypt="decryptFromList"
-                      @decrypt-via-passkey="decryptFromListViaPasskey"
-                      @decrypt-via-recovery-key="decryptFromListViaRecoveryKey"
-                      @delete="requestDelete"
-                      @torn-away="handleTicketTornAway"
-                    />
+                  <!-- 回饋（使用者實測抓到）：這裡原本用 v-if 直接切換，展開/收合完全沒有過場，
+                       裡面單獨解鎖一筆時也沒有補位動畫（外層 <TransitionGroup name="ticket-fly">
+                       只包住最外層清單，管不到這裡巢狀的 v-for）。改成一律掛載、用 CSS class
+                       控制展開高度（grid-template-rows 0fr/1fr 技巧，不用 JS 量測高度），裡面
+                       也換成 <TransitionGroup> 沿用同一組 ticket-fly 動畫語彙，解鎖/刪除單一
+                       項目時其餘項目一樣會有彈性補位效果。 -->
+                  <div class="ticket-group__items-wrapper" :class="{ 'is-expanded': expandedGroups.has(group.batchId) }">
+                    <TransitionGroup name="ticket-fly" tag="div" class="ticket-group__items">
+                      <TicketRow
+                        v-for="item in group.items"
+                        :key="item.uuid"
+                        :item="item"
+                        :t="t"
+                        :decrypting="decryptingUuids.has(item.uuid)"
+                        :tearing="tearingUuids.has(item.uuid)"
+                        :translate-error="translateError"
+                        :format-size="formatSize"
+                        :format-date="formatDate"
+                        :type-label="typeLabel"
+                        @decrypt="decryptFromList"
+                        @decrypt-via-passkey="decryptFromListViaPasskey"
+                        @decrypt-via-recovery-key="decryptFromListViaRecoveryKey"
+                        @delete="requestDelete"
+                        @torn-away="handleTicketTornAway"
+                      />
+                    </TransitionGroup>
                   </div>
                 </div>
               </template>
@@ -7338,12 +7368,52 @@ button:focus-visible,
    <TransitionGroup> 的 name prop，Vue 會自動組出 -move / -leave-active / -leave-to 三組
    class。飛走的位移／角度數值照抄 mockup（13-sidebar-ticket-shell.html）的
    `.ticket-wrap.is-leaving .ticket-stage`；「其餘列往上補位」則是 TransitionGroup 內建的
-   FLIP move 過場，不用額外寫位移邏輯。 */
+   FLIP move 過場，不用額外寫位移邏輯。
+   回饋（使用者實測抓到）：原本補位是線性 ease、所有列同一時間一起移動，撤掉一列之後底下
+   整批「唰」一聲瞬間跳上去，感覺不到真的在補位。改用彈性曲線（沿用側欄高亮色塊同一組
+   cubic-bezier(0.34, 1.56, 0.64, 1)，衝過頭一點再彈回卡住，不是單純減速停下）；多筆同時
+   要補位時，用 nth-child 依序加一點點延遲，做出「一筆一筆跟著往上跑」的層次感，不是所有
+   列同時定格式地移動。延遲量刻意壓得很小（每筆只差 35ms）——要有層次，但不能拖沓。 */
 .ticket-fly-move {
-  transition: transform 360ms var(--ease-out, ease);
+  transition: transform 360ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.ticket-fly-leave-active {
+/* 巢狀批次群組展開後裡面那份清單（.ticket-group__items）用的是同一個 TransitionGroup
+   name="ticket-fly"，共用這整組規則——選擇器一併涵蓋兩種容器，不用重複寫一份。 */
+.ticket-list > *:nth-child(2).ticket-fly-move,
+.ticket-group__items > *:nth-child(2).ticket-fly-move { transition-delay: 35ms; }
+.ticket-list > *:nth-child(3).ticket-fly-move,
+.ticket-group__items > *:nth-child(3).ticket-fly-move { transition-delay: 70ms; }
+.ticket-list > *:nth-child(4).ticket-fly-move,
+.ticket-group__items > *:nth-child(4).ticket-fly-move { transition-delay: 105ms; }
+.ticket-list > *:nth-child(5).ticket-fly-move,
+.ticket-group__items > *:nth-child(5).ticket-fly-move { transition-delay: 140ms; }
+.ticket-list > *:nth-child(n+6).ticket-fly-move,
+.ticket-group__items > *:nth-child(n+6).ticket-fly-move { transition-delay: 175ms; }
+
+/* 新項目滑入（定案文件〈8.1〉：從上方滑下＋淡入，時長／曲線沿用全站清單共用的
+   --duration-base／--ease-out，不另外發明新數字，跟 table-row-in、已選檔案清單
+   進出場是同一套語彙）——加密委交成功、新票根出現在清單最上面時觸發。 */
+.ticket-fly-enter-active {
+  transition: transform var(--duration-base) var(--ease-out), opacity var(--duration-base) var(--ease-out);
+}
+
+.ticket-fly-enter-from {
+  opacity: 0;
+  transform: translateY(-16px);
+}
+
+/* 回饋（使用者實測抓到的真正病根）：下面 position:absolute 這條原本寫成單一 class
+   選擇器 `.ticket-fly-leave-active`（優先權 0,0,1,0），會被 TicketRow.vue scoped 樣式裡的
+   `.ticket-wrap { position: relative }` 蓋掉——scoped 樣式編譯後會自動加一個屬性選擇器
+   （`.ticket-wrap[data-v-xxxx]`），優先權變成 0,0,2,0，比這裡原本的寫法高，所以飛走的那一列
+   其實從頭到尾都沒有真的脫離版面流，補位動畫的容身空間一直被佔著，直到動畫完全播完、
+   Vue 把節點整個移除 DOM 那一刻，其餘列才會一次瞬間跳上去——跟使用者形容的「颼的一下」
+   完全吻合。改成三層選擇器（.ticket-list > .ticket-wrap.ticket-fly-leave-active，
+   優先權 0,0,3,0）確保一定贏過 scoped 樣式，不管兩份樣式表打包後的先後順序為何。批次群組
+   展開後裡面那份巢狀清單（.ticket-group__items）用的是同一個 TransitionGroup，一併涵蓋。 */
+.ticket-list > .ticket-wrap.ticket-fly-leave-active,
+.ticket-group__items > .ticket-wrap.ticket-fly-leave-active {
   transition: transform 380ms var(--ease-out, ease), opacity 340ms ease;
   /* 飛走時要蓋在其他還沒補位的列上面，且脫離文件流讓其餘列可以立刻開始往上滑，
      不然它們得等這一列真的從版面消失才會移動，補位動畫看起來會頓一下。 */
@@ -7395,11 +7465,33 @@ button:focus-visible,
   transform: rotate(90deg);
 }
 
+/* 展開/收合手風琴動畫：用 grid-template-rows 0fr → 1fr 的技巧，不用 JS 量測 scrollHeight——
+   內容高度不管多高，同一條 CSS 規則都適用，換素材/加項目都不用回頭調參數。外層負責動畫，
+   裡面的 .ticket-group__items 只負責 overflow:hidden 擋住還沒展開時溢出的內容。 */
+.ticket-group__items-wrapper {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 280ms var(--ease-out);
+}
+
+.ticket-group__items-wrapper.is-expanded {
+  grid-template-rows: 1fr;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ticket-group__items-wrapper {
+    transition: none;
+  }
+}
+
 .ticket-group__items {
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding-left: 20px;
+  overflow: hidden;
+  min-height: 0;
+  position: relative; /* 撕開飛走／解鎖移除時 .ticket-fly-leave-active 用絕對定位疊在上面，需要這個當定位基準，跟 .ticket-list 是同一個道理 */
 }
 
 /* ---- 設定頁籤 ---- */
@@ -7998,6 +8090,14 @@ button:focus-visible,
      時發現的漏網之魚，一併補上。只拿掉飛走的位移/旋轉，淡出的透明度變化保留。 */
   .ticket-fly-move {
     transition: none;
+  }
+
+  .ticket-fly-enter-active {
+    transition: opacity 200ms ease;
+  }
+
+  .ticket-fly-enter-from {
+    transform: none;
   }
 
   .ticket-fly-leave-active {

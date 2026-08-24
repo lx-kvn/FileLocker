@@ -262,6 +262,41 @@ public class VaultIndexCacheTests : IDisposable
     }
 
     [Fact]
+    public void GetItems_StandaloneModeItem_AppearsInListWithStorageModeExposed()
+    {
+        // 對應「單檔案分散式加密」功能規劃 §6.2：StorageMode=Standalone 的項目一樣寫進 Vault
+        // 一份純書籤 metadata（沒有對應的 .enc），清單頁不需要為了 StorageMode 另外分支
+        // 「要不要顯示」——只要 Status 是 Committed 就照樣出現，差別只在快取要把 StorageMode
+        // 這個欄位一併暴露出來，讓呼叫端知道要檢查 .flocked 還是 .locked。
+        var uuid = Guid.NewGuid().ToString();
+        var metadata = CreateSampleMetadata(uuid);
+        metadata.StorageMode = StorageMode.Standalone;
+        _vault.SaveMetadata(metadata);
+
+        using var cache = new VaultIndexCache(_vault, _tempCacheDir.FullName);
+
+        var items = cache.GetItems();
+        Assert.Single(items);
+        Assert.Equal(StorageMode.Standalone, items[0].StorageMode);
+    }
+
+    [Fact]
+    public void GetItems_VaultModeItem_DefaultsStorageModeToVault()
+    {
+        // 既有（且是絕大多數）情境的對照組：沒有明確設定 StorageMode 的項目，快取回報的值
+        // 要是 Vault，不能因為新增這個欄位就意外把既有資料的預設行為改掉。
+        var uuid = Guid.NewGuid().ToString();
+        var metadata = CreateSampleMetadata(uuid);
+        _vault.SaveMetadata(metadata);
+
+        using var cache = new VaultIndexCache(_vault, _tempCacheDir.FullName);
+
+        var items = cache.GetItems();
+        Assert.Single(items);
+        Assert.Equal(StorageMode.Vault, items[0].StorageMode);
+    }
+
+    [Fact]
     public void Dispose_ReleasesUnderlyingSqliteConnection()
     {
         var cache = new VaultIndexCache(_vault, _tempCacheDir.FullName);

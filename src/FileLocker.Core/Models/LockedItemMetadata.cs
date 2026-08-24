@@ -16,6 +16,19 @@ public enum LockStatus
 }
 
 /// <summary>
+/// 對應「單檔案分散式加密」功能規劃 §6.1：加密內容實際放在哪裡，跟 <see cref="LockStatus"/>
+/// （這筆加密有沒有真正完成）是兩個互相獨立的軸。
+/// </summary>
+public enum StorageMode
+{
+    /// <summary>集中庫加密（既有、唯一已實作的行為）：密文放 Vault 的 {uuid}.enc，原始位置留一個 .locked 指標檔。</summary>
+    Vault,
+
+    /// <summary>單檔案分散式加密：密文就是 .flocked 檔案本體，原地或使用者指定的位置留下這顆檔案，Vault 只留一份純書籤 metadata（沒有對應的 .enc）。</summary>
+    Standalone
+}
+
+/// <summary>
 /// 對應規格文件第 4 節：每個加密項目獨立一份的 {uuid}.meta.json 內容。
 /// 這份物件不是「加密金鑰」本身的載體——PasswordVerificationHash 只拿來驗證密碼是否正確，
 /// 真正的加密金鑰永遠是當下用密碼 + Salt 即時算出來，不會被序列化進這個檔案。
@@ -28,6 +41,13 @@ public class LockedItemMetadata
     /// 一次到位流程，不產生 Pending 狀態）都自動視為「已完成」，不需要額外遷移邏輯。
     /// </summary>
     public LockStatus Status { get; set; } = LockStatus.Committed;
+
+    /// <summary>
+    /// 預設 Vault，理由跟 <see cref="Status"/> 的預設值同一套邏輯：沒有這個欄位的舊版
+    /// .meta.json（單檔案分散式加密上線前寫的）反序列化時用預設值補上，全部視為既有的集中庫
+    /// 加密行為，不需要額外遷移邏輯。
+    /// </summary>
+    public StorageMode StorageMode { get; set; } = StorageMode.Vault;
 
     /// <summary>對應 Vault 內 {Uuid}.enc 檔名。</summary>
     public required string Uuid { get; set; }

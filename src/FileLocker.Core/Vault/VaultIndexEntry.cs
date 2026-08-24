@@ -20,7 +20,8 @@ public sealed record VaultIndexEntry(
     long OriginalSizeBytes,
     string? Hint,
     DateTimeOffset CreatedAtUtc,
-    int NestedLockCount)
+    int NestedLockCount,
+    StorageMode StorageMode)
 {
     /// <summary>從完整的 LockedItemMetadata 投影出快取需要的子集欄位。</summary>
     public static VaultIndexEntry FromMetadata(LockedItemMetadata metadata) => new(
@@ -34,5 +35,6 @@ public sealed record VaultIndexEntry(
         metadata.OriginalSizeBytes,
         metadata.Hint,
         metadata.CreatedAtUtc,
-        metadata.ContainsNestedLocks.Count);
+        metadata.ContainsNestedLocks.Count,
+        metadata.StorageMode);
 }

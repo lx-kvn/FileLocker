@@ -27,7 +27,12 @@ public sealed class VaultIndexCache : IDisposable
     // 的錯誤。改成查詢時過濾掉 Status=Pending，清單只在真正 commit 完成、指標檔已經寫入後才會
     // 顯示這筆項目。版號往上加一觸發既有使用者的快取全量重建（補上這個新欄位），不需要額外寫
     // 欄位遷移邏輯。
-    private const int CurrentSchemaVersion = 2;
+    //
+    // Schema 3：新增 StorageMode 欄位——「單檔案分散式加密」功能規劃 §6.1，讓清單頁／
+    // 狀態檢查邏輯知道這個項目的密文是放在 Vault（查 .locked 指標檔）還是原地/使用者指定
+    // 位置的 .flocked 檔案本體，不用另外查一次 .meta.json。同樣版號往上加一觸發全量重建，
+    // 不需要額外欄位遷移邏輯（照抄 Schema 2 的既有手法）。
+    private const int CurrentSchemaVersion = 3;
 
     private readonly VaultManager _vaultManager;
     private readonly string _dbPath;
@@ -70,7 +75,7 @@ public sealed class VaultIndexCache : IDisposable
             using var command = _connection.CreateCommand();
             command.CommandText =
                 "SELECT Uuid, OriginalName, OriginalPath, Type, PasskeyEnabled, RecoveryKeyEnabled, " +
-                "BatchId, OriginalSizeBytes, Hint, CreatedAtUtc, NestedLockCount FROM VaultItems " +
+                "BatchId, OriginalSizeBytes, Hint, CreatedAtUtc, NestedLockCount, StorageMode FROM VaultItems " +
                 "WHERE Status != 'Pending'";
 
             using var reader = command.ExecuteReader();
@@ -87,7 +92,8 @@ public sealed class VaultIndexCache : IDisposable
                     OriginalSizeBytes: reader.GetInt64(7),
                     Hint: reader.IsDBNull(8) ? null : reader.GetString(8),
                     CreatedAtUtc: DateTimeOffset.Parse(reader.GetString(9), null, DateTimeStyles.RoundtripKind),
-                    NestedLockCount: (int)reader.GetInt64(10)));
+                    NestedLockCount: (int)reader.GetInt64(10),
+                    StorageMode: Enum.Parse<StorageMode>(reader.GetString(11))));
             }
 
             return results;
@@ -280,7 +286,8 @@ public sealed class VaultIndexCache : IDisposable
                 CreatedAtUtc         TEXT NOT NULL,
                 NestedLockCount      INTEGER NOT NULL,
                 MetaFileLastWriteUtc TEXT NOT NULL,
-                Status               TEXT NOT NULL DEFAULT 'Committed'
+                Status               TEXT NOT NULL DEFAULT 'Committed',
+                StorageMode          TEXT NOT NULL DEFAULT 'Vault'
             );
             """;
         createCommand.ExecuteNonQuery();
@@ -365,9 +372,9 @@ public sealed class VaultIndexCache : IDisposable
         command.CommandText =
             """
             INSERT INTO VaultItems
-                (Uuid, OriginalName, OriginalPath, Type, PasskeyEnabled, RecoveryKeyEnabled, BatchId, OriginalSizeBytes, Hint, CreatedAtUtc, NestedLockCount, MetaFileLastWriteUtc, Status)
+                (Uuid, OriginalName, OriginalPath, Type, PasskeyEnabled, RecoveryKeyEnabled, BatchId, OriginalSizeBytes, Hint, CreatedAtUtc, NestedLockCount, MetaFileLastWriteUtc, Status, StorageMode)
             VALUES
-                ($uuid, $originalName, $originalPath, $type, $passkeyEnabled, $recoveryKeyEnabled, $batchId, $originalSizeBytes, $hint, $createdAtUtc, $nestedLockCount, $metaFileLastWriteUtc, $status)
+                ($uuid, $originalName, $originalPath, $type, $passkeyEnabled, $recoveryKeyEnabled, $batchId, $originalSizeBytes, $hint, $createdAtUtc, $nestedLockCount, $metaFileLastWriteUtc, $status, $storageMode)
             ON CONFLICT(Uuid) DO UPDATE SET
                 OriginalName = excluded.OriginalName,
                 OriginalPath = excluded.OriginalPath,
@@ -380,7 +387,8 @@ public sealed class VaultIndexCache : IDisposable
                 CreatedAtUtc = excluded.CreatedAtUtc,
                 NestedLockCount = excluded.NestedLockCount,
                 MetaFileLastWriteUtc = excluded.MetaFileLastWriteUtc,
-                Status = excluded.Status
+                Status = excluded.Status,
+                StorageMode = excluded.StorageMode
             """;
         command.Parameters.AddWithValue("$uuid", metadata.Uuid);
         command.Parameters.AddWithValue("$originalName", metadata.OriginalName);
@@ -395,6 +403,7 @@ public sealed class VaultIndexCache : IDisposable
         command.Parameters.AddWithValue("$nestedLockCount", metadata.ContainsNestedLocks.Count);
         command.Parameters.AddWithValue("$metaFileLastWriteUtc", metaFileLastWriteUtc.ToString("o"));
         command.Parameters.AddWithValue("$status", metadata.Status.ToString());
+        command.Parameters.AddWithValue("$storageMode", metadata.StorageMode.ToString());
         command.ExecuteNonQuery();
     }
 

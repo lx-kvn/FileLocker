@@ -26,16 +26,30 @@ GitHub: `https://github.com/lx-kvn/FileLocker`（公開的Repo）
 FileLocker/
 ├── FileLocker.slnx
 ├── src/
-│   ├── FileLocker.Core/          # 核心邏輯（加解密、Vault、Metadata、安全機制）
-│   ├── FileLocker.App/            # WPF 宿主（視窗、WebView2、單一執行個體、拖放）
-│   ├── FileLocker.Cli/            # CLI（隨安裝程式一起發布，加入系統 PATH，見規格文件第 19 節）
-│   ├── FileLocker.Web/            # Vue 3 + Vite 前端
-│   │   └── src/
-│   │       ├── App.vue            # 目前是單一大檔案，沒有拆元件
-│   │       ├── locales/           # zh-TW.json、en.json
-│   │       └── assets/            # 使用者自製的 SVG 圖示
-│   └── FileLocker.ShellExtension/ # C++ COM Shell Extension
-└── tests/FileLocker.Core.Tests/   # xUnit 測試
+│   ├── FileLocker.Core/                     # 核心邏輯（加解密、Vault、Metadata、安全機制）
+│   ├── FileLocker.App/                      # WPF 宿主（視窗、WebView2、單一執行個體、拖放、系統匣）
+│   ├── FileLocker.Cli/                      # CLI（隨安裝程式一起發布，加入系統 PATH，見規格文件第 19 節）
+│   ├── FileLocker.ShellExtension/           # C++ COM Shell Extension（右鍵選單）
+│   ├── FileLocker.UpdateRelauncher/         # 軟體更新下載完成、主程式關閉後負責重啟的小工具
+│   ├── FileLocker.PluginContracts/          # 可選配部件共用的介面契約（例如 IPasswordLockerPlugin）
+│   ├── FileLocker.PasswordLocker/           # 密碼庫可選配部件本體——改動後看「已知的坑」，要手動複製 DLL
+│   ├── FileLocker.PasswordLockerNativeHost/ # 瀏覽器擴充功能用的 Native Messaging Host（見 docs/adr/0002）
+│   ├── FileLocker.Extension/                # 瀏覽器擴充功能（Manifest V3，密碼庫網站自動填入用）
+│   └── FileLocker.Web/                      # Vue 3 + Vite 前端
+│       └── src/
+│           ├── App.vue                      # 主要畫面邏輯所在，較獨立的視覺已陸續拆到 components/
+│           ├── components/                  # 拆出的元件（信封加密/解密、側欄、票根列、金庫轉輪…）
+│           ├── composables/                 # 共用邏輯（IPC、側欄收合狀態、動畫產生器）
+│           ├── locales/                     # zh-TW.json、en.json
+│           └── assets/                      # 使用者自製的 SVG 圖示
+├── tests/
+│   ├── FileLocker.Core.Tests/
+│   ├── FileLocker.App.Tests/
+│   ├── FileLocker.Cli.Tests/
+│   └── FileLocker.PasswordLocker.Tests/
+├── docs/adr/                                # 架構決策紀錄（ADR），例如密碼庫獨立化、原生訊息橋接的決策
+├── design-exploration/                      # GUI 造型探索的 mockup 與定案文件
+└── installer/                               # 安裝程式打包設定
 ```
 
 ## 建置與測試指令
@@ -80,7 +94,7 @@ cl /LD /EHsc /utf-8 dllmain.cpp /Fe:FileLockerShellExtension.dll /link /DEF:File
 標題列、彈窗、對話框的排版每次改動後：(1) 檢查新增的控制項有沒有意外繼承到全域規則（例如 `width: 100%`）、(2) 互動控制項（下拉選單、按鈕）不能放進視窗拖曳區內、(3) 確認在支援的最窄視窗寬度下文字不會被截斷、(4) 截圖或描述排版結果後再回報完成，不要沒看過畫面就宣告做完。
 
 ## 建置與驗證
-Commit 前一律先跑過完整測試套件（目前 189 個測試都要過）。部署到 `Program Files` 需要提權的 shell——如果拿不到提權權限，就先建置到本機暫存資料夾，把確切的手動提權指令交給使用者執行，不要悄悄跳過驗證步驟。
+Commit 前一律先跑過完整測試套件（`dotnet test`，目前四個測試專案共約 395 個測試都要過；這個數字會隨開發持續增加，抓「跑完顯示失敗:0」為準，不要死記這個數字）。部署到 `Program Files` 需要提權的 shell——如果拿不到提權權限，就先建置到本機暫存資料夾，把確切的手動提權指令交給使用者執行，不要悄悄跳過驗證步驟。
 
 **不要自己判斷「差不多了」就直接下 `git commit`。** 當你認為工作已經到一個可以或應該 commit 的段落時，先跟使用者說一聲（例如「這輪改動看起來完整了，要 commit 嗎？」），等對方明確要求（像是直接說「commit」）才執行。使用者曾經明確要求要保留這個確認步驟。
 

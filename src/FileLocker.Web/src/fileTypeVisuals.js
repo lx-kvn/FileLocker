@@ -38,6 +38,19 @@ const EXTENSION_VISUALS = {
   log: { icon: 'text', color: '#B8752E' },
   json: { icon: 'text', color: '#B8752E' },
   xml: { icon: 'text', color: '#B8752E' },
+  // 執行檔：沒有專屬圖示素材，先共用既有的 document 圖示（見 TicketRow.vue），但顏色要
+  // 獨立出來，不能跟 doc/docx（#2B5FA6）或 pdf（#C1502F）撞色——這類檔案通常是資安上要
+  // 特別留意的類型，使用者一眼要能跟一般文件分開辨識。之後有專屬素材再回頭換圖示。
+  exe: { icon: 'document', color: '#6B5B95' },
+  dll: { icon: 'document', color: '#6B5B95' },
+  msi: { icon: 'document', color: '#6B5B95' },
+  // 影片：同樣沒有專屬圖示，先共用 image 圖示（照片/影片都是「視覺媒體」大類），顏色跟
+  // jpg/png 的紫（#8A5CB0）拉開，避免使用者把影片誤認成照片。
+  mp4: { icon: 'image', color: '#B6396B' },
+  mov: { icon: 'image', color: '#B6396B' },
+  avi: { icon: 'image', color: '#B6396B' },
+  mkv: { icon: 'image', color: '#B6396B' },
+  wmv: { icon: 'image', color: '#B6396B' },
 }
 
 const FOLDER_VISUAL = { icon: 'folder', color: 'var(--color-accent)' }

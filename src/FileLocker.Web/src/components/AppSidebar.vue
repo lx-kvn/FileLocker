@@ -11,6 +11,7 @@
 // t 用 prop 傳進來（不是 import App.vue 的全域 t()），比照 vaultListProjections.js 的作法：
 // 讓這個元件維持純粹、不用真的初始化 i18n 也能單獨測試。
 import { ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { computeTooltipPosition } from '../tooltipPosition.js'
 
 const props = defineProps({
   collapsed: { type: Boolean, default: false },
@@ -33,6 +34,46 @@ const navItems = [
 
 function onNavClick(key) {
   emit('navigate', key)
+}
+
+// ---- 收合狀態下的 hover/focus 提示框（teleport 到 body，取代舊版 CSS ::after）——
+// 舊做法是 nav 項目的偽元素，但 .app-sidebar 本身有 overflow:hidden（收合/展開寬度動畫
+// 需要），提示框只要往右超出側欄本身寬度就會被自己的容器裁掉，不是只有貼近視窗邊緣才
+// 會裁到。改成 teleport 出去，並用 tooltipPosition.js 的純函式自己算絕對座標，脫離
+// CSS 相對定位、也脫離父層 overflow 的裁切範圍。
+// 展開狀態下文字本來就顯示著，不需要重複提示，所以只在 collapsed 時啟用。
+const activeTooltipKey = ref(null)
+const tooltipStyle = ref({ top: '0px', left: '0px', opacity: 0 })
+const tooltipEl = ref(null)
+let tooltipAnchorRect = null
+
+function showTooltip(key, targetEl) {
+  if (!props.collapsed) return
+  activeTooltipKey.value = key
+  tooltipAnchorRect = targetEl.getBoundingClientRect()
+  nextTick(repositionTooltip)
+}
+
+function hideTooltip(key) {
+  if (activeTooltipKey.value === key) activeTooltipKey.value = null
+}
+
+function repositionTooltip() {
+  if (!tooltipEl.value || !tooltipAnchorRect) return
+  const size = tooltipEl.value.getBoundingClientRect()
+  const pos = computeTooltipPosition({
+    anchorRect: tooltipAnchorRect,
+    tooltipSize: { width: size.width, height: size.height },
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+  })
+  tooltipStyle.value = { top: `${pos.top}px`, left: `${pos.left}px`, opacity: 1 }
+}
+
+// 鍵盤 focus 也要能觸發提示（無障礙需求），但滑鼠點擊產生的 focus 不用重複跳提示框——
+// 用 :focus-visible 判斷這次 focus 是不是鍵盤導覽觸發的，是才顯示。
+function onNavFocus(key, event) {
+  if (event.target.matches(':focus-visible')) showTooltip(key, event.target)
 }
 
 // ---- 會滑動的作用中背景色塊：比照原本頂部分頁列被移除前的 tab-bar__indicator 量測手法
@@ -100,8 +141,12 @@ onUnmounted(() => {
         type="button"
         class="app-sidebar__nav-item"
         :class="{ 'is-active': active === item.key }"
-        :data-label="props.t(item.labelKey)"
+        :aria-label="props.t(item.labelKey)"
         @click="onNavClick(item.key)"
+        @mouseenter="showTooltip(item.key, $event.target)"
+        @mouseleave="hideTooltip(item.key)"
+        @focus="onNavFocus(item.key, $event)"
+        @blur="hideTooltip(item.key)"
       >
         <svg v-if="item.key === 'encrypt'" viewBox="0 0 24 24" fill="none"><path d="M6 10V8a6 6 0 1 1 12 0v2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="4" y="10" width="16" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="15" r="1.6" fill="currentColor"/></svg>
         <svg v-else-if="item.key === 'folderGuard'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"><path d="M12 3 4 6v6c0 5 3.5 7.7 8 9 4.5-1.3 8-4 8-9V6l-8-3Z"/></svg>
@@ -111,6 +156,17 @@ onUnmounted(() => {
       </button>
     </nav>
   </aside>
+
+  <Teleport to="body">
+    <div
+      v-if="collapsed && activeTooltipKey"
+      ref="tooltipEl"
+      class="app-sidebar__tooltip"
+      :style="{ top: tooltipStyle.top, left: tooltipStyle.left, opacity: tooltipStyle.opacity }"
+    >
+      {{ props.t(navItems.find((item) => item.key === activeTooltipKey).labelKey) }}
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -284,12 +340,12 @@ nav {
   display: none;
 }
 
-.app-sidebar.is-collapsed .app-sidebar__nav-item::after {
-  content: attr(data-label);
-  position: absolute;
-  left: calc(100% + 10px);
-  top: 50%;
-  transform: translateY(-50%) scale(0.96);
+/* 提示框本身已經 teleport 到 body，不再是 .app-sidebar__nav-item 的偽元素，位置由
+   tooltipPosition.js 算出來的絕對座標（top/left inline style）決定，這裡只定義外觀。
+   position:fixed 而不是 absolute——teleport 出去之後跟 .app-sidebar 已經沒有定位關係，
+   fixed 相對視窗定位，跟量測時用的 window.innerWidth/innerHeight 座標系一致。 */
+.app-sidebar__tooltip {
+  position: fixed;
   background: var(--color-text);
   color: var(--color-surface);
   font-size: 12px;
@@ -297,14 +353,8 @@ nav {
   padding: 5px 9px;
   border-radius: 6px;
   white-space: nowrap;
-  opacity: 0;
   pointer-events: none;
-  transition: opacity 140ms ease, transform 140ms ease;
-  z-index: 20;
-}
-
-.app-sidebar.is-collapsed .app-sidebar__nav-item:hover::after {
-  opacity: 1;
-  transform: translateY(-50%) scale(1);
+  transition: opacity 140ms ease;
+  z-index: 200;
 }
 </style>

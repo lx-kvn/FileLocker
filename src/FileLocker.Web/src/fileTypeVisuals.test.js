@@ -38,6 +38,36 @@ describe('fileTypeVisual', () => {
       .not.toBe(fileTypeVisual({ type: 'File', originalName: 'a.txt' }).color)
   })
 
+  it('執行檔（exe/dll/msi）共用文件圖示，但顏色跟其他 document 類型不同', () => {
+    expect(fileTypeVisual({ type: 'File', originalName: '安裝程式.exe' })).toEqual({
+      icon: 'document',
+      color: '#6B5B95',
+    })
+    expect(fileTypeVisual({ type: 'File', originalName: '相依套件.dll' })).toEqual({
+      icon: 'document',
+      color: '#6B5B95',
+    })
+    expect(fileTypeVisual({ type: 'File', originalName: '安裝包.msi' })).toEqual({
+      icon: 'document',
+      color: '#6B5B95',
+    })
+    // 跟既有的 doc/docx（#2B5FA6）、pdf（#C1502F）不能撞色，否則使用者分不出「這是執行檔」。
+    expect(fileTypeVisual({ type: 'File', originalName: 'a.exe' }).color)
+      .not.toBe(fileTypeVisual({ type: 'File', originalName: 'a.docx' }).color)
+  })
+
+  it('常見影片副檔名共用圖片圖示，但顏色跟一般圖片不同', () => {
+    for (const ext of ['mp4', 'mov', 'avi', 'mkv', 'wmv']) {
+      expect(fileTypeVisual({ type: 'File', originalName: `影片.${ext}` })).toEqual({
+        icon: 'image',
+        color: '#B6396B',
+      })
+    }
+    // 跟既有的 jpg/png（#8A5CB0）不能撞色，否則清單裡分不出照片跟影片。
+    expect(fileTypeVisual({ type: 'File', originalName: 'a.mp4' }).color)
+      .not.toBe(fileTypeVisual({ type: 'File', originalName: 'a.png' }).color)
+  })
+
   it('副檔名比對不分大小寫', () => {
     expect(fileTypeVisual({ type: 'File', originalName: 'REPORT.PDF' })).toEqual({
       icon: 'document',

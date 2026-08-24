@@ -7,6 +7,10 @@ const t = (key) => key
 function mountSidebar(props = {}) {
   return mount(AppSidebar, {
     props: { active: 'encrypt', collapsed: false, t, ...props },
+    // teleport 真的搬到 document.body 的話，wrapper.find() 找不到（那是元件自己 subtree
+    // 以外的地方）——測試只關心「有沒有正確顯示/隱藏、內容對不對」這種邏輯，不是真的驗證
+    // DOM 有沒有被搬家，所以 stub 掉讓內容原地渲染，方便用 wrapper.find() 查。
+    global: { stubs: { teleport: true } },
   })
 }
 
@@ -51,9 +55,29 @@ describe('AppSidebar', () => {
     expect(wrapper.find('.app-sidebar__nav-highlight').exists()).toBe(true)
   })
 
-  it('每個 nav 項目都帶 data-label（收合時 CSS ::after tooltip 靠這個屬性顯示文字）', () => {
+  it('每個 nav 項目都帶 aria-label，收合時文字被隱藏但螢幕閱讀器仍讀得到項目名稱', () => {
     const wrapper = mountSidebar()
     const first = wrapper.findAll('.app-sidebar__nav-item')[0]
-    expect(first.attributes('data-label')).toBe('tab.encrypt')
+    expect(first.attributes('aria-label')).toBe('tab.encrypt')
+  })
+
+  it('收合狀態下 mouseenter 會顯示對應項目的提示框，mouseleave 會隱藏', async () => {
+    const wrapper = mountSidebar({ collapsed: true })
+    const second = wrapper.findAll('.app-sidebar__nav-item')[1]
+    await second.trigger('mouseenter')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.app-sidebar__tooltip').exists()).toBe(true)
+    expect(wrapper.find('.app-sidebar__tooltip').text()).toBe('tab.folderGuard')
+
+    await second.trigger('mouseleave')
+    expect(wrapper.find('.app-sidebar__tooltip').exists()).toBe(false)
+  })
+
+  it('展開狀態下 mouseenter 不顯示提示框（文字本來就看得到，不用重複提示）', async () => {
+    const wrapper = mountSidebar({ collapsed: false })
+    const first = wrapper.findAll('.app-sidebar__nav-item')[0]
+    await first.trigger('mouseenter')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.app-sidebar__tooltip').exists()).toBe(false)
   })
 })

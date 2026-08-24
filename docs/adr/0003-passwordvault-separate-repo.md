@@ -15,12 +15,12 @@
 
 選擇方案 2，因為 PasswordVault 這次明確定位成獨立品牌、獨立版本號、獨立發布節奏的產品（不是 FileLocker 的附屬功能），原始碼留在 FileLocker repo 裡會讓這個定位變得名不符實——貢獻者想改 PasswordVault 的程式碼，還是得先 clone 一個叫 FileLocker 的 repo；FileLocker 這邊的 CI／測試套件也會被迫等待一個邏輯上完全獨立產品的建置結果。
 
-FileLocker.App 消費 `PasswordVault.Core` 的方式維持既有的「執行期偵測外部 dll、動態載入」可選配部件架構（見 `FileLocker_密碼庫_功能規劃.md` 第 2 節）不變，只是這個 dll 的原始碼來源換成新 repo 編譯產出，FileLocker repo 這邊看到的仍然只是一份二進位相依。
+FileLocker.App 消費 `PasswordVault.Core` 的方式維持既有的「執行期偵測外部 dll、動態載入」可選配部件架構（見 `docs/specs/features/密碼庫_功能規劃.md` 第 2 節）不變，只是這個 dll 的原始碼來源換成新 repo 編譯產出，FileLocker repo 這邊看到的仍然只是一份二進位相依。
 
 ## 代價與風險
 
 - **一次性的歷史/沿革斷裂**：`src/FileLocker.PasswordLocker/`、`src/FileLocker.Extension/` 的 git 歷史如果沒有用 `git filter-repo` 之類的工具帶過去，新 repo 就是從零開始的歷史，之前的 commit 脈絡查詢會變得不方便。遷移當下需要決定要不要保留歷史。
-- **既有使用者的資料遷移**：真正的加密資料存放路徑（`%AppData%\FileLocker\PasswordLocker\credentials.json`）跟改名後的路徑不同，需要新版程式在啟動時自動偵測、搬移（見 `PasswordVault_獨立化_規劃.md` 的資料遷移小節），這步驟做錯會讓既有使用者誤以為密碼資料遺失。
+- **既有使用者的資料遷移**：真正的加密資料存放路徑（`%AppData%\FileLocker\PasswordLocker\credentials.json`）跟改名後的路徑不同，需要新版程式在啟動時自動偵測、搬移（見 `docs/specs/features/PasswordVault_獨立化_規劃.md` 的資料遷移小節），這步驟做錯會讓既有使用者誤以為密碼資料遺失。
 - **兩邊 CLAUDE.md／開發慣例需要分別維護**：新 repo 需要一份自己的 CLAUDE.md，不能只是複製貼上 FileLocker 這份（技術棧、目錄結構都不同）。
 
 ## 已知限制

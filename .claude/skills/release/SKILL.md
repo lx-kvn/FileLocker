@@ -7,7 +7,7 @@ description: 依照這個專案實際的流程準備一次新版本發布——�
 
 這個 skill 是照 FileLocker 這個 repo 實際的發布慣例寫的，不是通用範本：
 
-- Release Notes 是**單一檔案內雙語**（`RELEASE_NOTES_vX.Y.Z.md`，先 `## 繁體中文` 後 `## English`），不是分成 `README.md`／`README.zh-CN.md` 兩個檔案——比照 [`RELEASE_NOTES_v1.1.0.md`](../../../RELEASE_NOTES_v1.1.0.md) 的段落結構（亮點 + 已知限制，各自中英文對應）。
+- Release Notes 是**單一檔案內雙語**（`docs/releases/vX.Y.Z.md`，先 `## 繁體中文` 後 `## English`），不是分成 `README.md`／`README.zh-CN.md` 兩個檔案——比照 [`docs/releases/v1.1.0.md`](../../../docs/releases/v1.1.0.md) 的段落結構（亮點 + 已知限制，各自中英文對應）。
 - 這個 repo 確實有在打 git tag（`v1.0.0`、`v1.1.0`），commit 訊息慣例是 `feat:`／`fix:`／`docs:`／`refactor:`／`style:` 開頭，但不是嚴格的 Conventional Commits 格式（後面接的是完整中文句子說明「為什麼」，不是簡短英文摘要）。
 - **正式安裝程式的打包不在這個 repo 裡完成，但可以用 `mswi-cli` 自動化**——技術規格文件第 19 節說明是對接另一個獨立專案 [mac-style-windows-installer](https://github.com/lx-kvn/mac-style-windows-installer)，這個 skill 負責 repo 內的部分（程式碼、測試、文件、tag）。打包本身現在透過該專案的 `mswi-cli pack --config installer/filelocker_installer.json` 完成，設定檔已經檢查進這個 repo（見步驟 8），不用再進另一個專案手動跑 GUI。上傳 GitHub Release 附件仍然是手動步驟。
 - `gh` CLI 已安裝並登入（`lx-kvn` 帳號，裝在 `C:\Program Files\GitHub CLI\gh.exe`，PATH 找不到就用完整路徑），可以用 `gh release create` 自動建立 GitHub Release、上傳附件。**但發布前一定要先把要執行的指令列給使用者確認過，取得明確同意才能真的執行**——這是使用者明確要求的規則，不是預設的謹慎行事而已，不能省略這個確認步驟。執行前也要先用 `gh release list --repo lx-kvn/FileLocker` 確認這個版本還沒被使用者手動在網頁上發布過，避免重複。
@@ -18,7 +18,7 @@ description: 依照這個專案實際的流程準備一次新版本發布——�
 2. **跑完整測試套件**：`dotnet test`。任何一個測試沒過就停下來，不要continue——回報給使用者，不要自己決定要不要跳過。
 3. **Release 組態建置**：`dotnet build src/FileLocker.App/FileLocker.App.csproj -c Release`，確認 0 錯誤 0 警告；如果 `src/FileLocker.ShellExtension/*.cpp` 有變更過，提醒使用者（或直接執行，如果 VS Dev Shell 可用）用 CLAUDE.md 裡的 `cl` 指令重新編譯 x64 Shell Extension DLL——C# 建置不會自動重編 C++ 部分。
 4. **決定版本號**：讀 `git tag` 列出目前最新的版本，跟使用者確認這次是 patch／minor／major，不要自己猜。
-5. **產生 Release Notes 草稿**：`git log <上一個 tag>..HEAD --oneline` 整理這段期間的變更，依照 [`RELEASE_NOTES_v1.1.0.md`](../../../RELEASE_NOTES_v1.1.0.md) 的雙語段落結構寫成新的 `RELEASE_NOTES_vX.Y.Z.md`（亮點／已知限制，中文在前、英文在後，兩邊內容要對等——這個對話稽核過，這兩個檔案目前逐條對應，維持這個標準）。同時檢查 `README.md` 需不需要跟著更新（新功能通常要）。
+5. **產生 Release Notes 草稿**：`git log <上一個 tag>..HEAD --oneline` 整理這段期間的變更，依照 [`docs/releases/v1.1.0.md`](../../../docs/releases/v1.1.0.md) 的雙語段落結構寫成新的 `docs/releases/vX.Y.Z.md`（亮點／已知限制，中文在前、英文在後，兩邊內容要對等——這個對話稽核過，這兩個檔案目前逐條對應，維持這個標準）。同時檢查 `README.md` 需不需要跟著更新（新功能通常要）。
 6. **Commit**：訊息比照這個 repo 現有風格（`feat:`／`docs:` 等前綴 + 完整中文說明），文件變更可以跟程式碼變更分開兩個 commit（比照這個對話稍早的做法）。
 7. **打 tag**：跟使用者確認要不要打這個 tag、要不要 push（`git tag vX.Y.Z` 本身跟 push 都是視覺化「發布」的動作，兩個都要先問，不要自動打／自動推）。
 8. **打包安裝程式**：這一步不用跟使用者確認，執行 release skill 時直接自動打包——這是使用者明確要求的規則（只有建立 GitHub Release、push、打 tag 這三件事才需要先問）。**開始之前先 Read `d:\Github\mac-style-windows-installer_專案\mac-style-windows-installer\CLI_USAGE.md`**——mswi-cli 用法隨時可能改版，使用者會持續把最新用法寫回這份文件，不要憑記憶或這份 skill 裡舊的範例假設。需要更完整脈絡（例如安裝路徑、跟 GUI 的對照）再讀同目錄下的 `使用說明書.md`。
@@ -31,7 +31,7 @@ description: 依照這個專案實際的流程準備一次新版本發布——�
    `installer/filelocker_installer.json` 裡的 `app_dir`／`png_icon`／`ico_icon` 目前是這台機器上的絕對路徑（`mswi-cli` 會把相對路徑誤判成相對於它自己的安裝目錄，不是相對於執行指令當下的工作目錄，只能用絕對路徑繞過），**在不同機器上執行前要先確認這幾個路徑仍然正確**。
    `mswi-cli` 現在裝在使用者可寫的路徑（`%LOCALAPPDATA%\Programs\mac-style-windows-installer`，不再是 `C:\Program Files`），不需要系統管理員權限就能跑。`mswi-cli` 找不到就用完整路徑 `%LOCALAPPDATA%\Programs\mac-style-windows-installer\mswi-cli.exe`（PATH 沒吃到新安裝時的備援）。這段狀況以 `CLI_USAGE.md` 當下內容為準，工具安裝位置以後還可能再變。
    編譯完成後，輸出在 `mswi-cli` 自己的 `dist\` 資料夾（例如 `%LOCALAPPDATA%\Programs\mac-style-windows-installer\dist\FileLocker_vX.Y.Z_setup.exe`），複製一份到 `d:\Github\FileLocker_專案\vX.Y.Z\`（比照既有 v1.0.0／v1.1.0／v1.1.1／v1.1.2 的擺放慣例）。
-9. **建立 GitHub Release**：先 `gh release list --repo lx-kvn/FileLocker` 確認這個版本還沒發布過。沒發布過的話，把要跑的指令（大致是 `gh release create vX.Y.Z <安裝檔路徑> --title "FileLocker vX.Y.Z" --notes-file RELEASE_NOTES_vX.Y.Z.md`）列出來給使用者看過、明確同意後才執行——不能自己直接發布。使用者也可能自己先在網頁上手動建立了，跑之前的確認步驟就會發現，發現的話就不用再跑 `gh release create`，直接跟使用者核對內容（Release Notes、附件檔名/大小）對不對即可。
+9. **建立 GitHub Release**：先 `gh release list --repo lx-kvn/FileLocker` 確認這個版本還沒發布過。沒發布過的話，把要跑的指令（大致是 `gh release create vX.Y.Z <安裝檔路徑> --title "FileLocker vX.Y.Z" --notes-file docs/releases/vX.Y.Z.md`）列出來給使用者看過、明確同意後才執行——不能自己直接發布。使用者也可能自己先在網頁上手動建立了，跑之前的確認步驟就會發現，發現的話就不用再跑 `gh release create`，直接跟使用者核對內容（Release Notes、附件檔名/大小）對不對即可。
 
 ## 不做的事
 

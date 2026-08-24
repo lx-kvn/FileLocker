@@ -1,5 +1,5 @@
 # CLAUDE.md
-完整技術規格在 `FileLocker_技術規格文件.md`（同目錄）
+完整技術規格在 `docs/specs/FileLocker_技術規格文件.md`
 
 
 ## 語言
@@ -47,8 +47,19 @@ FileLocker/
 │   ├── FileLocker.App.Tests/
 │   ├── FileLocker.Cli.Tests/
 │   └── FileLocker.PasswordLocker.Tests/
-├── docs/adr/                                # 架構決策紀錄（ADR），例如密碼庫獨立化、原生訊息橋接的決策
+├── docs/
+│   ├── adr/                                 # 架構決策紀錄（ADR），例如密碼庫獨立化、原生訊息橋接的決策
+│   ├── specs/                               # 專案級技術規格文件（FileLocker_技術規格文件.md）
+│   │   └── features/                        # 各功能各自的規劃訪談紀錄（密碼庫／資料夾防護等）
+│   └── releases/                            # 各版本 release notes
 ├── design-exploration/                      # GUI 造型探索的 mockup 與定案文件
+├── assets/                                  # 美術素材原始檔（Affinity Designer .af + 匯出的 .svg／.png／.ico），
+│                                             # 使用者用設計工具產出/修改的地方；前端實際會用到的那個子集另外
+│                                             # 手動複製一份進 src/FileLocker.Web/src/assets/（Vite 建置只認得
+│                                             # 那邊，不會去讀根目錄這份）——新增/修改素材時兩邊都要動，只改
+│                                             # 一邊的症狀是「明明檔案已經換了，畫面還是舊的」。這裡的檔案數量
+│                                             # 通常比前端那份多，因為包含已經沒在用的舊版素材（例如被 revert
+│                                             # 掉的方向）跟 .af 原始檔本身，不代表前端沒複製到是漏做。
 └── installer/                               # 安裝程式打包設定
 ```
 

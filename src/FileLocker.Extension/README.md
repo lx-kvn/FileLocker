@@ -1,6 +1,6 @@
 # FileLocker 密碼庫瀏覽器擴充功能
 
-跟 `FileLocker.PasswordLockerNativeHost`（純轉接層）、`FileLocker.App`（實際驗證/加解密）搭配使用，見 `FileLocker_密碼庫_功能規劃.md` 第 5 節。這個目錄本身不是一個 npm/build 專案——純 JS + 靜態 `manifest.json`，不需要任何建置步驟。
+跟 `FileLocker.PasswordLockerNativeHost`（純轉接層）、`FileLocker.App`（實際驗證/加解密）搭配使用，見 `docs/specs/features/密碼庫_功能規劃.md` 第 5 節。這個目錄本身不是一個 npm/build 專案——純 JS + 靜態 `manifest.json`，不需要任何建置步驟。
 
 ## 本機測試（開發人員模式，尚未上架 Chrome 線上應用程式商店）
 

@@ -52,7 +52,7 @@ _Avoid_: 分類（Category）單獨指這個欄位——「分類」這個詞現
 `IsEncryptedFile=true` 的憑證——唯一行為跟其他憑證不同的一種：關聯到一個 Vault 項目（或手動新增、不連結任何 Vault 項目）、不支援自動填入／網域關聯／TOTP、PasswordVault 獨立版預設隱藏這一類，只有偵測到同一台電腦也裝了 FileLocker 主體才會顯示。
 
 **PasswordVault**：
-密碼庫功能獨立化後的品牌名稱與獨立桌面應用程式（`PasswordVault.exe`），可以不依賴 FileLocker 主體單獨運作；核心邏輯（原 `FileLocker.PasswordLocker`，改名 `PasswordVault.Core`）與這個新程式的原始碼都遷出到獨立 GitHub repo，是該功能的唯一真相來源，這個 FileLocker repo 之後只透過既有的「下載外掛部件」機制取得編譯好的二進位檔。FileLocker 本體 UI 上「密碼庫」這個分頁名稱維持不變，改名範圍是專案／程式碼／安裝路徑層級，不要求使用者跟著改口。詳見 [`PasswordVault_獨立化_規劃.md`](PasswordVault_獨立化_規劃.md)、[ADR-0003](docs/adr/0003-passwordvault-separate-repo.md)。
+密碼庫功能獨立化後的品牌名稱與獨立桌面應用程式（`PasswordVault.exe`），可以不依賴 FileLocker 主體單獨運作；核心邏輯（原 `FileLocker.PasswordLocker`，改名 `PasswordVault.Core`）與這個新程式的原始碼都遷出到獨立 GitHub repo，是該功能的唯一真相來源，這個 FileLocker repo 之後只透過既有的「下載外掛部件」機制取得編譯好的二進位檔。FileLocker 本體 UI 上「密碼庫」這個分頁名稱維持不變，改名範圍是專案／程式碼／安裝路徑層級，不要求使用者跟著改口。詳見 [`PasswordVault_獨立化_規劃.md`](docs/specs/features/PasswordVault_獨立化_規劃.md)、[ADR-0003](docs/adr/0003-passwordvault-separate-repo.md)。
 _Avoid_: 直接用「密碼庫」指稱這個獨立程式本身——「密碼庫」在 FileLocker 語境裡專指 App 內的那個分頁，PasswordVault 是可以脫離 FileLocker 存在的獨立產品，兩者不是同一個指稱範圍。
 
 **選擇密碼（Choose Password）**：

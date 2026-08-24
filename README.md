@@ -45,7 +45,7 @@
 | Shell Extension | C++ COM `IContextMenu`，負責右鍵選單與多選路徑轉交 |
 | 加密演算法 | Argon2id 金鑰衍生 + AES-256-GCM |
 
-完整架構、加密流程、IPC 協定等細節見 [`FileLocker_技術規格文件.md`](FileLocker_技術規格文件.md)。
+完整架構、加密流程、IPC 協定等細節見 [`FileLocker_技術規格文件.md`](docs/specs/FileLocker_技術規格文件.md)。
 
 ### 螢幕截圖
 
@@ -142,7 +142,7 @@ Grab the latest installer from the [Releases](https://github.com/lx-kvn/FileLock
 | Shell Extension | C++ COM `IContextMenu`, handles the right-click menu and multi-select path handoff |
 | Cryptography | Argon2id key derivation + AES-256-GCM |
 
-Full architecture, encryption flow, and IPC protocol details live in [`FileLocker_技術規格文件.md`](FileLocker_技術規格文件.md) (Traditional Chinese).
+Full architecture, encryption flow, and IPC protocol details live in [`FileLocker_技術規格文件.md`](docs/specs/FileLocker_技術規格文件.md) (Traditional Chinese).
 
 ### Screenshots
 

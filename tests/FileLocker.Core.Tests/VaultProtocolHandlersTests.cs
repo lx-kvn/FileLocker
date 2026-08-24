@@ -303,6 +303,7 @@ public class VaultProtocolHandlersTests : IDisposable
 
         Assert.Equal(_vaultDir.FullName, result.VaultPath);
         Assert.Equal("zh-TW", result.Language);
+        Assert.Equal("macos", result.WindowControlStyle);
     }
 
     [Fact]
@@ -312,6 +313,18 @@ public class VaultProtocolHandlersTests : IDisposable
 
         Assert.True(result.Success);
         Assert.Equal("en", _handlers.GetSettings().Language);
+    }
+
+    [Theory]
+    [InlineData("macos")]
+    [InlineData("windows-native")]
+    [InlineData("windows-styled")]
+    public void UpdateSetting_WindowControlStyle_PersistsChange(string style)
+    {
+        var result = _handlers.UpdateSetting("windowControlStyle", style);
+
+        Assert.True(result.Success);
+        Assert.Equal(style, _handlers.GetSettings().WindowControlStyle);
     }
 
     [Fact]

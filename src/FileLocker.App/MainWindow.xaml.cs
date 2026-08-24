@@ -1059,7 +1059,8 @@ public partial class MainWindow : Window
             settings.Theme,
             settings.CriticalActionConfigured,
             settings.MinimizeToTrayEnabled,
-            settings.LaunchAtStartupEnabled
+            settings.LaunchAtStartupEnabled,
+            settings.WindowControlStyle
         });
     }
 

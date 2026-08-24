@@ -258,6 +258,9 @@ const settingsLanguage = ref('zh-TW')
 const settingsTheme = ref('light')
 const settingsMinimizeToTrayEnabled = ref(true)
 const settingsLaunchAtStartupEnabled = ref(true)
+// 標題列視窗控制鈕造型：macos（現行預設）／windows-native／windows-styled 三選一，
+// 見 title-bar 模板跟下面對應的 CSS（.traffic-light／.win-btn／.win-btn-styled）。
+const settingsWindowControlStyle = ref('macos')
 // 「關鍵操作」的 Windows Hello 驗證是否已經設定過——目前唯一用途是「清除所有使用紀錄」，
 // 見 requestClearHistory。
 const settingsCriticalActionConfigured = ref(false)
@@ -1140,6 +1143,7 @@ const messageHandlers = {
     settingsCriticalActionConfigured.value = data.criticalActionConfigured
     settingsMinimizeToTrayEnabled.value = data.minimizeToTrayEnabled
     settingsLaunchAtStartupEnabled.value = data.launchAtStartupEnabled
+    settingsWindowControlStyle.value = data.windowControlStyle
   },
 
   setupCriticalActionResult(data) {
@@ -3177,6 +3181,11 @@ function toggleLaunchAtStartupAction(event) {
   sendMessage('updateSetting', { key: 'launchAtStartupEnabled', value })
 }
 
+function setWindowControlStyle(value) {
+  settingsWindowControlStyle.value = value
+  sendMessage('updateSetting', { key: 'windowControlStyle', value })
+}
+
 // 設定（或重新設定）「關鍵操作」用的 Windows Hello 驗證——目前用於清除所有使用紀錄前的
 // 身份驗證，以及（設定過才會生效）搬移 Vault 位置前的驗證。重複呼叫會直接覆蓋舊憑證（見
 // 後端 PasskeyProtector.CreateCredentialAsync 的 ReplaceExisting），前端不需要區分
@@ -3673,37 +3682,84 @@ const isAnyBlockingModalOpen = computed(() =>
          滑鼠點到）。isAnyBlockingModalOpen 這個判斷式定義在 script 最後面，涵蓋所有
          .modal-overlay 彈窗、加密/解密疊層，跟資料夾防護的新增資料夾疊層，完整名單見那裡。 -->
     <header class="title-bar" :inert="isAnyBlockingModalOpen">
-      <div class="traffic-lights">
-        <button
-          class="traffic-light traffic-light--close"
-          type="button"
-          :title="t('window.close')"
-          :aria-label="t('window.close')"
-          @click="closeWindow"
-        >
-          <svg viewBox="0 0 12 12" class="traffic-light__glyph"><path d="M3.5 3.5l5 5M8.5 3.5l-5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-        </button>
-        <button
-          class="traffic-light traffic-light--minimize"
-          type="button"
-          :title="t('window.minimize')"
-          :aria-label="t('window.minimize')"
-          @click="minimizeWindow"
-        >
-          <svg viewBox="0 0 12 12" class="traffic-light__glyph"><path d="M3 6h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-        </button>
-        <button
-          class="traffic-light traffic-light--maximize"
-          type="button"
-          :title="isWindowMaximized ? t('window.restore') : t('window.maximize')"
-          :aria-label="isWindowMaximized ? t('window.restore') : t('window.maximize')"
-          @click="toggleMaximizeWindow"
-        >
-          <svg v-if="!isWindowMaximized" viewBox="0 0 12 12" class="traffic-light__glyph"><path d="M4 4h4v4z" fill="currentColor"/><path d="M8 8H4V4z" fill="currentColor" opacity="0"/><path d="M3.6 3.6h4.8v4.8z" fill="currentColor"/></svg>
-          <svg v-else viewBox="0 0 12 12" class="traffic-light__glyph"><path d="M3.2 6.4h5.6M6.4 3.2v5.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity="0"/><path d="M3.5 5.2h3.3v3.3zM5.2 3.5h3.3v3.3z" fill="currentColor"/></svg>
-        </button>
-      </div>
-      <span class="title-bar__title">FileLocker</span>
+      <!-- macOS 造型：圓點、左上角、關/縮/大順序（預設）。回饋：可點擊範圍要比看得到的
+           圓點大——按鈕本身放大到 20x20（gap 收成 0，兩顆圓點中心距離維持原本 12+8=20px
+           不變），圓點拆成獨立的 .traffic-light__dot（pointer-events:none，只畫色塊，
+           不參與點擊判定），符號 svg 疊在圓點正上方置中。 -->
+      <template v-if="settingsWindowControlStyle === 'macos'">
+        <div class="traffic-lights">
+          <button
+            class="traffic-light traffic-light--close"
+            type="button"
+            :title="t('window.close')"
+            :aria-label="t('window.close')"
+            @click="closeWindow"
+          >
+            <span class="traffic-light__dot"></span>
+            <svg viewBox="0 0 12 12" class="traffic-light__glyph"><path d="M3.5 3.5l5 5M8.5 3.5l-5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
+          <button
+            class="traffic-light traffic-light--minimize"
+            type="button"
+            :title="t('window.minimize')"
+            :aria-label="t('window.minimize')"
+            @click="minimizeWindow"
+          >
+            <span class="traffic-light__dot"></span>
+            <svg viewBox="0 0 12 12" class="traffic-light__glyph"><path d="M3 6h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
+          <button
+            class="traffic-light traffic-light--maximize"
+            type="button"
+            :title="isWindowMaximized ? t('window.restore') : t('window.maximize')"
+            :aria-label="isWindowMaximized ? t('window.restore') : t('window.maximize')"
+            @click="toggleMaximizeWindow"
+          >
+            <span class="traffic-light__dot"></span>
+            <svg v-if="!isWindowMaximized" viewBox="0 0 12 12" class="traffic-light__glyph"><path d="M4 4h4v4z" fill="currentColor"/><path d="M8 8H4V4z" fill="currentColor" opacity="0"/><path d="M3.6 3.6h4.8v4.8z" fill="currentColor"/></svg>
+            <svg v-else viewBox="0 0 12 12" class="traffic-light__glyph"><path d="M3.2 6.4h5.6M6.4 3.2v5.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity="0"/><path d="M3.5 5.2h3.3v3.3zM5.2 3.5h3.3v3.3z" fill="currentColor"/></svg>
+          </button>
+        </div>
+        <span class="title-bar__title">FileLocker</span>
+      </template>
+
+      <!-- Windows 原生風：方形按鈕貼右上角、縮小/最大化/關閉順序，hover/active 整塊變色，
+           貼近 Windows 11 原生行為的簡化版。 -->
+      <template v-else-if="settingsWindowControlStyle === 'windows-native'">
+        <span class="title-bar__title">FileLocker</span>
+        <div class="win-controls">
+          <button class="win-btn win-btn--minimize" type="button" :title="t('window.minimize')" :aria-label="t('window.minimize')" @click="minimizeWindow">
+            <svg viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1"/></svg>
+          </button>
+          <button class="win-btn win-btn--maximize" type="button" :title="isWindowMaximized ? t('window.restore') : t('window.maximize')" :aria-label="isWindowMaximized ? t('window.restore') : t('window.maximize')" @click="toggleMaximizeWindow">
+            <svg v-if="!isWindowMaximized" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+            <svg v-else viewBox="0 0 10 10"><path d="M2.6 3.6h5.4v5.4h-5.4z" fill="none" stroke="currentColor" stroke-width="1"/><path d="M1.4 1.4h5.4v1.4M8.6 1.4v5.4" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+          </button>
+          <button class="win-btn win-btn--close" type="button" :title="t('window.close')" :aria-label="t('window.close')" @click="closeWindow">
+            <svg viewBox="0 0 10 10"><path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" stroke-width="1"/></svg>
+          </button>
+        </div>
+      </template>
+
+      <!-- Windows 風格化版：形狀仍是方角、右上角慣例保留，但質感換成跟 macOS 燈號同一套
+           「圓角小按鈕＋間距」語彙，顏色用 App 自己的強調色/危險色而不是 OS 原生紅/灰，
+           平常透明看不到方塊、hover 才浮現色底。回饋：可點擊範圍要比看得到的圖示大——
+           按鈕放大到 30x30，圖示維持 10x10 置中不變。 -->
+      <template v-else>
+        <span class="title-bar__title">FileLocker</span>
+        <div class="win-controls win-controls--styled">
+          <button class="win-btn-styled" type="button" :title="t('window.minimize')" :aria-label="t('window.minimize')" @click="minimizeWindow">
+            <svg viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          </button>
+          <button class="win-btn-styled" type="button" :title="isWindowMaximized ? t('window.restore') : t('window.maximize')" :aria-label="isWindowMaximized ? t('window.restore') : t('window.maximize')" @click="toggleMaximizeWindow">
+            <svg v-if="!isWindowMaximized" viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+            <svg v-else viewBox="0 0 10 10"><path d="M3 4h4v4h-4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M2 3h4v0.01M8 3v4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+          </button>
+          <button class="win-btn-styled win-btn-styled--close" type="button" :title="t('window.close')" :aria-label="t('window.close')" @click="closeWindow">
+            <svg viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+      </template>
     </header>
 
     <div class="page-wrapper" :inert="isAnyBlockingModalOpen">
@@ -4026,7 +4082,7 @@ const isAnyBlockingModalOpen = computed(() =>
                       <VaultWheelIcon
                         :ref="(el) => setFolderGuardWheelRef(item.path, el)"
                         :locked="item.status === 'Locked'"
-                        :size="32"
+                        :size="44"
                         :class="{ 'vault-wheel-icon--clickable': item.status === 'Locked' }"
                         :aria-label="item.status === 'Locked' ? t('folderGuard.unlock') : undefined"
                         :role="item.status === 'Locked' ? 'button' : undefined"
@@ -4420,6 +4476,22 @@ const isAnyBlockingModalOpen = computed(() =>
                 </span>
               </label>
             </div>
+          </section>
+
+          <section class="settings-section">
+            <h3 class="settings-section__title">{{ t('settings.windowControlStyleTitle') }}</h3>
+            <div class="button-row">
+              <button class="button button--secondary" @click="setWindowControlStyle('macos')" type="button" :disabled="settingsWindowControlStyle === 'macos'">
+                {{ t('settings.windowControlStyleMacos') }}
+              </button>
+              <button class="button button--secondary" @click="setWindowControlStyle('windows-native')" type="button" :disabled="settingsWindowControlStyle === 'windows-native'">
+                {{ t('settings.windowControlStyleWindowsNative') }}
+              </button>
+              <button class="button button--secondary" @click="setWindowControlStyle('windows-styled')" type="button" :disabled="settingsWindowControlStyle === 'windows-styled'">
+                {{ t('settings.windowControlStyleWindowsStyled') }}
+              </button>
+            </div>
+            <p class="hint-text">{{ t('settings.windowControlStyleHint') }}</p>
           </section>
 
           <section class="settings-section">
@@ -5323,6 +5395,14 @@ const isAnyBlockingModalOpen = computed(() =>
      CSS 屬性，不是看畫面實際顏色，沒宣告的話 Chromium 一律畫淺色捲軸，跟底下已經換成
      深色的內容格格不入。這裡宣告 light，.app--dark 那邊蓋成 dark，捲軸才會跟著切換。 */
   color-scheme: light;
+  /* 回饋：拖動條的底色沒有改成跟背景一樣的顏色——color-scheme 只解決「捲軸整體用淺色
+     還是深色配色」，Chromium 自己畫的滑軌（track）底色是它內建的中性灰階，不是這個 App
+     的 --color-bg／--color-surface，緊貼著暖米白／牛皮紙背景看起來像一條格格不入的灰條。
+     WebView2 底層是 Chromium，這裡直接用 ::-webkit-scrollbar 系列選擇器蓋掉滑軌底色（設成
+     transparent，讓底下容器自己的背景透出來，不管是哪個分頁/彈窗各自的背景色都自動吃到，
+     不用每個捲動容器分別調一次），拉桿本身維持中性的 --color-border-strong，hover 時
+     加深到 --color-text-tertiary 這個既有的中性色階，不需要另外定義新顏色。 */
+
   --color-bg: #F4F3F0;
   --color-surface: #FFFDF8;
   --color-border: #E0DDD5;
@@ -5388,6 +5468,30 @@ const isAnyBlockingModalOpen = computed(() =>
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --duration-fast: 150ms;
   --duration-base: 200ms;
+}
+
+/* ---- 捲軸：滑軌透明（讓底下容器自己的背景透出來，不用每個捲動容器分別配一次色），
+   拉桿用中性的 --color-border-strong，兩個變數都會隨 .app--dark 一起變色，這裡不用另外
+   寫一份深色版本。全域套用（不限定 .page 這個容器），任何彈窗/清單內部有自己捲動的地方
+   都一併套到。 ---- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--color-border-strong);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-text-tertiary);
 }
 
 /* ---- 深色模式：色彩變數整組覆蓋，其他所有樣式規則都直接沿用同一套 var()，不用另外寫
@@ -5549,37 +5653,53 @@ body {
 .traffic-lights {
   display: flex;
   align-items: center;
-  gap: 8px;
+  /* 回饋：可點擊範圍要比看得到的圓點大，視覺大小不變——按鈕本身放大成 20x20（見下面
+     .traffic-light），gap 從原本的 8px 收成 0，兩顆圓點中心的距離維持原本 12+8=20px
+     不變，畫面上看起來跟改之前完全一樣。 */
+  gap: 0;
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
 
 .traffic-light {
   appearance: none;
-  width: 12px;
-  height: 12px;
+  width: 20px;
+  height: 20px;
   padding: 0;
   border: none;
+  background: transparent;
   border-radius: 50%;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
   /* 符號平常隱形，游標移到整組按鈕上才浮現——這是 macOS 的作法，
      沒有互動時三顆燈維持乾淨的純色圓點。 */
   color: rgba(0, 0, 0, 0);
-  transition: color var(--duration-fast) ease, filter var(--duration-fast) ease;
+  transition: color var(--duration-fast) ease;
 }
 
-.traffic-light--close {
+/* 圓點本身拆成獨立元素（pointer-events: none，只負責畫色塊，不參與點擊判定——判定
+   交給外層 20x20 的按鈕），視覺尺寸維持原本的 12x12，用 inset:4px 置中在 20x20 的
+   按鈕正中間（20 - 4*2 = 12）。 */
+.traffic-light__dot {
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  pointer-events: none;
+  transition: filter var(--duration-fast) ease;
+}
+
+.traffic-light--close .traffic-light__dot {
   background: #FF5F57;
 }
 
-.traffic-light--minimize {
+.traffic-light--minimize .traffic-light__dot {
   background: #FEBC2E;
 }
 
-.traffic-light--maximize {
+.traffic-light--maximize .traffic-light__dot {
   background: #28C840;
 }
 
@@ -5600,15 +5720,16 @@ body {
   color: rgba(0, 0, 0, 0.55);
 }
 
-.traffic-light:hover {
+.traffic-light:hover .traffic-light__dot {
   filter: brightness(0.92);
 }
 
-.traffic-light:active {
+.traffic-light:active .traffic-light__dot {
   filter: brightness(0.82);
 }
 
 .traffic-light__glyph {
+  position: absolute;
   width: 12px;
   height: 12px;
   display: block;
@@ -5619,6 +5740,125 @@ body {
   font-weight: 500;
   color: var(--color-text-tertiary);
   letter-spacing: 0.01em;
+}
+
+/* ---- Windows 造型・原生風：方形按鈕貼右上角、縮小/最大化/關閉順序，hover/active
+   整塊變色，貼近 Windows 11 原生行為的簡化版（不追求像素級一致，見 CLAUDE.md 待辦
+   第 7.3 節）。 ---- */
+.win-controls {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-left: auto;
+  height: 100%;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
+
+.win-btn {
+  appearance: none;
+  width: 46px;
+  height: 38px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.win-btn svg {
+  width: 10px;
+  height: 10px;
+  display: block;
+}
+
+.win-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--color-text);
+}
+
+.app--dark .win-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.win-btn--close:hover {
+  background: #C42B1C;
+  color: #fff;
+}
+
+/* 回饋：按下去要有反應——hover 只有一種狀態時，按著跟沒按著看起來一樣。 */
+.win-btn:active {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.app--dark .win-btn:active {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.win-btn--close:active {
+  background: #A4241A;
+}
+
+/* ---- Windows 造型・風格化版：不用原生方形貼邊，改用跟 macOS 燈號同一套「圓角小
+   按鈕＋間距」語彙，顏色換成 App 自己的強調色/危險色，不是 OS 原生的紅/灰，平常
+   透明看不到方塊、hover 才浮現色底。回饋：可點擊範圍要比看得到的圖示大，視覺大小
+   不變——按鈕平常透明，放大成 30x30 不會改變「看起來的大小」，使用者平常只看到
+   置中的 10x10 線條圖示，只有點擊判定範圍變大。 ---- */
+.win-controls--styled {
+  gap: 4px;
+  padding-right: 2px;
+}
+
+.win-btn-styled {
+  appearance: none;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.win-btn-styled svg {
+  width: 10px;
+  height: 10px;
+  display: block;
+}
+
+/* 回饋：縮小/最大化鈕的 hover 顏色太淡，跟標題列底色幾乎融在一起——
+   --color-accent-soft／--color-danger-soft 這兩個 token 是為了大面積色塊（例如整顆按鈕背景、
+   資訊框底色）調的低對比淡色，鋪在小按鈕上、緊貼著同樣偏白的 --color-surface 標題列時對比
+   不夠。改用固定透明度的強調色/危險色疊色（不是 token），不管在哪個分頁主題色底下都能維持
+   一致、看得出來的對比。 */
+.win-btn-styled:hover {
+  background: rgba(168, 119, 15, 0.14);
+  color: var(--color-accent);
+}
+
+.win-btn-styled:active {
+  transform: scale(0.92);
+}
+
+.app--dark .win-btn-styled:hover {
+  background: rgba(163, 126, 44, 0.22);
+}
+
+.win-btn-styled--close:hover {
+  background: rgba(177, 67, 40, 0.16);
+  color: var(--color-danger);
+}
+
+.app--dark .win-btn-styled--close:hover {
+  background: rgba(169, 85, 62, 0.24);
+  color: #D98670;
 }
 
 /* ---- 側欄殼子取代原本的頂部頁籤列（design-exploration/gui-styles-v2 §3.3 定案版本）----
@@ -6641,6 +6881,16 @@ button:focus-visible,
   white-space: nowrap;
 }
 
+/* 回饋：資料夾防護清單的轉盤圖示要跟旁邊的路徑文字上下置中——表格儲存格預設頂端對齊
+   （上面 .table td 那條規則），是為了其他表格（例如使用紀錄的「詳細資訊」欄）換行的長
+   文字從第一行開始對齊。資料夾防護這張表每一列都是單行內容＋一顆固定 44px 高的圖示，
+   頂端對齊反而讓圖示看起來偏上、跟文字對不齊。只針對這張表（`.table--folder-guard`
+   這個既有的修飾類別）整列改成置中對齊，不動全域的 `.table td`，其他表格維持原本的
+   頂端對齊行為。 */
+.table--folder-guard td {
+  vertical-align: middle;
+}
+
 .table tbody tr:last-child td {
   border-bottom: none;
 }
@@ -6764,16 +7014,14 @@ button:focus-visible,
   justify-content: center;
 }
 
-/* 按鈕本身的 padding 比純文字儲存格深，文字位置本來就比較低，這裡把左側
-   路徑／狀態欄文字稍微往下移，跟右側按鈕裡文字的垂直位置對齊。轉輪圖示欄（第一欄）不是
-   文字，排除在外、改用置中對齊。 */
-.table--folder-guard td:not(:last-child):not(:first-child) {
-  padding-top: 1rem;
-}
-
+/* 原本這裡有一段 `padding-top: 1rem` 手動把文字往下推，是在整張表還是「圖示置中／
+   文字頂端對齊＋手動補位移」這套舊邏輯時，針對舊的 32px 圖示手調出來的數字。後來圖示
+   欄跟其他欄統一改成 `.table--folder-guard td { vertical-align: middle }`（見上面），
+   所有欄位都用瀏覽器原生的置中對齊，不需要再手動補位移——圖示放大到 44px 之後，這段
+   寫死的 1rem 反而會把文字推到比置中後的圖示更低，兩層位移疊加，回饋「貼下緣」就是
+   這樣來的，已經拿掉。第一欄的文字置中（圖示是置中的圖，不是文字）維持沿用。 */
 .table--folder-guard td:first-child {
   text-align: center;
-  vertical-align: middle;
 }
 
 .vault-wheel-icon--clickable {

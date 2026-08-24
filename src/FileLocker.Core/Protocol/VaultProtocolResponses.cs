@@ -62,7 +62,7 @@ public sealed record InspectLockedFileResponse(
 
 public sealed record PathSizeInfo(long Bytes, bool IsFolder);
 
-public sealed record SettingsResponse(string? VaultPath, string Language, string Theme, bool CriticalActionConfigured, bool MinimizeToTrayEnabled, bool LaunchAtStartupEnabled);
+public sealed record SettingsResponse(string? VaultPath, string Language, string Theme, bool CriticalActionConfigured, bool MinimizeToTrayEnabled, bool LaunchAtStartupEnabled, string WindowControlStyle);
 
 public sealed record UpdateSettingResponse(bool Success, string Key, string Value);
 

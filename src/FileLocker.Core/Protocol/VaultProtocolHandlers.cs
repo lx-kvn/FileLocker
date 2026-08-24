@@ -229,7 +229,7 @@ public sealed class VaultProtocolHandlers
             .Where(Directory.Exists)
             .Sum(path => FolderArchiver.FindNestedLockedFiles(path).Count));
 
-    public SettingsResponse GetSettings() => new(_settings.VaultPath, _settings.Language, _settings.Theme, IsCriticalActionConfigured, _settings.MinimizeToTrayEnabled, _settings.LaunchAtStartupEnabled);
+    public SettingsResponse GetSettings() => new(_settings.VaultPath, _settings.Language, _settings.Theme, IsCriticalActionConfigured, _settings.MinimizeToTrayEnabled, _settings.LaunchAtStartupEnabled, _settings.WindowControlStyle);
 
     /// <summary>「關鍵操作」目前是否已經設定過 Windows Hello 驗證——不綁定任何特定加密項目，
     /// 目前唯一的呼叫端是「使用紀錄」頁的清除功能，之後如果有其他破壞性動作要加同樣的門檻，
@@ -304,6 +304,9 @@ public sealed class VaultProtocolHandlers
                 break;
             case "launchAtStartupEnabled":
                 _settings.LaunchAtStartupEnabled = value == "true";
+                break;
+            case "windowControlStyle":
+                _settings.WindowControlStyle = value;
                 break;
             default:
                 return new UpdateSettingResponse(false, key, value);

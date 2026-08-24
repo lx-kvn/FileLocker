@@ -425,15 +425,24 @@ function onEncryptFlyAwayComplete() {
   encryptPendingItems.value = []
   showEncryptOverlay.value = false
   activeTab.value = 'list'
-  // 回饋（使用者實測抓到）：原本 refreshList() 跟 maybeOfferSaveEncryptedFilesToLocker() 是
-  // 平行觸發，如果密碼庫部件已安裝且設定過密碼，maybeOfferSaveEncryptedFilesToLocker 會跳出
-  // 「要不要存密碼」確認彈窗——那個彈窗背景會整個模糊暗化，剛好蓋住清單這時候正在播的
-  // 新項目滑入動畫，使用者實際上完全看不到。改成先等 maybeOfferSaveEncryptedFilesToLocker
+  // 回饋（使用者實測抓到）：原本 refreshList() 跟存密碼庫的詢問是平行觸發，如果密碼庫部件
+  // 已安裝且設定過密碼，會跳出「要不要存密碼」確認彈窗——那個彈窗背景會整個模糊暗化，
+  // 剛好蓋住清單這時候正在播的新項目滑入動畫，使用者實際上完全看不到。改成先等這個詢問
   // 整個處理完（不管有沒有真的跳出彈窗、使用者按確認還是取消）才呼叫 refreshList()，滑入
   // 動畫才會等到背景真的乾淨了才播放。沒裝密碼庫部件／沒設定過密碼的情境，
-  // maybeOfferSaveEncryptedFilesToLocker 內部很快就會提早 return（只有一兩個本機 IPC
-  // 來回，不是網路請求），幾乎不會有感覺得到的延遲，等於維持原本「立刻重新整理」的體感。
-  maybeOfferSaveEncryptedFilesToLocker(passwordUsed, successItems).finally(() => {
+  // offerSaveEncryptedFiles 內部很快就會提早 return（只有一兩個本機 IPC 來回，不是網路
+  // 請求），幾乎不會有感覺得到的延遲，等於維持原本「立刻重新整理」的體感。
+  //
+  // 合併回 main 時的落差（merge fd67091）：main 的 abc323f 把密碼庫換成
+  // @lx-kvn/password-locker-ui 共用元件後，這個「加密完成問要不要存密碼庫」的邏輯已經搬進
+  // 元件內部（PasswordLockerPage.vue 的 offerSaveEncryptedFilesToLocker，透過 defineExpose
+  // 的 offerSaveEncryptedFiles 對外呼叫），不再是 App.vue 自己的 maybeOfferSaveEncryptedFilesToLocker
+  // 函式——那個函式已經被刪掉了，這裡原本還在呼叫它，合併後會直接 ReferenceError 崩潰
+  // （使用者實測抓到）。改成跟舊版信封流程的 encryptBatchDone 一樣，透過
+  // hiddenPasswordLockerRef（永遠掛載但隱藏的那份實例，理由見它掛載處的註解）呼叫。
+  // Promise.resolve(...) 包一層是因為 ?. 在 ref 還沒掛載完成（理論上不會發生，但保守起見）
+  // 時會回傳 undefined 而不是 Promise，直接對 undefined 呼叫 .finally 會拋錯。
+  Promise.resolve(hiddenPasswordLockerRef.value?.offerSaveEncryptedFiles(passwordUsed, successItems)).finally(() => {
     // 使用者原本就在清單頁的話（最常見的情境：從清單頁點「加密」），上面 activeTab 賦值
     // 不會觸發 watch(activeTab)（值沒變），清單就永遠不會自動重新整理——這裡直接補呼叫一次，
     // 不能只依賴那個 watcher。

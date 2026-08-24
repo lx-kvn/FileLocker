@@ -77,7 +77,13 @@ public sealed record VaultListItemResponse(
     bool PasskeyEnabled, bool RecoveryKeyEnabled, string? BatchId, long OriginalSizeBytes,
     string? Hint, DateTimeOffset CreatedAtUtc, bool HasNestedLocks, int NestedLockCount,
     bool MarkerFound, string? MarkerStatusMessage, IReadOnlyList<string> NestedLockItemNames,
-    string? MarkerStatusCode, string? MarkerStatusDetail)
+    string? MarkerStatusCode, string? MarkerStatusDetail,
+    // 對應「單檔案分散式加密」功能規劃 §11：清單頁「前往檔案原始位置」按鈕只在 Standalone
+    // 項目找不到 .flocked 時才有意義（Vault 模式的指標檔找不到，內容仍在 Vault，清單頁本來就
+    // 能直接解密，不需要這顆按鈕）——前端要分辨這兩種情況，之前完全沒有把 StorageMode 傳給
+    // 前端，這裡補上。跟 Type 欄位一樣用 .ToString()，不是原始的 int enum 值（這個專案的 IPC
+    // JSON 序列化沒有掛 JsonStringEnumConverter，enum 預設序列化成數字，前端會看不懂）。
+    string StorageMode)
 {
     public VaultListItemResponse(VaultIndexEntry entry, MarkerStatus markerStatus, IReadOnlyList<string> nestedLockItemNames)
         : this(
@@ -85,7 +91,7 @@ public sealed record VaultListItemResponse(
             entry.PasskeyEnabled, entry.RecoveryKeyEnabled, entry.BatchId, entry.OriginalSizeBytes,
             entry.Hint, entry.CreatedAtUtc, entry.NestedLockCount > 0, entry.NestedLockCount,
             markerStatus.Found, markerStatus.Message, nestedLockItemNames,
-            markerStatus.Code, markerStatus.Detail)
+            markerStatus.Code, markerStatus.Detail, entry.StorageMode.ToString())
     {
     }
 }

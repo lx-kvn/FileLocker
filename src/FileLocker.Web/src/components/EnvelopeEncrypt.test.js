@@ -123,13 +123,17 @@ describe('EnvelopeEncrypt', () => {
       await wrapper.vm.$nextTick()
     }
 
-    it('勾選主選項會 emit update:enableStandaloneMode', async () => {
+    it('勾選主選項會 emit request-toggle-standalone-mode，且不直接改本地勾選狀態（要等 App.vue 確認風險提示）', async () => {
       const wrapper = mountEnvelope({ paths: ['C:\\a.txt'] })
       await gotoStep2(wrapper)
 
-      await wrapper.find('[data-field="enableStandaloneMode"]').setValue(true)
+      const checkbox = wrapper.find('[data-field="enableStandaloneMode"]')
+      await checkbox.setValue(true)
 
-      expect(wrapper.emitted('update:enableStandaloneMode')).toEqual([[true]])
+      expect(wrapper.emitted('request-toggle-standalone-mode')).toEqual([[true]])
+      // 沒有一次性風險提示的確認/取消結果之前，checkbox 的原生勾選狀態要被復原成未勾選——
+      // 不然使用者取消風險提示時，畫面會卡在「看起來已勾選、邏輯其實沒勾」的不一致狀態。
+      expect(checkbox.element.checked).toBe(false)
     })
 
     it('沒勾主選項時，「存放到其他地方」子選項不顯示', async () => {

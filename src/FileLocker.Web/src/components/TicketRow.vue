@@ -62,7 +62,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['decrypt', 'decrypt-via-passkey', 'decrypt-via-recovery-key', 'delete', 'torn-away'])
+const emit = defineEmits(['decrypt', 'decrypt-via-passkey', 'decrypt-via-recovery-key', 'delete', 'torn-away', 'go-to-original-location'])
 
 function visual() {
   return fileTypeVisual(props.item)
@@ -187,7 +187,19 @@ onUnmounted(clearAllTimers)
             <span>{{ formatDate(item.createdAtUtc) }}</span>
           </div>
           <span v-if="item.hasNestedLocks" class="badge badge--nested-lock" :title="nestedLockPreviewText(item, t)">×{{ item.nestedLockCount }}</span>
-          <div v-if="!item.markerFound" class="status-warning">{{ translateError(item.markerStatusCode, item.markerStatusDetail, item.markerStatusMessage) }}</div>
+          <div v-if="!item.markerFound" class="status-warning">
+            {{ translateError(item.markerStatusCode, item.markerStatusDetail, item.markerStatusMessage) }}
+            <!-- 只有 Standalone（獨立加密）項目才需要這顆按鈕——Vault 模式的指標檔找不到，
+                 內容仍安全存在 Vault 裡，清單頁本來就能直接解密（見功能規劃 §1 表格），沒有
+                 「使用者要自己去找檔案」這回事；Standalone 模式的密文本體就是那個找不到的
+                 檔案，只能靠使用者自己找回來，「前往檔案原始位置」對這種情況才有實際幫助。 -->
+            <button
+              v-if="item.storageMode === 'Standalone'"
+              type="button"
+              class="status-warning__goto-link"
+              @click="emit('go-to-original-location', item)"
+            >{{ t('list.goToOriginalLocation') }}</button>
+          </div>
         </div>
 
         <span class="postmark-slot"></span>
@@ -483,6 +495,22 @@ button.ticket__seal:focus-visible {
   margin-top: 4px;
   font-size: 11.5px;
   color: var(--color-danger);
+}
+
+.status-warning__goto-link {
+  display: inline;
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: inherit;
+  color: var(--color-accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.status-warning__goto-link:hover {
+  color: var(--color-accent-hover);
 }
 
 .postmark-slot {

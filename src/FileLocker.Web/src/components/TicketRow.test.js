@@ -48,6 +48,27 @@ describe('TicketRow', () => {
     expect(wrapper.find('.status-warning').exists()).toBe(true)
   })
 
+  it('Vault 模式（一般加密）找不到指標檔時，不顯示「前往檔案原始位置」按鈕——內容仍在 Vault，清單頁本來就能直接解密', () => {
+    const wrapper = mountRow(baseItem({ markerFound: false, storageMode: 'Vault' }))
+    expect(wrapper.find('.status-warning__goto-link').exists()).toBe(false)
+  })
+
+  it('Standalone 模式找不到 .flocked 時，顯示「前往檔案原始位置」按鈕，點擊會 emit go-to-original-location', async () => {
+    const item = baseItem({ markerFound: false, storageMode: 'Standalone', originalPath: 'D:\\某資料夾\\專案合約書.flocked' })
+    const wrapper = mountRow(item)
+
+    const link = wrapper.find('.status-warning__goto-link')
+    expect(link.exists()).toBe(true)
+
+    await link.trigger('click')
+    expect(wrapper.emitted('go-to-original-location')).toEqual([[item]])
+  })
+
+  it('Standalone 模式但檔案還在（markerFound 為 true）時，不顯示這顆按鈕', () => {
+    const wrapper = mountRow(baseItem({ markerFound: true, storageMode: 'Standalone' }))
+    expect(wrapper.find('.status-warning__goto-link').exists()).toBe(false)
+  })
+
   it('hasNestedLocks 時顯示巢狀鎖定徽章跟數量', () => {
     const wrapper = mountRow(baseItem({ hasNestedLocks: true, nestedLockCount: 2 }))
     const badge = wrapper.find('.badge--nested-lock')

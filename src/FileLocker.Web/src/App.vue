@@ -342,6 +342,23 @@ const enableRecoveryKey = ref(false)
 // 時才轉換成 StorageMode.Standalone／Vault（見 submitEncryptPending）。
 const enableStandaloneMode = ref(false)
 const standaloneDestinationDir = ref(null)
+
+// 對應功能規劃 §10「沒有集中備份」的一次性風險提示：勾選當下先跳確認對話框，使用者確認
+// 才真的啟用，取消就維持不勾——每次勾選都跳（不是整個 App 生命週期只跳一次），因為這個
+// 風險每次使用都真實存在，跟「永久刪除確認」「關閉金鑰機制確認」這幾個既有的 askConfirm
+// 用途同一個道理，不需要額外的「已經看過」持久化狀態。取消勾選不用確認，直接生效。
+async function onRequestToggleStandaloneMode(checked) {
+  if (!checked) {
+    enableStandaloneMode.value = false
+    standaloneDestinationDir.value = null
+    return
+  }
+
+  const confirmed = await askConfirm(t('encrypt.standaloneModeRiskWarning'), { variant: 'danger' })
+  if (confirmed) {
+    enableStandaloneMode.value = true
+  }
+}
 const recoveryKeyDisplay = ref('') // 非空字串時顯示恢復金鑰彈窗
 const recoveryKeySaveState = ref('') // '' | 'saved' | 'acknowledged'
 
@@ -1702,6 +1719,19 @@ function historyItemPath(entry) {
   return null
 }
 
+// 對應「單檔案分散式加密」功能規劃 §8：Standalone 項目找不到 .flocked 時，清單頁提供這顆
+// 按鈕開啟原始路徑所在的資料夾，方便使用者就近尋找（例如檔案只是被移到同一層樓的另一個
+// 資料夾）——路徑推導邏輯跟 openHistoryItemInExplorer 一致（取父層目錄，不是 /select,
+// 選中檔案本身），item.originalPath commit 完成後一定指向 .flocked 應該落腳的位置
+// （見 LockService.CommitStandaloneEncryptAsync），不是加密前的原始位置。
+function openVaultItemOriginalLocationInExplorer(item) {
+  const path = item.originalPath
+  if (!path) return
+  const lastSeparator = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'))
+  const folderPath = lastSeparator > 0 ? path.slice(0, lastSeparator) : path
+  sendMessage('openFolderInExplorer', { path: folderPath })
+}
+
 function openHistoryItemInExplorer(entry) {
   const path = historyItemPath(entry)
   if (!path) return
@@ -2551,6 +2581,7 @@ const isAnyBlockingModalOpen = computed(() =>
                   @decrypt-via-recovery-key="decryptFromListViaRecoveryKey"
                   @delete="requestDelete"
                   @torn-away="handleTicketTornAway"
+                  @go-to-original-location="openVaultItemOriginalLocationInExplorer"
                 />
 
                 <!-- 批次群組：一次選多個項目加密出來的，摺疊成一張摘要票根，展開後每個項目維持獨立操作能力。 -->
@@ -2596,6 +2627,7 @@ const isAnyBlockingModalOpen = computed(() =>
                         @decrypt-via-recovery-key="decryptFromListViaRecoveryKey"
                         @delete="requestDelete"
                         @torn-away="handleTicketTornAway"
+                        @go-to-original-location="openVaultItemOriginalLocationInExplorer"
                       />
                     </TransitionGroup>
                   </div>
@@ -3138,7 +3170,7 @@ const isAnyBlockingModalOpen = computed(() =>
           @update:hint="hint = $event"
           @update:enable-passkey="enablePasskey = $event"
           @update:enable-recovery-key="enableRecoveryKey = $event"
-          @update:enable-standalone-mode="enableStandaloneMode = $event"
+          @request-toggle-standalone-mode="onRequestToggleStandaloneMode"
           @update:standalone-destination-dir="standaloneDestinationDir = $event"
           @pick-standalone-destination="sendMessage('pickFolder', { purpose: 'flockedDestination' })"
           @submit="submitEncryptPending"

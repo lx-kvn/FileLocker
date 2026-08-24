@@ -217,6 +217,22 @@ public class VaultProtocolHandlersTests : IDisposable
 
         Assert.Single(items);
         Assert.True(items[0].MarkerFound);
+        // 前端「前往檔案原始位置」按鈕（功能規劃 §8、§11）要靠這個欄位分辨 Standalone／Vault
+        // 項目，之前 VaultListItemResponse 完全沒有把 StorageMode 傳給前端。
+        Assert.Equal("Standalone", items[0].StorageMode);
+    }
+
+    [Fact]
+    public async Task ListVaultAsync_VaultModeItem_ExposesStorageModeAsVault()
+    {
+        var path = CreateWorkFile("一般加密清單測試.txt", "測試內容");
+        await foreach (var _ in _handlers.EncryptBatchAsync([path], "correct-password", null, false, false, IntPtr.Zero)) { }
+
+        _vaultIndexCache.Rebuild();
+        var items = await _handlers.ListVaultAsync();
+
+        Assert.Single(items);
+        Assert.Equal("Vault", items[0].StorageMode);
     }
 
     [Fact]

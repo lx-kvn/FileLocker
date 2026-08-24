@@ -73,7 +73,7 @@ const emit = defineEmits([
   'pick-file', 'pick-folder', 'remove-path', 'clear-paths', 'drop',
   'update:password', 'update:passwordConfirm', 'update:hint',
   'update:enablePasskey', 'update:enableRecoveryKey',
-  'update:enableStandaloneMode', 'update:standaloneDestinationDir', 'pick-standalone-destination',
+  'request-toggle-standalone-mode', 'update:standaloneDestinationDir', 'pick-standalone-destination',
   'submit', 'confirm', 'cancel', 'fly-away-complete',
 ])
 
@@ -82,6 +82,23 @@ const emit = defineEmits([
 // 原地取代」——這裡不能直接用一個獨立的本地 ref 存「是否勾選」，因為勾選狀態本身就該
 // 完全由 standaloneDestinationDir 是不是有值決定（單一事實來源），不然使用者取消原生
 // 對話框時（App.vue 沒有拿到新路徑）這裡的勾選狀態會跟 standaloneDestinationDir 兜不起來。
+// 主選項（獨立加密）打勾要先讓 App.vue 跳一次性風險提示（沒有集中備份，檔案搬丟就等於資料
+// 遺失），使用者確認才會真的勾上；取消勾選不需要確認，直接生效。這裡刻意不直接
+// emit('update:enableStandaloneMode', checked) 讓 App.vue 自己決定要不要真的更新——因為
+// 確認是非同步的（等使用者按下確認/取消對話框），如果 App.vue 決定不勾（使用者取消），
+// 這個元件的 :checked prop 全程都停在 false，Vue 只有偵測到 prop 真的變了才會強制校正
+// DOM checkbox 的視覺勾選狀態，false→false 沒有變化可偵測，畫面會卡在「看起來已勾選、
+// 邏輯其實沒勾」的不一致狀態。解法：勾選當下先把原生 checkbox 這一下的視覺翻轉復原，
+// 等 App.vue 確認完、真的把 enableStandaloneMode 從 false 改成 true，再讓 :checked 綁定
+// 用「貨真價實的值變化」把畫面補上——取消勾選（true→false）沒有這個問題，不用特別處理。
+function onToggleStandaloneMode(event) {
+  const checked = event.target.checked
+  if (checked) {
+    event.target.checked = false
+  }
+  emit('request-toggle-standalone-mode', checked)
+}
+
 function onToggleStandaloneOtherLocation(checked) {
   if (checked) {
     emit('pick-standalone-destination')
@@ -633,7 +650,7 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
               data-field="enableStandaloneMode"
               type="checkbox"
               :checked="enableStandaloneMode"
-              @change="emit('update:enableStandaloneMode', $event.target.checked)"
+              @change="onToggleStandaloneMode"
             />
             <img :src="flockedIconUrl" alt="" />
             {{ t('encrypt.standaloneModeLabel') }}

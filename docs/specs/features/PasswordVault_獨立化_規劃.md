@@ -130,13 +130,13 @@ PasswordVault 內建 CLI（隨 `PasswordVault.exe` 一起發布、一起編號�
 
 ### 資產命名規則（PasswordVault 版）
 
-沿用既有 `PasswordLockerAssetSelector` 的設計精神（版本相容區間，理由見該檔案的 XML doc 註解），只換品牌前綴：
+沿用既有 `PasswordLockerAssetSelector` 的設計精神（版本相容區間，理由見該檔案的 XML doc 註解），只換品牌前綴。原本 `PasswordLocker_vX.Y.Z_x.y.z-x.y.z.zip` 這種三組版本號緊貼在一起的寫法容易眼花撩亂（哪個是自己版本、哪個是相容區間上下限不容易一眼看出），改良為插入固定字詞當視覺分隔：
 
 ```
-PasswordVault_v{PasswordVault.Core 自己的版本}_{相容 FileLocker 最小版本}-{相容 FileLocker 最大版本}.zip
+PasswordVault_v{PasswordVault.Core 自己的版本}_for-FileLocker-{相容最小版本}-to-{相容最大版本}.zip
 ```
 
-例如 `PasswordVault_v0.1.0_1.3.0-2.0.0.zip` 代表這份 `0.1.0` 版的 `PasswordVault.Core.dll` 相容 FileLocker `1.3.0`～`2.0.0` 這個版本區間（含頭尾）。
+例如 `PasswordVault_v0.1.0_for-FileLocker-1.3.0-to-2.0.0.zip`：一眼就看得出是「`0.1.0` 版的 PasswordVault，給 FileLocker 用，相容 1.3.0 到 2.0.0」，不需要先知道這個命名慣例才看得懂。解析端（`PasswordLockerAssetSelector` 的後繼者）只是多認 `for-FileLocker-`／`-to-` 這兩個固定字串，正則表達式複雜度不變。
 
 相容區間**由 `PasswordVault` repo 每次更新 `vendor/FileLocker.PluginContracts.dll` 時手動決定並填入**（見該 repo `vendor/README.md`「已知的坑」——只有 FileLocker 那份介面契約變動時才需要重新 vendor），不自動推算：開發者需要對照 FileLocker 那邊介面契約異動的 commit／版本，判斷這次要標記的相容範圍上下限。這一步刻意維持人工判斷、不寫進自動化流程——跟 CLI_setup／CLI_zip 那輪「新流程先手動、驗證過沒有意外的坑再收進自動化」同樣的考量。
 

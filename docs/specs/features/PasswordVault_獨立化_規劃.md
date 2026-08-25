@@ -124,9 +124,21 @@ PasswordVault 內建 CLI（隨 `PasswordVault.exe` 一起發布、一起編號�
 - **測試覆蓋不完整**：`PasswordVault` repo 目前只有 `tests/PasswordVault.Core.Tests`，`PasswordVault.App`（單一執行個體、Pipe Server、部件初始化等）與 `PasswordVault.Cli`（`--list`／`--get` 兩個指令）都還沒有對應的測試專案，比照 FileLocker 本體「一個 src 專案配一個 Tests 專案」的既有慣例是缺的。規劃：比照 `FileLocker.App.Tests`／`FileLocker.Cli.Tests` 的既有測試範疇（Mutex 搶前景、命令列參數解析、指令輸出格式）新增 `PasswordVault.App.Tests`／`PasswordVault.Cli.Tests` 兩個專案，且遵照 CLAUDE.md「先寫測試」的開發流程逐一補齊，不是一次全補、也不是先寫實作再回頭補測試（這兩個專案的產品邏輯本身已經存在，這裡是回頭補測試，不是新功能開發，跟「先規劃寫測試」的精神不衝突——测试针对既有、已定案的行為寫，不是先猜測試再讓實作遷就）。
 - **FileLocker 本體切換消費來源**：見本節開頭的更正說明——`PasswordLockerModuleInstaller.cs`／`PasswordLockerPluginLoader.cs`／`PasswordLockerNativeHostRegistrar.cs`／`App.xaml.cs` 這幾處目前寫死指向 FileLocker 自己的 GitHub Release 與 `FileLocker.PasswordLocker.*` 系列檔名，需要改成指向 `lx-kvn/PasswordVault` 的 Release 與 `PasswordVault.Core.dll`／`PasswordVault.NativeHost.exe`。需要另外決定的細節：
   1. **`plugins/PasswordLocker/` 這個既有子資料夾名稱要不要跟著改名**——不改的話「PasswordVault」這個新品牌名稱跟舊資料夾名稱長期並存，容易讓人誤以為裝的還是舊版；改的話要處理「使用者原本已經裝了舊版 `FileLocker.PasswordLocker.dll`，資料夾名稱一換，舊部件會不會被誤判成『沒裝』」這個遷移期相容問題。
-  2. **資產命名比對邏輯**（`PasswordLockerAssetSelector`）要改成認得 `PasswordVault` repo 產出的 zip 命名規則，這份規則本身也要在 `PasswordVault` repo 那邊的打包流程先定案。
+  2. **資產命名比對邏輯**（`PasswordLockerAssetSelector`）——已定案，見下方「資產命名規則」小節，不需要等 `PasswordVault` repo 真的發過一次正式版才能動工，兩邊照這份定案的規則實作即可。
   3. **Named Pipe 名稱／NativeHost 路徑**：`PasswordLockerNativePipeServer.PipeName`（`"FileLocker-PasswordLocker-Pipe"`）與 `App.xaml.cs` 寫死的 `FileLocker.PasswordLockerNativeHost.exe` 路徑，要跟第 8 節「兩邊搶同一條 Named Pipe」的共存設計對上——目前第 8 節描述的是 `FileLocker.App` 與 `PasswordVault.exe` 各自使用****自己的**** Pipe／NativeHost，這裡若要讓 FileLocker.App 改成直接載入 PasswordVault 编譯產出的部件，需要重新確認这個部件版本用的 Pipe 名稱是否跟第 8 節設計的獨立版一致，避免兩份文件對「Pipe 名稱該是什麼」各自表述。
-  這一步涉及修改 FileLocker repo 本體程式碼（不是 PasswordVault repo），且需要 `PasswordVault` repo 先把打包／發布流程定案到可以穩定產出資產命名規則之後才能真正動工，目前只完成規劃、尚未實作。
+  這一步涉及修改 FileLocker repo 本體程式碼（不是 PasswordVault repo），目前只完成規劃、尚未實作。
+
+### 資產命名規則（PasswordVault 版）
+
+沿用既有 `PasswordLockerAssetSelector` 的設計精神（版本相容區間，理由見該檔案的 XML doc 註解），只換品牌前綴：
+
+```
+PasswordVault_v{PasswordVault.Core 自己的版本}_{相容 FileLocker 最小版本}-{相容 FileLocker 最大版本}.zip
+```
+
+例如 `PasswordVault_v0.1.0_1.3.0-2.0.0.zip` 代表這份 `0.1.0` 版的 `PasswordVault.Core.dll` 相容 FileLocker `1.3.0`～`2.0.0` 這個版本區間（含頭尾）。
+
+相容區間**由 `PasswordVault` repo 每次更新 `vendor/FileLocker.PluginContracts.dll` 時手動決定並填入**（見該 repo `vendor/README.md`「已知的坑」——只有 FileLocker 那份介面契約變動時才需要重新 vendor），不自動推算：開發者需要對照 FileLocker 那邊介面契約異動的 commit／版本，判斷這次要標記的相容範圍上下限。這一步刻意維持人工判斷、不寫進自動化流程——跟 CLI_setup／CLI_zip 那輪「新流程先手動、驗證過沒有意外的坑再收進自動化」同樣的考量。
 
 ## 已完成之待辦
 

@@ -28,7 +28,8 @@
 
 - **Argon2id + AES-256-GCM**：密碼經 Argon2id 衍生金鑰，內容用 AES-256-GCM 串流分塊加密，加密大型資料夾也不需要把整份明文塞進記憶體。
 - **三種互相獨立的解鎖方式**：密碼（必要）、Passkey（Windows Hello，裝置綁定）、恢復金鑰（一次性顯示的備援代碼）。
-- **右鍵選單批次加密**：一次選取多個檔案/資料夾，右鍵直接加密；CLI 也支援批次加密／解密／刪除，安裝完成後直接加入系統 PATH，任何終端機都能用，並提供 `--password-stdin`／`--yes` 等旗標的靜默批次模式，方便寫進指令碼或排程工作。
+- **右鍵選單批次加密**：一次選取多個檔案/資料夾，右鍵直接加密；CLI 也支援批次加密／解密／刪除，安裝完成後直接加入系統 PATH，任何終端機都能用，提供子命令（`encrypt`／`unlock`／`list`／`delete`）與舊版旗標兩種寫法、`--output json` 結構化輸出、shell 自動完成、繁體中文／英文雙語介面（跟隨系統語言或用 `--lang` 指定），並保留 `--password-stdin`／`--yes` 等旗標的靜默批次模式，方便寫進指令碼或排程工作。
+- **獨立加密（單檔案分散式加密）**：加密時可選擇不把內容存進集中管理的 Vault，改成原地（或指定位置）留下一顆自帶完整密文的 `.flocked` 檔案，不依賴 Vault 也能獨立攜帶、雙擊直接解密——沒有集中備份，`.flocked` 遺失即資料遺失，這個取捨會在勾選時明確提示。
 - **資料夾防護（Folder Guard）**：獨立於加密之外的第二種保護方式，純粹透過 Windows 存取權限（ACL）限制資料夾，不加密內容——防隨手瀏覽，不防蓄意繞過。右鍵直接上鎖／解鎖，共用密碼＋選配 Passkey；進階選配可開啟「使用 .lockfolder 開啟上鎖資料夾」，雙擊標記檔直接跳出解鎖視窗並自動開啟資料夾；解鎖後也可以設定閒置逾時自動重新上鎖，避免忘記手動上鎖。
 - **密碼庫（Password Locker）**：第三種、完全獨立的保護機制——儲存網站帳密與已加密檔案的密碼，本身不保護檔案或資料夾，驗證方式（密碼／Passkey／恢復金鑰）也跟加密、資料夾防護的憑證各自分開。可選配部件，未安裝也不影響其他功能；搭配瀏覽器擴充功能可在網站上自動填入帳密、支援 TOTP 兩步驟驗證碼。
 - **背景模式**：可選擇關閉視窗後留在系統匣、跟著 Windows 啟動，兩個開關互相獨立。
@@ -68,7 +69,7 @@
 ### 建置與執行
 
 ```bash
-# 後端測試（四個測試專案，目前共約 399 個測試）
+# 後端測試（四個測試專案，目前共約 489 個測試）
 dotnet test
 
 # 前端開發伺服器（Debug 建置會連到 http://localhost:5173）
@@ -105,6 +106,7 @@ FileLocker/
 - 安裝程式尚無數位簽章，執行時可能觸發 Windows SmartScreen 警告（見上方「下載與安裝」與規格文件第 19 節）。
 - 雲端同步情境的跨裝置人工實測尚待進行。
 - 資料夾防護的進階選配「使用 .lockfolder 開啟上鎖資料夾」預設關閉，開啟後 `.lockfolder` 標記檔會讓資料夾在「依檔案類型分組」檢視下跟真正的資料夾分開排列（規格文件第 21.6 節）。
+- 獨立加密（`.flocked`）沒有集中備份，檔案本身遺失即資料遺失，這是「分散式」設計本身的必然取捨，不是缺陷。
 - 密碼遺失無法復原，沒有任何後門機制。
 
 ### 授權
@@ -125,7 +127,8 @@ Grab the latest installer from the [Releases](https://github.com/lx-kvn/FileLock
 
 - **Argon2id + AES-256-GCM**: passwords are stretched with Argon2id; content is encrypted with chunked, streaming AES-256-GCM, so even large folders never need to sit fully in memory.
 - **Three independent unlock methods**: password (required), passkey (Windows Hello, device-bound), and a one-time-shown recovery key.
-- **Batch encryption from the context menu**: select multiple files/folders and encrypt in one right-click; the CLI supports batch encrypt/unlock/delete too, is added to the system PATH by the installer so it works from any terminal, and offers a silent batch mode (`--password-stdin`, `--yes`, etc.) for scripts and scheduled jobs.
+- **Batch encryption from the context menu**: select multiple files/folders and encrypt in one right-click; the CLI supports batch encrypt/unlock/delete too, is added to the system PATH by the installer so it works from any terminal, offers both subcommands (`encrypt`/`unlock`/`list`/`delete`) and the legacy flag style, `--output json` for structured output, shell completion, a bilingual interface (follows the system language or pick one with `--lang`), and a silent batch mode (`--password-stdin`, `--yes`, etc.) for scripts and scheduled jobs.
+- **Standalone encryption (per-file, no central Vault)**: optionally skip storing the encrypted content in the central Vault — instead, a self-contained `.flocked` file is left in place (or at a destination you choose), decryptable by double-click without depending on the Vault at all. There's no central backup for it, so losing the `.flocked` file means losing the data — this trade-off is called out explicitly when you enable the option.
 - **Folder Guard**: a second, separate protection method alongside encryption — restricts a folder purely through Windows access permissions (ACL) without encrypting its contents. Stops casual browsing, not a determined attacker. Lock/unlock directly from the right-click menu, with a shared password and optional passkey; an advanced option, "Open locked folders with a .lockfolder file," lets you double-click a marker file to pop up the unlock prompt and open the folder automatically; folders can also be set to relock automatically after an idle timeout so you don't have to remember to relock manually.
 - **Password Locker**: a third, fully independent protection mechanism — stores website credentials and passwords for encrypted files, without protecting any file or folder itself; its unlock method (password/passkey/recovery key) is a separate credential set from encryption and Folder Guard. Ships as an optional component that the rest of the app works fine without; pair it with the browser extension for autofill on websites and TOTP two-factor codes.
 - **Background mode**: optionally stay in the system tray when the window closes, and/or launch at Windows startup — two independent toggles.
@@ -165,7 +168,7 @@ Full architecture, encryption flow, and IPC protocol details live in [`FileLocke
 ### Build & run
 
 ```bash
-# Backend tests (four test projects, ~399 tests total)
+# Backend tests (four test projects, ~489 tests total)
 dotnet test
 
 # Frontend dev server (Debug build points to http://localhost:5173)
@@ -202,6 +205,7 @@ FileLocker/
 - The installer isn't code-signed yet, which may trigger a Windows SmartScreen warning (see "Download & install" above and spec §19).
 - Manual cross-device testing of cloud-sync scenarios is still pending.
 - Folder Guard's advanced "Open locked folders with a .lockfolder file" option is disabled by default; when enabled, the `.lockfolder` marker file sorts separately from the real folder under Explorer's "group by file type" view (spec §21.6).
+- Standalone encryption (`.flocked`) has no central backup — losing the file means losing the data. That's an inherent trade-off of the "distributed" design, not a defect.
 - A lost password cannot be recovered — there is no backdoor.
 
 ### License

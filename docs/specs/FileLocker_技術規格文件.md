@@ -776,7 +776,6 @@ ACL 拒絕規則掛在目前登入帳號的 SID 上，FileLocker App 自己的�
 - **雲端同步跨裝置人工實測**：見第 11.2 節，目前僅完成自動化測試（模擬多裝置同步、衝突情境），跨裝置的完整人工實測待使用者自行進行。
 - **雙擊已上鎖資料夾直接解鎖的實際互動驗證**：見第 21.6 節，`.lockfolder` 標記檔機制的 C# 端邏輯已完成並通過單元測試，但實際雙擊標記檔跳出解鎖彈窗的互動流程尚待完整人工實測。
 - **背景模式主視窗／系統匣選單彈出位置排查**：見第 23 節已知限制，已改用 Win32 API 直接以物理像素定位，但實測位置仍不如預期，根因尚未確認，待後續找時間深入排查。
-- **CLI 英文化**：`FileLocker.Cli` 目前所有輸出訊息（`Console.WriteLine`）都是寫死的繁體中文字串，沒有跟 GUI 端一樣走 `t('key')`／zh-TW.json／en.json 那套 i18n 機制，也沒有任何語言判斷／切換手段。排在單檔案分散式加密（見上）完成之後進行。
 
 ### 24.2 已完成之待辦
 
@@ -786,3 +785,12 @@ ACL 拒絕規則掛在目前登入帳號的 SID 上，FileLocker App 自己的�
 - **CLI 隨裝發布**：`FileLocker.Cli` 打包進 `cli/` 子資料夾，安裝程式透過 `path_target_exe` 加入系統 PATH，見第 19 節。
 - **資料夾防護（Folder Guard）功能開發**：純 ACL 資料夾存取限制、共用密碼＋選配 Passkey、右鍵上鎖/解鎖、清單頁管理，見第 21 節。
 - **軟體更新檢查功能開發**：設定頁一鍵檢查 GitHub Release、下載安裝檔並啟動，見第 22 節。
+- **CLI 英文化**：`FileLocker.Cli` 新增 `CliLocalization`（`src/FileLocker.Cli/CliLocalization.cs`），提供跟 GUI 端 `t('key')` 精神一致但更輕量的訊息查表機制（純 C# Dictionary，不另外拉 JSON 讀取機制）。語言判斷：全域 `--lang <zh-TW|en>` 旗標優先（任何指令、任何參數位置都適用，連沒帶指令的用法說明也吃），沒帶就跟著 `CultureInfo.CurrentUICulture` 走，系統語言不是中文（`zh`）就一律用英文。錯誤訊息額外透過 `TranslateError` 依 `ErrorCode` 查表翻譯（跟 GUI 的 `translateError()` 同一套邏輯與文案，只收錄 CLI 實際會走到的路徑可能回傳的錯誤代碼，不是 GUI 那 56 個 `error.*` 詞條的完整鏡射——CLI 不支援 Passkey、不會碰到 Folder Guard／Password Locker／軟體更新這些功能）；查無對應詞條就退回後端原始的繁體中文 `ErrorMessage`，跟 GUI 端未收錄代碼時的退回行為一致。
+- **CLI `--unlock` 支援 `.flocked` 檔案**：實作 CLI 英文化時人工測試發現的回歸——`FileLocker.Cli --unlock` 原本無條件呼叫 `LockService.DecryptAsync`（只認 `.locked` 指標檔），單檔案分散式加密片 7 只把 GUI 端（`App.xaml.cs`／`PasswordPromptWindow`／`VaultProtocolHandlers.DecryptAsync`）接上依副檔名分派讀取 `.locked`／`.flocked` 的邏輯，CLI 直接呼叫 `LockService`、繞過 `VaultProtocolHandlers` 這一層，當時沒有跟著改。已修正：`UnlockCommandAsync` 依副檔名分派呼叫 `service.DecryptAsync`（`.locked`）或 `service.DecryptFlockedFileAsync`（`.flocked`），跟 `VaultProtocolHandlers.DecryptAsync` 既有的分派邏輯一致；找不到檔案的錯誤訊息也跟著依副檔名換成對應用詞（不再一律講「指標檔」）。
+- **CLI 使用體驗現代化**：對照主流 CLI 工具（git／docker／kubectl／gh）的既有慣例做的一輪全面翻新，全部維持向後相容：
+  - `-h`／`--help`、`--version`（讀 `installer_config.json` 的 `version` 欄位，開發環境找不到就顯示「開發版本」，不印假版本號）。
+  - `--dry-run`／`-n`（`--delete` 適用，只預覽會刪什麼，不會真的執行）、`--yes` 短別名 `-y`。
+  - `--output`／`-o <text|json>`：`json` 模式下 `list`／`encrypt`／`unlock`／`unlock-recovery`／`delete` 都印一份結構化 JSON 到 stdout，其餘資訊性文字（Vault 位置、進度提示、互動提示）改印到 stderr，stdout 保持乾淨單一的 JSON 文件，方便腳本直接 parse；`list` 的 JSON 輸出刻意只投影安全欄位，不直接序列化 `LockedItemMetadata`（那個型別帶著 Salt／密碼雜湊等密碼學內部細節）。
+  - 子命令化：`encrypt`／`unlock`／`unlock-recovery`／`list`／`delete`（不帶開頭 `--`）是現在推薦的新寫法，跟主流工具的「動詞當子命令」慣例看齊；舊的 `--encrypt` 等旗標寫法完整保留、行為完全不變，用到時印一行過時提醒到 stderr，不強制、不設移除時間表（`CliCommandNormalizer` 負責雙向換算＋標記，`CliArgumentParserTests` 涵蓋兩種寫法）。
+  - `FileLocker.Cli completion <bash|zsh|pwsh>` 印出對應 shell 的自動完成腳本（`CliShellCompletion`，靜態子命令／旗標補全，不做動態的 UUID／路徑補全）——這個指令跟 `-h`／`--version` 一樣不需要碰 Vault，刻意放在 Vault 路徑設定之前處理，避免「Vault location: ...」那行 banner 混進要拿去 `source` 的腳本輸出裡（曾經發生過，已修正）。
+  - 成功／失敗訊息依終端機偵測（`Console.IsOutputRedirected`）決定要不要上色（綠／紅），尊重 `NO_COLOR`（https://no-color.org）環境變數；`encrypt`／`unlock` 執行中顯示忙碌旋轉指示器（不是進度百分比——`IProgress<double>` 這個參數全專案從來沒有任何地方真的呼叫過 `.Report(...)`，GUI 端的進度條其實是依檔案大小估算的動畫時間，不是真的加解密進度回報，CLI 這裡選擇誠實地只顯示「還在跑」，不假裝算得出精確度）。兩者都在 `--output json` 或輸出被導向檔案／管線時自動關閉，不會污染腳本要解析的內容。

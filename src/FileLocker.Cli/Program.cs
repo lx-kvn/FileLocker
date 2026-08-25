@@ -1,13 +1,149 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
+using System.Threading;
 using FileLocker.Cli;
 using FileLocker.Core;
 using FileLocker.Core.Models;
 using FileLocker.Core.Vault;
 
+// --lang 是全域旗標，連「沒帶任何指令、只印用法說明」這條路徑都要吃它（使用者可能只是想看
+// 英文版的用法說明），所以要在最開頭、任何指令分派之前就先抽出來、解析語言、設定好——下面
+// 所有 Console 輸出（含 PrintUsage）才能立刻套用正確的語言。抽取失敗（--lang 後面沒接值）
+// 屬於使用者輸入錯誤，跟下面既有的 CliArgumentException catch 共用同一套處理。
+CliOutputFormat outputFormat;
+try
+{
+    var (langFlag, outputFlag, remainingAfterGlobalFlags) = CliArgumentParser.ExtractGlobalFlags(args);
+    CliLocalization.SetLanguage(CliLocalization.ResolveLanguage(langFlag));
+    outputFormat = CliOutputFormatParser.Resolve(outputFlag);
+    args = remainingAfterGlobalFlags;
+}
+catch (CliArgumentException ex)
+{
+    // 這個時間點語言還沒解析成功，固定印中文——比起因為語言判斷本身失敗而整段吞掉不出聲，
+    // 印中文總比什麼都不印好，而且這種輸入錯誤本來就少見（--lang／--output 後面忘記接值）。
+    Console.WriteLine($"參數錯誤：{ex.Message}");
+    Environment.Exit(CliExitCode.UsageError);
+    return;
+}
+var jsonOutput = outputFormat == CliOutputFormat.Json;
+
+// --output json 模式下 stdout 只留給最終那一份 JSON 文件，其餘資訊性文字（Vault 位置、
+// 「加密中...」這類進度提示）改印到 stderr——腳本用 `| jq` 之類的工具接手 stdout 時，
+// 不會被這些人類可讀的雜訊污染，這是主流工具（docker/kubectl/gh 的 -o json）的既有慣例。
+TextWriter chatOut = jsonOutput ? Console.Error : Console.Out;
+var jsonSerializerOptions = new JsonSerializerOptions
+{
+    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    WriteIndented = true
+};
+
+// ---- 顏色／忙碌指示器：只在真的接到終端機時開啟，被導向檔案／管線或 --output json 時
+// 一律不開——ANSI 顏色碼跟 \r 覆寫游標這兩種手法混進被腳本解析的輸出裡都是污染，不是加分。
+// 尊重 NO_COLOR（https://no-color.org）這個跨工具通用的環境變數慣例，設定了就不上色，
+// 不是這個專案自創的規則。 ----
+var noColorEnv = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
+var stdoutIsTty = !noColorEnv && !Console.IsOutputRedirected;
+var stderrIsTty = !noColorEnv && !Console.IsErrorRedirected;
+var ansiEsc = "\u001b";
+string Green(string s) => stdoutIsTty ? $"{ansiEsc}[32m{s}{ansiEsc}[0m" : s;
+string Red(string s) => stdoutIsTty ? $"{ansiEsc}[31m{s}{ansiEsc}[0m" : s;
+string Yellow(string s) => stderrIsTty ? $"{ansiEsc}[33m{s}{ansiEsc}[0m" : s;
+
+var showSpinner = !jsonOutput && !Console.IsOutputRedirected;
+
+/// <summary>
+/// LockService.EncryptAsync／DecryptAsync 這類方法簽章上雖然收 IProgress&lt;double&gt;，但
+/// 全專案（含 GUI）從來沒有任何地方真的呼叫過 .Report(...)——那個參數是預留的死插座，GUI
+/// 端看起來會動的進度條其實是依檔案大小估算出來的動畫時間，不是真的加解密進度回報（見
+/// MainWindow.xaml.cs GetPathSizesAsync 上的既有說明）。與其在 CLI 這裡假裝算得出真正的
+/// 百分比，不如老實用一個「還在跑，不是當機」的忙碌旋轉指示器——不承諾任何虛假的精確度。
+/// 只在真的接到終端機、且不是 --output json 時才顯示，跑完（無論成功/失敗）用空白蓋掉那一行，
+/// 不會在 stdout 留下殘影字元。
+/// </summary>
+async Task<T> WithSpinnerAsync<T>(Func<Task<T>> operation, string label)
+{
+    if (!showSpinner)
+    {
+        return await operation();
+    }
+
+    using var cts = new CancellationTokenSource();
+    var spinnerTask = Task.Run(async () =>
+    {
+        char[] frames = ['|', '/', '-', '\\'];
+        var i = 0;
+        while (!cts.Token.IsCancellationRequested)
+        {
+            Console.Write($"\r{label} {frames[i % frames.Length]}");
+            i++;
+            try
+            {
+                await Task.Delay(120, cts.Token);
+            }
+            catch (TaskCanceledException)
+            {
+                // 正常收尾路徑（下面 finally 取消），不是錯誤。
+            }
+        }
+    });
+
+    try
+    {
+        return await operation();
+    }
+    finally
+    {
+        await cts.CancelAsync();
+        try { await spinnerTask; } catch (OperationCanceledException) { }
+        Console.Write($"\r{new string(' ', label.Length + 2)}\r");
+    }
+}
+
+// -h／--help／--version 是使用者找說明的第一反射動作（比「不帶任何參數」更直覺），放在
+// Vault 路徑設定之前處理——這兩個查詢不需要、也不該去建立 Vault 資料夾或碰任何檔案系統
+// 狀態，純粹印一行資訊就結束。掃全部 args（不限定 args[0]），跟 --lang 一樣不管出現在
+// 哪個位置都認得，例如 `--encrypt file.txt --help` 也會被接住優先處理。
+if (args.Any(a => a is "-h" or "--help"))
+{
+    PrintUsage();
+    return;
+}
+if (args.Any(a => a == "--version"))
+{
+    PrintVersion();
+    return;
+}
+
 if (args.Length < 1)
 {
     PrintUsage();
+    return;
+}
+
+// completion 也不需要碰 Vault——放在跟 -h/--version 同一層，趁 Vault 路徑還沒設定、
+// 「Vault location: ...」banner 還沒印出來之前就處理掉。這裡曾經漏掉這一步，導致
+// `FileLocker.Cli completion bash` 的 stdout 混進了那行 banner，使用者直接
+// `source <(FileLocker.Cli completion bash)` 會把 banner 那行文字當成指令執行、直接出錯——
+// 這是本輪加完 --output json 的 chatOut 機制後才浮現的既有坑，一併在這裡修掉。
+if (args[0] == "completion")
+{
+    if (args.Length < 2)
+    {
+        PrintUsage();
+        Environment.Exit(CliExitCode.UsageError);
+        return;
+    }
+    try
+    {
+        PrintCompletionScript(args[1]);
+    }
+    catch (CliArgumentException ex)
+    {
+        Console.Error.WriteLine(CliLocalization.T("argumentError", ex.Message));
+        Environment.Exit(CliExitCode.UsageError);
+    }
     return;
 }
 
@@ -21,7 +157,7 @@ if (string.IsNullOrWhiteSpace(vaultPath))
         "FileLocker", "Vault");
 }
 Directory.CreateDirectory(vaultPath);
-Console.WriteLine($"Vault 位置：{vaultPath}");
+chatOut.WriteLine(CliLocalization.T("vaultLocation", vaultPath));
 
 var vault = new VaultManager(vaultPath);
 var service = new LockService(vault);
@@ -31,7 +167,11 @@ var service = new LockService(vault);
 // 快取會立刻變成過時的殘影（實測：encrypt 完馬上在下一次呼叫 --list 完全看不到剛加密的項目）。
 // VaultManager.ScanAll() 每次直接掃 Vault 資料夾裡的 .meta.json，慢一點但保證即時正確，
 // 對一個「用完就結束」的行程來說這才是對的取捨。
-var command = args[0];
+// 子命令（encrypt/unlock/unlock-recovery/list/delete，不帶開頭的 --）是現在推薦的新語法，
+// 跟主流 CLI 工具（git/docker/kubectl/gh 的「動詞當子命令」慣例）看齊；舊的 --encrypt 這類
+// 「旗標當動詞」寫法繼續完整支援、行為完全不變，只在用到的當下印一行過時提醒到 stderr——
+// 不影響任何功能或結束碼，純粹是引導使用者換寫法，不強制、不設移除時間表。
+var command = NormalizeCommand(args[0]);
 
 try
 {
@@ -72,9 +212,22 @@ try
 }
 catch (CliArgumentException ex)
 {
-    Console.WriteLine($"參數錯誤：{ex.Message}");
+    Console.WriteLine(CliLocalization.T("argumentError", ex.Message));
     PrintUsage();
     Environment.Exit(CliExitCode.UsageError);
+}
+
+/// <summary>薄包裝：呼叫可測試的 CliCommandNormalizer，副作用（印過時提醒到 stderr）留在
+/// 這裡——Program.cs 本身不能被單元測試直接呼叫，但邏輯判斷（該不該正規化、該不該提醒）
+/// 已經抽進 CliCommandNormalizer，那邊有完整測試覆蓋。</summary>
+string NormalizeCommand(string raw)
+{
+    var (canonical, isLegacyForm, recommendedForm) = CliCommandNormalizer.Normalize(raw);
+    if (isLegacyForm && recommendedForm is not null)
+    {
+        Console.Error.WriteLine(Yellow(CliLocalization.T("deprecatedFlagStyleWarning", raw, recommendedForm)));
+    }
+    return canonical;
 }
 
 void RequireArgs(int minCount)
@@ -91,9 +244,18 @@ async Task EncryptCommandAsync(string[] targetPaths, CliOptions options)
     var missing = targetPaths.Where(p => !File.Exists(p) && !Directory.Exists(p)).ToList();
     if (missing.Count > 0)
     {
-        foreach (var path in missing)
+        if (jsonOutput)
         {
-            Console.WriteLine($"錯誤：找不到 {path}");
+            Console.WriteLine(JsonSerializer.Serialize(
+                missing.Select(path => new { path, success = false, errorCode = "SOURCE_NOT_FOUND", errorMessage = CliLocalization.T("notFound", path) }),
+                jsonSerializerOptions));
+        }
+        else
+        {
+            foreach (var path in missing)
+            {
+                Console.WriteLine(Red(CliLocalization.T("notFound", path)));
+            }
         }
         Environment.Exit(CliExitCode.PartialOrTotalFailure);
         return;
@@ -117,29 +279,29 @@ async Task EncryptCommandAsync(string[] targetPaths, CliOptions options)
     }
     else
     {
-        Console.Write("請輸入密碼：");
+        chatOut.Write(CliLocalization.T("enterPassword"));
         password = ReadPassword();
-        Console.Write("\n請再輸入一次密碼確認：");
+        chatOut.Write(CliLocalization.T("enterPasswordConfirm"));
         var confirmPassword = ReadPassword();
-        Console.WriteLine();
+        chatOut.WriteLine();
 
         if (password != confirmPassword)
         {
-            Console.WriteLine("兩次輸入的密碼不一致，取消加密。");
+            chatOut.WriteLine(CliLocalization.T("passwordMismatch"));
             Environment.Exit(CliExitCode.PartialOrTotalFailure);
             return;
         }
 
-        Console.Write("要順便產生恢復金鑰嗎？(y/N)：");
+        chatOut.Write(CliLocalization.T("generateRecoveryKeyPrompt"));
         enableRecoveryKey = (Console.ReadLine() ?? "").Trim().Equals("y", StringComparison.OrdinalIgnoreCase);
 
-        Console.Write("密碼提示（可留空，直接按 Enter）：");
+        chatOut.Write(CliLocalization.T("hintPrompt"));
         hint = Console.ReadLine();
     }
 
     if (string.IsNullOrEmpty(password))
     {
-        Console.WriteLine("密碼不能是空的，取消加密。");
+        chatOut.WriteLine(CliLocalization.T("passwordEmpty"));
         Environment.Exit(CliExitCode.PartialOrTotalFailure);
         return;
     }
@@ -150,42 +312,71 @@ async Task EncryptCommandAsync(string[] targetPaths, CliOptions options)
 
     // Passkey 刻意不在 CLI 提供——WinRT KeyCredentialManager 會跳出 Windows Hello 系統 UI，
     // 這是無 GUI 環境的存在意義相衝突的功能，之後如果要支援也應該是另一個獨立指令，不是這裡硬塞。
-    Console.WriteLine("加密中...");
+    chatOut.WriteLine(CliLocalization.T("encrypting"));
     var successCount = 0;
+    var jsonResults = new List<object>();
     foreach (var targetPath in targetPaths)
     {
-        var result = await service.EncryptAsync(
-            targetPath, password, string.IsNullOrWhiteSpace(hint) ? null : hint,
-            enablePasskey: false, ownerWindowHandle: IntPtr.Zero,
-            enableRecoveryKey: enableRecoveryKey, batchId: batchId,
-            storageMode: options.StandaloneEnabled ? StorageMode.Standalone : StorageMode.Vault,
-            destinationDir: options.DestinationDir);
+        var result = await WithSpinnerAsync(
+            () => service.EncryptAsync(
+                targetPath, password, string.IsNullOrWhiteSpace(hint) ? null : hint,
+                enablePasskey: false, ownerWindowHandle: IntPtr.Zero,
+                enableRecoveryKey: enableRecoveryKey, batchId: batchId,
+                storageMode: options.StandaloneEnabled ? StorageMode.Standalone : StorageMode.Vault,
+                destinationDir: options.DestinationDir),
+            CliLocalization.T("encrypting") + " " + Path.GetFileName(targetPath));
 
         if (result.Success)
         {
             successCount++;
-            Console.WriteLine($"加密成功：{targetPath}");
-            Console.WriteLine($"  UUID：{result.Uuid}");
+        }
+
+        if (jsonOutput)
+        {
             // Standalone 模式沒有 .locked 指標檔，LockResult.LockedMarkerPath 這個欄位借用來裝
-            // 實際落腳的 .flocked 檔案路徑（見 LockService.CommitStandaloneEncryptAsync），
-            // 顯示文字要跟著改，不然使用者會誤以為那還是一份指標檔。
-            var locationLabel = options.StandaloneEnabled ? "獨立密文（.flocked）位置" : "指標檔位置";
-            Console.WriteLine($"  {locationLabel}：{result.LockedMarkerPath}");
+            // 實際落腳的 .flocked 檔案路徑（見 LockService.CommitStandaloneEncryptAsync）——
+            // JSON 輸出額外用 storageMode 欄位讓腳本自己判斷該把 location 當指標檔還是密文檔看待，
+            // 不像文字模式那樣只能靠切換過的標籤文字表達。
+            // 兩個分支刻意產生完全一樣的欄位集合（成功時 errorCode/errorMessage 是 null，失敗時
+            // uuid/storageMode/location/recoveryKey 是 null），不是各自只列自己用得到的欄位——
+            // 讓陣列裡每個元素的 JSON 形狀一致，腳本不用先判斷 success 才知道該找哪些鍵。
+            jsonResults.Add(new
+            {
+                path = targetPath,
+                success = result.Success,
+                uuid = result.Success ? result.Uuid : null,
+                storageMode = result.Success ? (options.StandaloneEnabled ? "Standalone" : "Vault") : null,
+                location = result.Success ? result.LockedMarkerPath : null,
+                recoveryKey = result.Success && !string.IsNullOrEmpty(result.RecoveryKey) ? result.RecoveryKey : null,
+                errorCode = result.Success ? null : result.ErrorCode,
+                errorMessage = result.Success ? null : CliLocalization.TranslateError(result.ErrorCode, result.ErrorDetail, result.ErrorMessage ?? ""),
+            });
+        }
+        else if (result.Success)
+        {
+            Console.WriteLine(Green(CliLocalization.T("encryptSuccess", targetPath)));
+            Console.WriteLine(CliLocalization.T("uuidLabel", result.Uuid));
+            var locationKey = options.StandaloneEnabled ? "flockedLocationLabel" : "markerLocationLabel";
+            Console.WriteLine(CliLocalization.T(locationKey, result.LockedMarkerPath));
             if (!string.IsNullOrEmpty(result.RecoveryKey))
             {
-                Console.WriteLine($"  恢復金鑰（請妥善保存，不會再顯示第二次）：{result.RecoveryKey}");
+                Console.WriteLine(CliLocalization.T("recoveryKeyLabel", result.RecoveryKey));
             }
         }
         else
         {
-            Console.WriteLine($"加密失敗：{targetPath}");
-            Console.WriteLine($"  {result.ErrorMessage}");
+            Console.WriteLine(Red(CliLocalization.T("encryptFailed", targetPath)));
+            Console.WriteLine($"  {CliLocalization.TranslateError(result.ErrorCode, result.ErrorDetail, result.ErrorMessage ?? "")}");
         }
     }
 
-    if (targetPaths.Length > 1)
+    if (jsonOutput)
     {
-        Console.WriteLine($"完成：{successCount} 筆成功、{targetPaths.Length - successCount} 筆失敗。");
+        Console.WriteLine(JsonSerializer.Serialize(jsonResults, jsonSerializerOptions));
+    }
+    else if (targetPaths.Length > 1)
+    {
+        Console.WriteLine(CliLocalization.T("batchSummary", successCount, targetPaths.Length - successCount));
     }
 
     Environment.Exit(CliExitCode.ForBatch(successCount, targetPaths.Length));
@@ -196,9 +387,28 @@ async Task UnlockCommandAsync(string[] markerPaths, CliOptions options)
     var missing = markerPaths.Where(p => !File.Exists(p)).ToList();
     if (missing.Count > 0)
     {
-        foreach (var path in missing)
+        if (jsonOutput)
         {
-            Console.WriteLine($"錯誤：找不到指標檔 {path}");
+            Console.WriteLine(JsonSerializer.Serialize(
+                missing.Select(path => new
+                {
+                    path, success = false, restoredPath = (string?)null,
+                    errorCode = string.Equals(Path.GetExtension(path), ".flocked", StringComparison.OrdinalIgnoreCase) ? "FLOCKED_NOT_FOUND" : "MARKER_NOT_FOUND",
+                    errorMessage = CliLocalization.T(string.Equals(Path.GetExtension(path), ".flocked", StringComparison.OrdinalIgnoreCase) ? "flockedFileNotFound" : "markerNotFound", path),
+                }),
+                jsonSerializerOptions));
+        }
+        else
+        {
+            foreach (var path in missing)
+            {
+                // .flocked 本身就是密文檔（不是「指標檔」），找不到的訊息用詞要跟著換，不然
+                // 使用者會被「指標檔」這個詞誤導，以為自己選錯了檔案類型。
+                var key = string.Equals(Path.GetExtension(path), ".flocked", StringComparison.OrdinalIgnoreCase)
+                    ? "flockedFileNotFound"
+                    : "markerNotFound";
+                Console.WriteLine(Red(CliLocalization.T(key, path)));
+            }
         }
         Environment.Exit(CliExitCode.PartialOrTotalFailure);
         return;
@@ -212,32 +422,59 @@ async Task UnlockCommandAsync(string[] markerPaths, CliOptions options)
     }
     else
     {
-        Console.Write("請輸入密碼：");
+        chatOut.Write(CliLocalization.T("enterPassword"));
         password = ReadPassword();
-        Console.WriteLine();
+        chatOut.WriteLine();
     }
 
-    Console.WriteLine("解密中...");
+    chatOut.WriteLine(CliLocalization.T("decrypting"));
     var successCount = 0;
+    var jsonResults = new List<object>();
     foreach (var markerPath in markerPaths)
     {
-        if (markerPaths.Length > 1)
+        if (markerPaths.Length > 1 && !jsonOutput)
         {
             Console.WriteLine(markerPath);
         }
 
-        var result = await service.DecryptAsync(markerPath, password);
+        // 依副檔名分派：跟 VaultProtocolHandlers.DecryptAsync（GUI「解密」頁籤手動選檔案的
+        // 入口）同一套判斷——CLI 直接呼叫 LockService、繞過 VaultProtocolHandlers 這一層，
+        // 沒有共用到那邊既有的分派邏輯，之前漏了這個分支，.flocked 檔案跑 --unlock 會被誤判
+        // 成「找不到或無法解析這個 .locked 檔案」，即使密碼正確、檔案完全正常。
+        var result = await WithSpinnerAsync(
+            () => string.Equals(Path.GetExtension(markerPath), ".flocked", StringComparison.OrdinalIgnoreCase)
+                ? service.DecryptFlockedFileAsync(markerPath, password)
+                : service.DecryptAsync(markerPath, password),
+            CliLocalization.T("decrypting") + " " + Path.GetFileName(markerPath));
         if (result.Success)
         {
             successCount++;
         }
 
-        PrintUnlockResult(result);
+        if (jsonOutput)
+        {
+            jsonResults.Add(new
+            {
+                path = markerPath,
+                success = result.Success,
+                restoredPath = result.Success ? result.RestoredPath : null,
+                errorCode = result.Success ? null : result.ErrorCode,
+                errorMessage = result.Success ? null : CliLocalization.TranslateError(result.ErrorCode, result.ErrorDetail, result.ErrorMessage ?? ""),
+            });
+        }
+        else
+        {
+            PrintUnlockResult(result);
+        }
     }
 
-    if (markerPaths.Length > 1)
+    if (jsonOutput)
     {
-        Console.WriteLine($"完成：{successCount} 筆成功、{markerPaths.Length - successCount} 筆失敗。");
+        Console.WriteLine(JsonSerializer.Serialize(jsonResults, jsonSerializerOptions));
+    }
+    else if (markerPaths.Length > 1)
+    {
+        Console.WriteLine(CliLocalization.T("batchSummary", successCount, markerPaths.Length - successCount));
     }
 
     Environment.Exit(CliExitCode.ForBatch(successCount, markerPaths.Length));
@@ -245,10 +482,26 @@ async Task UnlockCommandAsync(string[] markerPaths, CliOptions options)
 
 async Task UnlockByRecoveryKeyCommandAsync(string uuid, string recoveryKey, string? destinationDir)
 {
-    Console.WriteLine("解密中...");
-    var result = await service.DecryptByRecoveryKeyAsync(uuid, recoveryKey, destinationDir);
+    chatOut.WriteLine(CliLocalization.T("decrypting"));
+    var result = await WithSpinnerAsync(
+        () => service.DecryptByRecoveryKeyAsync(uuid, recoveryKey, destinationDir),
+        CliLocalization.T("decrypting"));
 
-    PrintUnlockResult(result);
+    if (jsonOutput)
+    {
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            uuid,
+            success = result.Success,
+            restoredPath = result.Success ? result.RestoredPath : null,
+            errorCode = result.Success ? null : result.ErrorCode,
+            errorMessage = result.Success ? null : CliLocalization.TranslateError(result.ErrorCode, result.ErrorDetail, result.ErrorMessage ?? ""),
+        }, jsonSerializerOptions));
+    }
+    else
+    {
+        PrintUnlockResult(result);
+    }
 
     Environment.Exit(result.Success ? CliExitCode.Success : CliExitCode.PartialOrTotalFailure);
 }
@@ -257,33 +510,64 @@ void PrintUnlockResult(UnlockResult result)
 {
     if (result.Success)
     {
-        Console.WriteLine("解密成功！");
-        Console.WriteLine($"  已還原至：{result.RestoredPath}");
+        Console.WriteLine(Green(CliLocalization.T("decryptSuccess")));
+        Console.WriteLine(CliLocalization.T("restoredToLabel", result.RestoredPath));
     }
     else
     {
-        Console.WriteLine($"解密失敗：{result.ErrorMessage}");
+        Console.WriteLine(Red(CliLocalization.T("decryptFailed",
+            CliLocalization.TranslateError(result.ErrorCode, result.ErrorDetail, result.ErrorMessage ?? ""))));
     }
 }
 
 void ListCommand()
 {
     var entries = vault.ScanAll().ToList();
+
+    if (jsonOutput)
+    {
+        // 只投影使用者/腳本用得到的欄位，不是把整個 LockedItemMetadata 直接序列化出去——
+        // 那個型別上還帶著 Salt／PasswordVerificationHash／Argon2 參數這些密碼學內部細節，
+        // 不該透過 --list 的輸出外流，跟 GUI 端 VaultListItemResponse 刻意只挑欄位投影
+        // 給前端的理由一樣。
+        Console.WriteLine(JsonSerializer.Serialize(
+            entries.Select(entry => new
+            {
+                uuid = entry.Uuid,
+                type = entry.Type.ToString(),
+                originalName = entry.OriginalName,
+                originalPath = entry.OriginalPath,
+                storageMode = entry.StorageMode.ToString(),
+                sizeBytes = entry.OriginalSizeBytes,
+                createdAtUtc = entry.CreatedAtUtc,
+                passkeyEnabled = entry.PasskeyEnabled,
+                recoveryKeyEnabled = entry.RecoveryKeyEnabled,
+                nestedLockUuids = entry.ContainsNestedLocks,
+            }),
+            jsonSerializerOptions));
+        return;
+    }
+
     if (entries.Count == 0)
     {
-        Console.WriteLine("Vault 目前是空的。");
+        Console.WriteLine(CliLocalization.T("vaultEmpty"));
         return;
     }
 
     foreach (var entry in entries)
     {
         Console.WriteLine($"{entry.Uuid}  [{entry.Type}]  {entry.OriginalName}");
-        Console.WriteLine($"    原始路徑：{entry.OriginalPath}");
-        Console.WriteLine($"    大小：{FormatSize(entry.OriginalSizeBytes)}  " +
-            $"建立時間：{entry.CreatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)}");
-        Console.WriteLine($"    Passkey：{(entry.PasskeyEnabled ? "是" : "否")}  " +
-            $"恢復金鑰：{(entry.RecoveryKeyEnabled ? "是" : "否")}" +
-            (entry.ContainsNestedLocks.Count > 0 ? $"  內含 {entry.ContainsNestedLocks.Count} 個巢狀加密項目" : ""));
+        Console.WriteLine(CliLocalization.T("originalPathLabel", entry.OriginalPath));
+        Console.WriteLine(CliLocalization.T("sizeCreatedLabel",
+            FormatSize(entry.OriginalSizeBytes),
+            entry.CreatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)));
+        var nestedSuffix = entry.ContainsNestedLocks.Count > 0
+            ? CliLocalization.T("nestedLockSuffix", entry.ContainsNestedLocks.Count)
+            : "";
+        Console.WriteLine(CliLocalization.T("passkeyRecoveryLabel",
+            entry.PasskeyEnabled ? CliLocalization.T("yes") : CliLocalization.T("no"),
+            entry.RecoveryKeyEnabled ? CliLocalization.T("yes") : CliLocalization.T("no"),
+            nestedSuffix));
         Console.WriteLine();
     }
 }
@@ -303,31 +587,62 @@ string FormatSize(long bytes)
 
 async Task DeleteCommandAsync(string[] uuids, CliOptions options)
 {
+    // --dry-run／-n：只預覽會刪掉哪些項目，不真的呼叫 TryDeleteRecordAsync，也不需要使用者
+    // 確認（本來就沒有任何動作會發生）——比照 rsync -n／make -n 的既有慣例，永久刪除這種
+    // 不可逆動作特別需要這種「先看會發生什麼事，再決定要不要真的下手」的預覽路徑。
+    if (options.DryRunEnabled)
+    {
+        if (jsonOutput)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(
+                uuids.Select(uuid =>
+                {
+                    var metadata = vault.LoadMetadata(uuid);
+                    return new { uuid, wouldDelete = metadata is not null, originalName = metadata?.OriginalName };
+                }),
+                jsonSerializerOptions));
+        }
+        else
+        {
+            Console.WriteLine(CliLocalization.T("dryRunHeader"));
+            foreach (var uuid in uuids)
+            {
+                var metadata = vault.LoadMetadata(uuid);
+                Console.WriteLine(metadata is null
+                    ? CliLocalization.T("recordNotFoundForUuid", uuid)
+                    : CliLocalization.T("dryRunWouldDelete", uuid, metadata.OriginalName));
+            }
+        }
+        Environment.Exit(CliExitCode.Success);
+        return;
+    }
+
     if (!options.SkipConfirmation)
     {
         if (uuids.Length > 1)
         {
-            Console.WriteLine("確定要永久刪除以下項目嗎？此動作無法復原：");
+            chatOut.WriteLine(CliLocalization.T("deleteConfirmMultiple"));
             foreach (var id in uuids)
             {
-                Console.WriteLine($"  {id}");
+                chatOut.WriteLine($"  {id}");
             }
-            Console.Write("(y/N)：");
+            chatOut.Write(CliLocalization.T("yesNoPrompt"));
         }
         else
         {
-            Console.Write($"確定要永久刪除 {uuids[0]} 嗎？此動作無法復原 (y/N)：");
+            chatOut.Write(CliLocalization.T("deleteConfirmSingle", uuids[0]));
         }
         var confirm = (Console.ReadLine() ?? "").Trim();
         if (!confirm.Equals("y", StringComparison.OrdinalIgnoreCase))
         {
-            Console.WriteLine("已取消。");
+            chatOut.WriteLine(CliLocalization.T("cancelled"));
             Environment.Exit(CliExitCode.Cancelled);
             return;
         }
     }
 
     var successCount = 0;
+    var jsonResults = new List<object>();
     foreach (var uuid in uuids)
     {
         var result = await service.TryDeleteRecordAsync(uuid);
@@ -336,18 +651,46 @@ async Task DeleteCommandAsync(string[] uuids, CliOptions options)
         // 沒有「快取殘留孤兒紀錄」這個問題可言——RecordNotFound 這裡就是單純的「查無此 uuid」。
         if (!result.Success && result.ErrorCode == ErrorCodes.RecordNotFound)
         {
-            Console.WriteLine($"找不到 UUID 為 {uuid} 的加密紀錄。");
+            if (jsonOutput)
+            {
+                jsonResults.Add(new
+                {
+                    uuid, success = false, errorCode = ErrorCodes.RecordNotFound,
+                    errorMessage = CliLocalization.TranslateError(ErrorCodes.RecordNotFound, null, CliLocalization.T("recordNotFoundForUuid", uuid)),
+                    blockedByNestedLocks = false, nestedUuids = (IReadOnlyList<string>?)null,
+                });
+            }
+            else
+            {
+                Console.WriteLine(Red(CliLocalization.T("recordNotFoundForUuid", uuid)));
+            }
             continue;
         }
 
         if (result.Success)
         {
             successCount++;
-            Console.WriteLine($"刪除成功：{uuid}");
+        }
+
+        if (jsonOutput)
+        {
+            jsonResults.Add(new
+            {
+                uuid,
+                success = result.Success,
+                errorCode = result.Success ? null : result.ErrorCode,
+                errorMessage = result.Success ? null : CliLocalization.TranslateError(result.ErrorCode, null, result.ErrorMessage ?? ""),
+                blockedByNestedLocks = result.BlockedByNestedLocks,
+                nestedUuids = result.BlockedByNestedLocks ? result.NestedUuids : null,
+            });
+        }
+        else if (result.Success)
+        {
+            Console.WriteLine(Green(CliLocalization.T("deleteSuccess", uuid)));
         }
         else if (result.BlockedByNestedLocks)
         {
-            Console.WriteLine($"刪除失敗：{uuid}（資料夾內還有巢狀加密項目，請先個別處理）：");
+            Console.WriteLine(Red(CliLocalization.T("deleteFailedNested", uuid)));
             foreach (var nestedUuid in result.NestedUuids ?? [])
             {
                 Console.WriteLine($"  {nestedUuid}");
@@ -355,14 +698,18 @@ async Task DeleteCommandAsync(string[] uuids, CliOptions options)
         }
         else
         {
-            Console.WriteLine($"刪除失敗：{uuid}");
-            Console.WriteLine($"  {result.ErrorMessage}");
+            Console.WriteLine(Red(CliLocalization.T("deleteFailed", uuid)));
+            Console.WriteLine($"  {CliLocalization.TranslateError(result.ErrorCode, null, result.ErrorMessage ?? "")}");
         }
     }
 
-    if (uuids.Length > 1)
+    if (jsonOutput)
     {
-        Console.WriteLine($"完成：{successCount} 筆成功、{uuids.Length - successCount} 筆失敗。");
+        Console.WriteLine(JsonSerializer.Serialize(jsonResults, jsonSerializerOptions));
+    }
+    else if (uuids.Length > 1)
+    {
+        Console.WriteLine(CliLocalization.T("batchSummary", successCount, uuids.Length - successCount));
     }
 
     Environment.Exit(CliExitCode.ForBatch(successCount, uuids.Length));
@@ -414,26 +761,83 @@ string ReadPasswordFromFlag(CliOptions options)
         ? Console.In.ReadLine() ?? ""
         : File.ReadLines(options.PasswordFilePath!).FirstOrDefault() ?? "";
 
+void PrintCompletionScript(string shell)
+{
+    Console.WriteLine(CliShellCompletion.Generate(shell));
+}
+
+void PrintVersion()
+{
+    Console.WriteLine(CliLocalization.T("versionLabel", ReadVersion()));
+}
+
+/// <summary>
+/// 跟 MainWindow.ReadInstalledVersion() 同一份資料來源（installer_config.json 的 "version"
+/// 欄位），但路徑要多試一層——那個檔案放在安裝根目錄，CLI 本體在往下一層的 cli/ 子資料夾
+/// （見技術規格文件 §19「CLI 打包」），AppContext.BaseDirectory 對 CLI 來說已經是 cli/ 這層，
+/// 直接沿用 GUI 那份邏輯的相對路徑會找不到檔案。開發環境用 dotnet run 執行時兩個位置都不會
+/// 有這個檔案，這是正常情況（不是安裝出來的），退回「開發版本」字樣，不是拋例外或印一個
+/// 容易誤導使用者的假版本號。
+/// </summary>
+string ReadVersion()
+{
+    string[] candidates =
+    [
+        Path.Combine(AppContext.BaseDirectory, "installer_config.json"),
+        Path.Combine(AppContext.BaseDirectory, "..", "installer_config.json"),
+    ];
+
+    foreach (var path in candidates)
+    {
+        if (!File.Exists(path))
+        {
+            continue;
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            if (doc.RootElement.TryGetProperty("version", out var versionProp) && versionProp.GetString() is { } version)
+            {
+                return version;
+            }
+        }
+        catch (JsonException)
+        {
+            // 損毀的設定檔跟「檔案不存在」用同一套退回行為，不特別區分——這裡只是想顯示
+            // 版本號，不是安裝完整性檢查，沒必要為了這個目的另外設計錯誤回報。
+        }
+    }
+
+    return CliLocalization.T("versionDev");
+}
+
 void PrintUsage()
 {
-    Console.WriteLine("用法：");
-    Console.WriteLine("  FileLocker.Cli --encrypt <檔案或資料夾路徑> [路徑2 ...]");
-    Console.WriteLine("  FileLocker.Cli --unlock <.locked 檔案路徑> [路徑2 ...]");
-    Console.WriteLine("  FileLocker.Cli --unlock-recovery <uuid> <恢復金鑰> [還原目的地資料夾]");
-    Console.WriteLine("  FileLocker.Cli --list");
-    Console.WriteLine("  FileLocker.Cli --delete <uuid> [uuid2 ...]");
+    Console.WriteLine(CliLocalization.T("usageHeader"));
+    Console.WriteLine(CliLocalization.T("usageEncrypt"));
+    Console.WriteLine(CliLocalization.T("usageUnlock"));
+    Console.WriteLine(CliLocalization.T("usageUnlockRecovery"));
+    Console.WriteLine(CliLocalization.T("usageList"));
+    Console.WriteLine(CliLocalization.T("usageDelete"));
+    Console.WriteLine(CliLocalization.T("usageCompletion"));
     Console.WriteLine();
-    Console.WriteLine("--encrypt／--unlock／--delete 都支援一次傳多個路徑或 uuid：密碼（或刪除確認）只問一次，套用到所有項目，個別項目的成功/失敗各自列出。");
-    Console.WriteLine("環境變數 FILELOCKER_VAULT_PATH 可以覆寫預設 Vault 位置（未設定時跟主程式共用同一個預設路徑）。");
+    Console.WriteLine(CliLocalization.T("usageLegacyFlagNote"));
+    Console.WriteLine(CliLocalization.T("usageBatchNote"));
+    Console.WriteLine(CliLocalization.T("usageVaultPathNote"));
+    Console.WriteLine(CliLocalization.T("usageLangNote"));
+    Console.WriteLine(CliLocalization.T("usageOutputNote"));
     Console.WriteLine();
-    Console.WriteLine("靜默批次模式（供腳本使用，不會有任何互動提示）：");
-    Console.WriteLine("  --password-stdin          從標準輸入讀一行當密碼（--encrypt／--unlock 適用，出現即觸發非互動模式）");
-    Console.WriteLine("  --password-file <路徑>     從檔案第一行讀密碼（跟 --password-stdin 互斥，只能擇一）");
-    Console.WriteLine("  --recovery-key             非互動模式下順便產生恢復金鑰（--encrypt 適用，預設不產生）");
-    Console.WriteLine("  --hint <文字>              非互動模式下設定密碼提示（--encrypt 適用，預設留空）");
-    Console.WriteLine("  --yes                      跳過 --delete 的確認提示，直接刪除");
-    Console.WriteLine("  --standalone               獨立加密：加密結果不進 Vault，產生可獨立攜帶的 .flocked 檔（--encrypt 適用）");
-    Console.WriteLine("  --destination <資料夾>      搭配 --standalone，指定 .flocked 檔要存到哪個資料夾（不指定就原地取代原始檔案）");
+    Console.WriteLine(CliLocalization.T("usageSilentModeHeader"));
+    Console.WriteLine(CliLocalization.T("usagePasswordStdin"));
+    Console.WriteLine(CliLocalization.T("usagePasswordFile"));
+    Console.WriteLine(CliLocalization.T("usageRecoveryKey"));
+    Console.WriteLine(CliLocalization.T("usageHint"));
+    Console.WriteLine(CliLocalization.T("usageYes"));
+    Console.WriteLine(CliLocalization.T("usageDryRun"));
+    Console.WriteLine(CliLocalization.T("usageStandalone"));
+    Console.WriteLine(CliLocalization.T("usageDestination"));
+    Console.WriteLine(CliLocalization.T("usageHelp"));
+    Console.WriteLine(CliLocalization.T("usageVersion"));
     Console.WriteLine();
-    Console.WriteLine("結束碼：0 = 全部成功，1 = 參數錯誤，2 = 批次中至少一筆失敗，3 = 使用者/腳本取消（例如 --delete 沒帶 --yes 又回答非 y）。");
+    Console.WriteLine(CliLocalization.T("usageExitCodes"));
 }

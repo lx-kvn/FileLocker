@@ -117,4 +117,183 @@ public class CliArgumentParserTests
         Assert.Throws<CliArgumentException>(() =>
             CliArgumentParser.Parse(["file.txt", "--destination", "D:\\out"]));
     }
+
+    // ---- --lang 是全域旗標（CLI 英文化），不像 --hint/--recovery-key 那樣限定某個指令才有意義——
+    // 連沒帶任何指令時印出的 PrintUsage() 都要吃它，所以不能用上面 Parse()（只解析某個指令
+    // 之後的參數區段）處理，改成從最原始、完整的 args 陣列一次性抽掉，抽完剩下的 args 才交給
+    // 既有的指令分派／Parse() 邏輯，兩者互不影響。 ----
+
+    [Fact]
+    public void ExtractGlobalFlags_LangFlagAtStart_ExtractsValueAndRemovesFromRemaining()
+    {
+        var (lang, _, remaining) = CliArgumentParser.ExtractGlobalFlags(["--lang", "en", "--encrypt", "file.txt"]);
+
+        Assert.Equal("en", lang);
+        Assert.Equal(["--encrypt", "file.txt"], remaining);
+    }
+
+    [Fact]
+    public void ExtractGlobalFlags_LangFlagInMiddle_ExtractsValueRegardlessOfPosition()
+    {
+        var (lang, _, remaining) = CliArgumentParser.ExtractGlobalFlags(["--encrypt", "file.txt", "--lang", "zh-TW"]);
+
+        Assert.Equal("zh-TW", lang);
+        Assert.Equal(["--encrypt", "file.txt"], remaining);
+    }
+
+    [Fact]
+    public void ExtractGlobalFlags_NoLangFlag_ReturnsNullAndOriginalArgsUnchanged()
+    {
+        var (lang, _, remaining) = CliArgumentParser.ExtractGlobalFlags(["--encrypt", "file.txt"]);
+
+        Assert.Null(lang);
+        Assert.Equal(["--encrypt", "file.txt"], remaining);
+    }
+
+    [Fact]
+    public void ExtractGlobalFlags_LangFlagMissingValue_ThrowsUsageError()
+    {
+        Assert.Throws<CliArgumentException>(() => CliArgumentParser.ExtractGlobalFlags(["--lang"]));
+    }
+
+    [Fact]
+    public void ExtractGlobalFlags_EmptyArgs_ReturnsNullAndEmptyRemaining()
+    {
+        var (lang, _, remaining) = CliArgumentParser.ExtractGlobalFlags([]);
+
+        Assert.Null(lang);
+        Assert.Empty(remaining);
+    }
+
+    // ---- --output/-o（跟 --lang 一樣是全域旗標）：讓 --list/--encrypt/--unlock/--delete 可以
+    // 吐結構化 JSON，給腳本／自動化用，不用土法煉鋼剖析人類可讀輸出。 ----
+
+    [Fact]
+    public void ExtractGlobalFlags_OutputFlagAnywhere_ExtractsValue()
+    {
+        var (_, output, remaining) = CliArgumentParser.ExtractGlobalFlags(["--list", "--output", "json"]);
+
+        Assert.Equal("json", output);
+        Assert.Equal(["--list"], remaining);
+    }
+
+    [Fact]
+    public void ExtractGlobalFlags_OutputShortAlias_SameAsLongForm()
+    {
+        var (_, output, remaining) = CliArgumentParser.ExtractGlobalFlags(["-o", "json", "--list"]);
+
+        Assert.Equal("json", output);
+        Assert.Equal(["--list"], remaining);
+    }
+
+    [Fact]
+    public void ExtractGlobalFlags_NoOutputFlag_ReturnsNull()
+    {
+        var (_, output, _) = CliArgumentParser.ExtractGlobalFlags(["--list"]);
+        Assert.Null(output);
+    }
+
+    [Fact]
+    public void ExtractGlobalFlags_LangAndOutputTogether_BothExtracted()
+    {
+        var (lang, output, remaining) = CliArgumentParser.ExtractGlobalFlags(["--lang", "en", "--list", "-o", "json"]);
+
+        Assert.Equal("en", lang);
+        Assert.Equal("json", output);
+        Assert.Equal(["--list"], remaining);
+    }
+
+    [Fact]
+    public void ResolveOutputFormat_NullFlag_DefaultsToText()
+    {
+        Assert.Equal(CliOutputFormat.Text, CliOutputFormatParser.Resolve(null));
+    }
+
+    [Fact]
+    public void ResolveOutputFormat_Text_ReturnsText()
+    {
+        Assert.Equal(CliOutputFormat.Text, CliOutputFormatParser.Resolve("text"));
+    }
+
+    [Fact]
+    public void ResolveOutputFormat_Json_ReturnsJson()
+    {
+        Assert.Equal(CliOutputFormat.Json, CliOutputFormatParser.Resolve("json"));
+    }
+
+    [Fact]
+    public void ResolveOutputFormat_InvalidValue_ThrowsUsageError()
+    {
+        Assert.Throws<CliArgumentException>(() => CliOutputFormatParser.Resolve("xml"));
+    }
+
+    // ---- --dry-run（--delete 適用）跟短旗標別名：CLI 體驗改善的一部分，比照主流 CLI 工具
+    // （rsync/make 的 -n、apt/npm 的 -y）的既有慣例挑短旗標，不是自己發明。 ----
+
+    [Fact]
+    public void Parse_DryRunFlag_SetsDryRunEnabledTrue_DefaultIsFalse()
+    {
+        var (withFlag, _) = CliArgumentParser.Parse(["uuid1", "--dry-run"]);
+        var (withoutFlag, _) = CliArgumentParser.Parse(["uuid1"]);
+
+        Assert.True(withFlag.DryRunEnabled);
+        Assert.False(withoutFlag.DryRunEnabled);
+    }
+
+    [Fact]
+    public void Parse_DryRunShortAlias_SameAsLongForm()
+    {
+        var (options, _) = CliArgumentParser.Parse(["uuid1", "-n"]);
+        Assert.True(options.DryRunEnabled);
+    }
+
+    [Fact]
+    public void Parse_YesShortAlias_SameAsLongForm()
+    {
+        var (options, _) = CliArgumentParser.Parse(["uuid1", "-y"]);
+        Assert.True(options.SkipConfirmation);
+    }
+
+    // ---- 子命令（encrypt/unlock/...）跟舊的 --xxx 旗標寫法並存：新寫法是主推、舊寫法完整
+    // 支援但用到時要能標記出「這是舊寫法」讓呼叫端決定要不要印過時提醒。 ----
+
+    [Theory]
+    [InlineData("encrypt", "--encrypt")]
+    [InlineData("unlock", "--unlock")]
+    [InlineData("unlock-recovery", "--unlock-recovery")]
+    [InlineData("list", "--list")]
+    [InlineData("delete", "--delete")]
+    public void Normalize_NewSubcommandForm_MapsToLegacyFlagForm_NotFlaggedAsLegacy(string subcommand, string expectedCanonical)
+    {
+        var (canonical, isLegacyForm, recommendedForm) = CliCommandNormalizer.Normalize(subcommand);
+
+        Assert.Equal(expectedCanonical, canonical);
+        Assert.False(isLegacyForm);
+        Assert.Null(recommendedForm);
+    }
+
+    [Theory]
+    [InlineData("--encrypt", "encrypt")]
+    [InlineData("--unlock", "unlock")]
+    [InlineData("--unlock-recovery", "unlock-recovery")]
+    [InlineData("--list", "list")]
+    [InlineData("--delete", "delete")]
+    public void Normalize_OldFlagForm_PassesThroughUnchanged_ButFlaggedAsLegacyWithRecommendedForm(string legacyFlag, string expectedRecommendation)
+    {
+        var (canonical, isLegacyForm, recommendedForm) = CliCommandNormalizer.Normalize(legacyFlag);
+
+        Assert.Equal(legacyFlag, canonical);
+        Assert.True(isLegacyForm);
+        Assert.Equal(expectedRecommendation, recommendedForm);
+    }
+
+    [Fact]
+    public void Normalize_UnrecognizedCommand_PassesThroughUnchanged_NotFlaggedAsLegacy()
+    {
+        var (canonical, isLegacyForm, recommendedForm) = CliCommandNormalizer.Normalize("--totally-not-a-command");
+
+        Assert.Equal("--totally-not-a-command", canonical);
+        Assert.False(isLegacyForm);
+        Assert.Null(recommendedForm);
+    }
 }

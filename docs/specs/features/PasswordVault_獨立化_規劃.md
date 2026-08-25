@@ -6,7 +6,9 @@
 
 `密碼庫_功能規劃.md` 第 12 節原本把「獨立單機介面版本」列為明確擱置的構想。可選配部件架構（含第二階段自動安裝）落地之後，重新排入規劃，並在這輪 grilling 中決定：不是單純幫既有的 `FileLocker.PasswordLocker` 部件多做一份 UI 外殼，而是把整個密碼庫功能獨立成一個品牌、一個產品——**PasswordVault**，原始碼遷出到獨立 repo（見 [ADR-0003](../../adr/0003-passwordvault-separate-repo.md)）。
 
-FileLocker 本體跟 PasswordVault 的關係，从「FileLocker 的一個可選配部件」重新定位成「FileLocker 是 PasswordVault 的其中一個消費端」——FileLocker.App 要用密碼庫功能，一樣是下載 PasswordVault 的核心元件（見第 3 節），這件事本來就已經是既有架構，這輪不需要改動 FileLocker.App 這一側的下載/載入機制。
+FileLocker 本體跟 PasswordVault 的關係，从「FileLocker 的一個可選配部件」重新定位成「FileLocker 是 PasswordVault 的其中一個消費端」——FileLocker.App 要用密碼庫功能，一樣是下載編譯好的核心元件（見第 3 節）動態載入。
+
+**這輪規劃階段判斷錯誤，實作前更正**：原本認為「這件事本來就是既有架構，不需要改動 FileLocker.App 這一側的下載/載入機制」——實際檢視 `PasswordLockerModuleInstaller.cs` 才發現不成立：它目前寫死向 FileLocker 自己（`lx-kvn/FileLocker`）的 GitHub Release 尋找 `FileLocker.PasswordLocker.dll`，PasswordVault 遷出獨立 repo 之後，编譯產出已經改放在 `lx-kvn/PasswordVault` 的 Release、檔名也變成 `PasswordVault.Core.dll`——這兩邊完全對不上，FileLocker.App 這一側**確實需要改**（下載來源 repo、資產命名比對、部件檔名判斷三處都要跟著換），見第 10 節新增的實作規劃。
 
 ## 2. 命名與改名範圍
 
@@ -119,7 +121,12 @@ PasswordVault 內建 CLI（隨 `PasswordVault.exe` 一起發布、一起編號�
 
 ## 17. 尚待規劃的細節
 
-- **`packages/password-locker-ui` 套件骨架與 `App.vue` 實際拆分**：第 3 節這輪只定案了拆分方式（npm 套件、樣式/翻譯/IPC 的介面契約），套件本身的建置、把 `App.vue` 裡密碼庫相關程式碼實際抽出來、`PasswordVault.Web` 專案骨架，都還沒動工，留到下一輪。
+- **測試覆蓋不完整**：`PasswordVault` repo 目前只有 `tests/PasswordVault.Core.Tests`，`PasswordVault.App`（單一執行個體、Pipe Server、部件初始化等）與 `PasswordVault.Cli`（`--list`／`--get` 兩個指令）都還沒有對應的測試專案，比照 FileLocker 本體「一個 src 專案配一個 Tests 專案」的既有慣例是缺的。規劃：比照 `FileLocker.App.Tests`／`FileLocker.Cli.Tests` 的既有測試範疇（Mutex 搶前景、命令列參數解析、指令輸出格式）新增 `PasswordVault.App.Tests`／`PasswordVault.Cli.Tests` 兩個專案，且遵照 CLAUDE.md「先寫測試」的開發流程逐一補齊，不是一次全補、也不是先寫實作再回頭補測試（這兩個專案的產品邏輯本身已經存在，這裡是回頭補測試，不是新功能開發，跟「先規劃寫測試」的精神不衝突——测试针对既有、已定案的行為寫，不是先猜測試再讓實作遷就）。
+- **FileLocker 本體切換消費來源**：見本節開頭的更正說明——`PasswordLockerModuleInstaller.cs`／`PasswordLockerPluginLoader.cs`／`PasswordLockerNativeHostRegistrar.cs`／`App.xaml.cs` 這幾處目前寫死指向 FileLocker 自己的 GitHub Release 與 `FileLocker.PasswordLocker.*` 系列檔名，需要改成指向 `lx-kvn/PasswordVault` 的 Release 與 `PasswordVault.Core.dll`／`PasswordVault.NativeHost.exe`。需要另外決定的細節：
+  1. **`plugins/PasswordLocker/` 這個既有子資料夾名稱要不要跟著改名**——不改的話「PasswordVault」這個新品牌名稱跟舊資料夾名稱長期並存，容易讓人誤以為裝的還是舊版；改的話要處理「使用者原本已經裝了舊版 `FileLocker.PasswordLocker.dll`，資料夾名稱一換，舊部件會不會被誤判成『沒裝』」這個遷移期相容問題。
+  2. **資產命名比對邏輯**（`PasswordLockerAssetSelector`）要改成認得 `PasswordVault` repo 產出的 zip 命名規則，這份規則本身也要在 `PasswordVault` repo 那邊的打包流程先定案。
+  3. **Named Pipe 名稱／NativeHost 路徑**：`PasswordLockerNativePipeServer.PipeName`（`"FileLocker-PasswordLocker-Pipe"`）與 `App.xaml.cs` 寫死的 `FileLocker.PasswordLockerNativeHost.exe` 路徑，要跟第 8 節「兩邊搶同一條 Named Pipe」的共存設計對上——目前第 8 節描述的是 `FileLocker.App` 與 `PasswordVault.exe` 各自使用****自己的**** Pipe／NativeHost，這裡若要讓 FileLocker.App 改成直接載入 PasswordVault 编譯產出的部件，需要重新確認这個部件版本用的 Pipe 名稱是否跟第 8 節設計的獨立版一致，避免兩份文件對「Pipe 名稱該是什麼」各自表述。
+  這一步涉及修改 FileLocker repo 本體程式碼（不是 PasswordVault repo），且需要 `PasswordVault` repo 先把打包／發布流程定案到可以穩定產出資產命名規則之後才能真正動工，目前只完成規劃、尚未實作。
 
 ## 已完成之待辦
 
@@ -127,6 +134,7 @@ PasswordVault 內建 CLI（隨 `PasswordVault.exe` 一起發布、一起編號�
 - `mac-style-windows-installer` 設定檔的實際欄位：已完成，見 `PasswordVault` repo 的 `installer/passwordvault_installer.json`，`no_admin_install` 模式、雙語 EULA、實測打包成功。
 - CLI 指令集的實際語法：已定案並實作——`PasswordVault.Cli` 提供 `--list`／`--get` 兩個指令，只支援互動式輸入主密碼。
 - 前端拆分的實際方式：已定案，見第 3 節與 ADR-0004。
+- **`packages/password-locker-ui` 套件骨架與 `App.vue` 實際拆分**：已完成——密碼庫主畫面已從 `FileLocker.Web` 的 `App.vue` 搬進共用套件 `PasswordLockerPage.vue`，`PasswordVault.Web` 專案骨架已建立，`PasswordVault.exe` 已接上 WebView2 顯示真實密碼庫畫面。
 
 ## 18. 已知會延後或不做的事
 

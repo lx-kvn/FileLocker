@@ -119,14 +119,32 @@ PasswordVault 內建 CLI（隨 `PasswordVault.exe` 一起發布、一起編號�
 
 擴充功能 popup／content-script 目前顯示的「FileLocker 密碼庫」等字樣，遷移後直接改稱「PasswordVault」，不保留 FileLocker 名稱過渡——跟第 2 節命名策略一致（品牌層級徹底改名，不做雙名並存），逐字文案（各處確切字串）留待實作時對照既有的 `zh-TW`／`en` locale 檔案逐一替換，這份文件不重複列出每一個字串。
 
-## 17. 尚待規劃的細節
+## 17. 尚待規劃的細節（2026-08-26 grilling 定案，尚未實作）
 
-- **測試覆蓋不完整**：`PasswordVault` repo 目前只有 `tests/PasswordVault.Core.Tests`，`PasswordVault.App`（單一執行個體、Pipe Server、部件初始化等）與 `PasswordVault.Cli`（`--list`／`--get` 兩個指令）都還沒有對應的測試專案，比照 FileLocker 本體「一個 src 專案配一個 Tests 專案」的既有慣例是缺的。規劃：比照 `FileLocker.App.Tests`／`FileLocker.Cli.Tests` 的既有測試範疇（Mutex 搶前景、命令列參數解析、指令輸出格式）新增 `PasswordVault.App.Tests`／`PasswordVault.Cli.Tests` 兩個專案，且遵照 CLAUDE.md「先寫測試」的開發流程逐一補齊，不是一次全補、也不是先寫實作再回頭補測試（這兩個專案的產品邏輯本身已經存在，這裡是回頭補測試，不是新功能開發，跟「先規劃寫測試」的精神不衝突——测试针对既有、已定案的行為寫，不是先猜測試再讓實作遷就）。
-- **FileLocker 本體切換消費來源**：見本節開頭的更正說明——`PasswordLockerModuleInstaller.cs`／`PasswordLockerPluginLoader.cs`／`PasswordLockerNativeHostRegistrar.cs`／`App.xaml.cs` 這幾處目前寫死指向 FileLocker 自己的 GitHub Release 與 `FileLocker.PasswordLocker.*` 系列檔名，需要改成指向 `lx-kvn/PasswordVault` 的 Release 與 `PasswordVault.Core.dll`／`PasswordVault.NativeHost.exe`。需要另外決定的細節：
-  1. **`plugins/PasswordLocker/` 這個既有子資料夾名稱要不要跟著改名**——不改的話「PasswordVault」這個新品牌名稱跟舊資料夾名稱長期並存，容易讓人誤以為裝的還是舊版；改的話要處理「使用者原本已經裝了舊版 `FileLocker.PasswordLocker.dll`，資料夾名稱一換，舊部件會不會被誤判成『沒裝』」這個遷移期相容問題。
-  2. **資產命名比對邏輯**（`PasswordLockerAssetSelector`）——已定案，見下方「資產命名規則」小節，不需要等 `PasswordVault` repo 真的發過一次正式版才能動工，兩邊照這份定案的規則實作即可。
-  3. **Named Pipe 名稱／NativeHost 路徑**：`PasswordLockerNativePipeServer.PipeName`（`"FileLocker-PasswordLocker-Pipe"`）與 `App.xaml.cs` 寫死的 `FileLocker.PasswordLockerNativeHost.exe` 路徑，要跟第 8 節「兩邊搶同一條 Named Pipe」的共存設計對上——目前第 8 節描述的是 `FileLocker.App` 與 `PasswordVault.exe` 各自使用****自己的**** Pipe／NativeHost，這裡若要讓 FileLocker.App 改成直接載入 PasswordVault 编譯產出的部件，需要重新確認这個部件版本用的 Pipe 名稱是否跟第 8 節設計的獨立版一致，避免兩份文件對「Pipe 名稱該是什麼」各自表述。
-  這一步涉及修改 FileLocker repo 本體程式碼（不是 PasswordVault repo），目前只完成規劃、尚未實作。
+### 測試覆蓋補齊
+
+`PasswordVault` repo 目前只有 `tests/PasswordVault.Core.Tests`，`PasswordVault.App`／`PasswordVault.Cli` 都還沒有對應的測試專案。**「比照 FileLocker.App.Tests／FileLocker.Cli.Tests 的既有測試範疇」這個前提本身要更正**——回頭檢視發現：
+
+- `FileLocker.App.Tests` 不是「App 層測試慣例」的代表，是 2026-08-09 一次資安稽核（Pipe Server 原本無條件信任連線端）之後，把稽核發現的攻擊流程固定成回歸測試的產物，範圍很窄，沒有更廣泛的「App 層該測什麼」先例可以照抄。
+- `FileLocker.Cli.Tests` 測的是被抽出來的 4 個獨立邏輯類別（`CliArgumentParser`／`CliExitCode`／`CliLocalization`／`CliShellCompletion`），`PasswordVault.Cli` 目前整個是一支 163 行的 top-level statements 檔案，沒有拆出對應的可測類別。
+
+定案的實際範圍：
+- **`PasswordVault.App.Tests`**：查過 `PasswordVaultNativePipeServer.cs`，那次資安稽核的修復邏輯（`VerifyClientIsExpectedHost`）本身已經跟著遷移過來了，只是對應的回歸測試沒有跟著搬——把 `PasswordLockerNativePipeServerTests.cs` 整份邏輯移植成 `PasswordVaultNativePipeServerTests.cs`（改類別名稱、管道名稱前綴），不主動找其他新的測試範圍。
+- **`PasswordVault.Cli.Tests`**：先從 `Program.cs` 抽出兩塊可測邏輯，再對抽出來的部分寫測試（不直接測 top-level statements 本身）：`ReadPasswordMasked` 這個 local function（已經處理「輸入被重新導向時退回 `ReadLine`」的邊界情況，拉成 `private static` 方法即可）、以及 `ListCommandAsync` 裡「一筆憑證怎麼格式化成輸出文字」的部分（拆成「輸入憑證物件、回傳字串」的純函式）。互動流程本身、實際呼叫 `PasswordVault.Core` 驗證主密碼的部分不動。
+
+兩個測試專案都遵照 CLAUDE.md「先寫測試」的開發流程逐一補齊，不是一次全補；這裡是回頭補測試（產品邏輯已存在、已定案），不是新功能開發，測試針對既有行為寫，不是先猜測試再讓實作遷就。
+
+### FileLocker 本體切換消費來源
+
+見本節開頭的更正說明——`PasswordLockerModuleInstaller.cs`／`PasswordLockerPluginLoader.cs`／`App.xaml.cs` 這幾處目前寫死指向 FileLocker 自己的 GitHub Release 與 `FileLocker.PasswordLocker.*` 系列檔名，需要改成指向 `lx-kvn/PasswordVault` 的 Release 與 `PasswordVault.Core.dll`／`PasswordVault.NativeHost.exe`。原本列的三個待定細節，這輪 grilling 已全數定案：
+
+1. **`plugins/PasswordLocker/` 資料夾名稱維持不變，不改名**——載入邏輯（`PasswordLockerPluginLoader`）只是去固定資料夾找固定檔名的 dll，資料夾名稱本身使用者完全看不到（不是 UI 顯示的東西，純粹磁碟路徑）。改名的話，舊使用者資料夾裡還放著舊版 dll，程式改成去找新資料夾會誤判成「沒裝」，需要另外寫一次性遷移/偵測邏輯；不改名的話，既有的自動下載/更新流程（偵測資料夾有沒有 dll、沒有就自動抓）完全不用改，舊使用者下次自動更新時新 zip 內容自然蓋掉舊 dll。純美觀上的資料夾命名不一致，不值得為它多背一段遷移相容邏輯——跟 ADR-0001「不為了邊緣情境的體驗細節換取不成比例架構成本」同一種取捨。只換裡面找的檔名常數，從 `FileLocker.PasswordLocker.dll` 換成 `PasswordVault.Core.dll`。
+2. **資產命名比對邏輯**（`PasswordLockerAssetSelector`）——已定案，見下方「資產命名規則」小節。
+3. **Named Pipe 名稱／NativeHost 路徑**——查證後發現比預期單純：`PasswordLockerNativePipeServer.PipeName` 與 `PasswordVaultNativePipeServer.PipeName` 目前**字面上已經是同一個字串**（`"FileLocker-PasswordLocker-Pipe"`），第 8 節「兩邊搶同一條 Pipe」的共存設計早已成立，不需要為了這次切換再改；且 Pipe Server 本身是寫在 `FileLocker.App` 專案自己的程式碼裡（不是部件 dll 的一部分），換掉載入的 dll完全不影響它。唯一要改的是 `App.xaml.cs` 裡驗證連線端身分寫死比對的 NativeHost exe 路徑，從 `plugins/PasswordLocker/FileLocker.PasswordLockerNativeHost.exe` 換成 `plugins/PasswordLocker/PasswordVault.NativeHost.exe`（資料夾名稱不變，見第 1 點）。
+
+**額外發現且一併定案的遺留項目**：`src/FileLocker.Extension/`（舊版瀏覽器擴充功能原始碼）目前 FileLocker repo 跟 PasswordVault repo 兩邊都有，第 9 節寫的「遷移後從這個 FileLocker repo 移除」這一步沒有真的做——這次一併定案：從 FileLocker repo 刪除，`PasswordVault` repo 的 `PasswordVault.Extension` 是唯一真相來源，FileLocker.App 的瀏覽器整合完全依賴部件 zip 裡帶的 `PasswordVault.NativeHost.exe`，不需要 FileLocker repo 自己再維護一份擴充功能原始碼。
+
+這一步涉及修改 FileLocker repo 本體程式碼（不是 PasswordVault repo），且 PasswordVault 那邊的發布流程需要先能產出符合「資產命名規則」的 zip（含 `PasswordVault.Core.dll` 及其相依檔案、`PasswordVault.NativeHost.exe`）才能真正對接，目前只完成規劃、尚未實作。
 
 ### 資產命名規則（PasswordVault 版）
 

@@ -105,11 +105,12 @@ public sealed class VaultProtocolHandlers
     public Task RollbackPendingEncryptAsync(string uuid)
         => _lockService.RollbackPendingEncryptAsync(uuid);
 
-    /// <summary>對應「解密」頁籤手動選檔案的入口，依副檔名分派給對應的 LockService 方法——跟 InspectLockedFile 同一套判斷。</summary>
+    /// <summary>對應「解密」頁籤手動選檔案的入口——依副檔名分派給 .locked／.flocked 對應解密方式
+    /// 這件事本身現在收斂進 LockService.DecryptFileAsync（架構檢視後下移，CLI 的 --unlock 也
+    /// 呼叫同一個方法），這裡只是薄包裝。InspectLockedFile 因為要讀的是「顯示用資訊」而不是
+    /// 「解密」，用途不同，維持自己一份判斷不變。</summary>
     public Task<UnlockResult> DecryptAsync(string filePath, string password)
-        => string.Equals(Path.GetExtension(filePath), ".flocked", StringComparison.OrdinalIgnoreCase)
-            ? _lockService.DecryptFlockedFileAsync(filePath, password)
-            : _lockService.DecryptAsync(filePath, password);
+        => _lockService.DecryptFileAsync(filePath, password);
 
     public Task<UnlockResult> DecryptByUuidAsync(string uuid, string password, string? destinationDir)
         => _lockService.DecryptByUuidAsync(uuid, password, destinationDir);

@@ -1008,6 +1008,59 @@ public class LockServiceTests : IDisposable
         Assert.True(File.Exists(Path.Combine(_workDir.FullName, "密碼錯誤的分散式檔案.flocked")));
     }
 
+    // ---- DecryptFileAsync：依副檔名分派給 DecryptAsync（.locked）或 DecryptFlockedFileAsync
+    // （.flocked）的統一入口——架構檢視發現 GUI（VaultProtocolHandlers.DecryptAsync）跟 CLI
+    // （Program.cs 的 UnlockCommandAsync）各自手刻了一份一模一樣的副檔名判斷，其中一份還漏掉
+    // 導致真的出過 bug（.flocked 檔案跑 CLI --unlock 失敗）。這個判斷本質上是「怎麼解密一個
+    // 檔案」，屬於 LockService 自己的職責，不是「解析 GUI 請求」或「解析 CLI 參數」的職責，
+    // 下移到這裡讓兩邊呼叫同一份實作，不用各自維護一份。 ----
+
+    [Fact]
+    public async Task DecryptFileAsync_LockedExtension_DispatchesToMarkerDecrypt()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "統一入口指標檔.txt");
+        const string originalContent = "集中庫加密的內容";
+        File.WriteAllText(filePath, originalContent);
+        var lockResult = await _service.EncryptAsync(filePath, "unify-password", null);
+
+        var unlockResult = await _service.DecryptFileAsync(lockResult.LockedMarkerPath, "unify-password");
+
+        Assert.True(unlockResult.Success);
+        Assert.Equal(originalContent, File.ReadAllText(filePath));
+        Assert.False(File.Exists(lockResult.LockedMarkerPath));
+    }
+
+    [Fact]
+    public async Task DecryptFileAsync_FlockedExtension_DispatchesToFlockedDecrypt()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "統一入口獨立密文.txt");
+        const string originalContent = "獨立加密的內容";
+        File.WriteAllText(filePath, originalContent);
+        var lockResult = await _service.EncryptAsync(filePath, "unify-password", null, storageMode: StorageMode.Standalone);
+
+        var unlockResult = await _service.DecryptFileAsync(lockResult.LockedMarkerPath, "unify-password");
+
+        Assert.True(unlockResult.Success);
+        Assert.Equal(originalContent, File.ReadAllText(filePath));
+        Assert.False(File.Exists(lockResult.LockedMarkerPath));
+    }
+
+    [Fact]
+    public async Task DecryptFileAsync_ExtensionMatchIsCaseInsensitive()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "大小寫測試.txt");
+        File.WriteAllText(filePath, "內容");
+        var lockResult = await _service.EncryptAsync(filePath, "case-password", null, storageMode: StorageMode.Standalone);
+        var upperCasedPath = Path.Combine(
+            Path.GetDirectoryName(lockResult.LockedMarkerPath)!,
+            Path.GetFileNameWithoutExtension(lockResult.LockedMarkerPath) + ".FLOCKED");
+        File.Move(lockResult.LockedMarkerPath, upperCasedPath);
+
+        var unlockResult = await _service.DecryptFileAsync(upperCasedPath, "case-password");
+
+        Assert.True(unlockResult.Success);
+    }
+
     // ---- 雙擊 .flocked 檔案解密（實作計畫片 7）：跟雙擊 .locked 的 DecryptAsync 平行 ----
 
     [Fact]

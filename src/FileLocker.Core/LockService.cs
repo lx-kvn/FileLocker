@@ -375,27 +375,8 @@ public class LockService
             _vault.SaveMetadata(metadata);
 
             // 到這裡，marker 已經寫入、metadata 已經標記完成——資料本身已經安全了。
-            // 清除原始明文是「收尾」動作，這一步就算失敗，也不代表這筆加密失敗，
-            // 所以特別包一層自己的 try/catch，不讓它跟著外層的 catch 把整個結果判定成失敗。
-            string? cleanupWarning = null;
-            try
-            {
-                await Task.Run(() =>
-                {
-                    if (isFolder)
-                    {
-                        SecureFileEraser.OverwriteAndDeleteFolder(originalPath);
-                    }
-                    else
-                    {
-                        SecureFileEraser.OverwriteAndDelete(originalPath);
-                    }
-                });
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                cleanupWarning = $"加密已完成，但清除原始檔案時發生錯誤，請手動確認並刪除原始檔案：{ex.Message}";
-            }
+            // 清除原始明文是「收尾」動作，這一步就算失敗，也不代表這筆加密失敗。
+            var cleanupWarning = await DeleteOriginalPlaintextAndGetWarning(originalPath, isFolder);
 
             _history?.Append(new HistoryEntry(
                 uuid, metadata.OriginalName, HistoryAction.Encrypted, DateTimeOffset.UtcNow, metadata.Hint,
@@ -454,25 +435,7 @@ public class LockService
 
             // 到這裡，.flocked 已經落地、metadata 已經標記完成——資料本身已經安全了。
             // 清除原始明文是「收尾」動作，理由跟 CommitVaultEncryptAsync 完全一樣。
-            string? cleanupWarning = null;
-            try
-            {
-                await Task.Run(() =>
-                {
-                    if (isFolder)
-                    {
-                        SecureFileEraser.OverwriteAndDeleteFolder(originalPath);
-                    }
-                    else
-                    {
-                        SecureFileEraser.OverwriteAndDelete(originalPath);
-                    }
-                });
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                cleanupWarning = $"加密已完成，但清除原始檔案時發生錯誤，請手動確認並刪除原始檔案：{ex.Message}";
-            }
+            var cleanupWarning = await DeleteOriginalPlaintextAndGetWarning(originalPath, isFolder);
 
             _history?.Append(new HistoryEntry(
                 uuid, metadata.OriginalName, HistoryAction.Encrypted, DateTimeOffset.UtcNow, metadata.Hint,
@@ -487,6 +450,35 @@ public class LockService
             // 搬移到一半失敗（例如磁碟滿了）——項目留在 Pending，不在這裡自動回滾，理由跟
             // CommitVaultEncryptAsync 完全一樣：呼叫端可能想讓使用者重試 commit。
             return new LockResult(false, "", "", $"完成加密時發生錯誤：{ex.Message}", ErrorCode: ErrorCodes.CommitPendingEncryptFailed, ErrorDetail: ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Commit 完成、資料已經安全落地之後的收尾動作：刪除原始明文。這一步失敗不代表整筆加密
+    /// 失敗——marker／.flocked 已經寫好，內容已經安全了——所以獨立包一層 try/catch，回傳一句
+    /// 警告文字而不是拋出例外去污染外層「commit 是否成功」的判斷。CommitVaultEncryptAsync／
+    /// CommitStandaloneEncryptAsync 共用同一份（架構檢視前兩邊各自複製過一份幾乎一樣的程式碼）。
+    /// </summary>
+    private static async Task<string?> DeleteOriginalPlaintextAndGetWarning(string originalPath, bool isFolder)
+    {
+        try
+        {
+            await Task.Run(() =>
+            {
+                if (isFolder)
+                {
+                    SecureFileEraser.OverwriteAndDeleteFolder(originalPath);
+                }
+                else
+                {
+                    SecureFileEraser.OverwriteAndDelete(originalPath);
+                }
+            });
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return $"加密已完成，但清除原始檔案時發生錯誤，請手動確認並刪除原始檔案：{ex.Message}";
         }
     }
 
@@ -656,6 +648,21 @@ public class LockService
                 ErrorCode: ErrorCodes.EncryptUnexpectedError, ErrorDetail: ex.Message);
         }
     }
+
+    /// <summary>
+    /// 「使用者手上有一個檔案路徑，想解密它」這件事唯一的統一入口——依副檔名分派給
+    /// DecryptAsync（.locked 指標檔）或 DecryptFlockedFileAsync（.flocked 獨立密文檔）。
+    /// GUI（VaultProtocolHandlers.DecryptAsync，「解密」頁籤手動選檔案）跟 CLI
+    /// （Program.cs 的 UnlockCommandAsync，--unlock）都呼叫這裡，不再各自手刻一份一模一樣
+    /// 的副檔名判斷——這個判斷本質上是「怎麼解密一個檔案」，屬於 LockService 自己的職責，
+    /// 不是「解析 GUI 請求」或「解析 CLI 參數」的職責。架構檢視發現這個判斷曾經被複製了兩份，
+    /// 其中一份漏更新，導致 CLI 的 --unlock 對 .flocked 檔案失敗過一次（已修正，見對應的
+    /// commit）——集中到這裡之後，同一個 bug 不會再發生第二次，因為根本沒有第二份可以漏改。
+    /// </summary>
+    public Task<UnlockResult> DecryptFileAsync(string filePath, string password)
+        => string.Equals(Path.GetExtension(filePath), ".flocked", StringComparison.OrdinalIgnoreCase)
+            ? DecryptFlockedFileAsync(filePath, password)
+            : DecryptAsync(filePath, password);
 
     /// <summary>對應原本雙擊 .locked 檔案的解密流程：先讀 marker 驗證簽章，再往下走。</summary>
     public Task<UnlockResult> DecryptAsync(string lockedMarkerPath, string password)

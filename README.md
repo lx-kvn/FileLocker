@@ -69,7 +69,7 @@
 ### 建置與執行
 
 ```bash
-# 後端測試（四個測試專案，目前共約 489 個測試）
+# 後端測試（三個測試專案，目前共約 349 個測試）
 dotnet test
 
 # 前端開發伺服器（Debug 建置會連到 http://localhost:5173）
@@ -94,11 +94,8 @@ FileLocker/
 │   ├── FileLocker.ShellExtension/           # C++ COM Shell Extension（右鍵選單）
 │   ├── FileLocker.UpdateRelauncher/         # 軟體更新下載完成後負責重啟主程式的小工具
 │   ├── FileLocker.PluginContracts/          # 可選配部件共用的介面契約
-│   ├── FileLocker.PasswordLocker/           # 密碼庫可選配部件本體
-│   ├── FileLocker.PasswordLockerNativeHost/ # 瀏覽器擴充功能用的 Native Messaging Host
-│   ├── FileLocker.Extension/                # 瀏覽器擴充功能（密碼庫網站自動填入用）
 │   └── FileLocker.Web/                      # Vue 3 + Vite 前端
-└── tests/                                   # xUnit 測試（Core／App／Cli／PasswordLocker 四個專案）
+└── tests/                                   # xUnit 測試（Core／App／Cli 三個專案）
 ```
 
 ### 已知限制
@@ -168,7 +165,7 @@ Full architecture, encryption flow, and IPC protocol details live in [`FileLocke
 ### Build & run
 
 ```bash
-# Backend tests (four test projects, ~489 tests total)
+# Backend tests (three test projects, ~349 tests total)
 dotnet test
 
 # Frontend dev server (Debug build points to http://localhost:5173)
@@ -193,11 +190,8 @@ FileLocker/
 │   ├── FileLocker.ShellExtension/           # C++ COM Shell Extension (context menu)
 │   ├── FileLocker.UpdateRelauncher/         # Small helper that relaunches the app after an update download
 │   ├── FileLocker.PluginContracts/          # Shared interface contracts for optional components
-│   ├── FileLocker.PasswordLocker/           # Password Locker optional component
-│   ├── FileLocker.PasswordLockerNativeHost/ # Native Messaging Host for the browser extension
-│   ├── FileLocker.Extension/                # Browser extension (autofill for Password Locker)
 │   └── FileLocker.Web/                      # Vue 3 + Vite frontend
-└── tests/                                   # xUnit tests (Core / App / Cli / PasswordLocker, four projects)
+└── tests/                                   # xUnit tests (Core / App / Cli, three projects)
 ```
 
 ### Known limitations

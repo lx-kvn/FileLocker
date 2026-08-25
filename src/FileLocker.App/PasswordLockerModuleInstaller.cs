@@ -9,10 +9,15 @@ using FileLocker.Core.UpdateCheck;
 namespace FileLocker.App;
 
 /// <summary>
-/// 密碼庫可選配部件的自動安裝／更新（見 FileLocker_密碼庫_功能規劃.md 第 2.2／2.4 節第二階段）：
-/// 掃 FileLocker 本體 GitHub Release 的資產列表找相容的 PasswordLocker zip、下載、解壓縮到
-/// 暫存資料夾。跟軟體本身的更新檢查（<see cref="MainWindow"/> 裡的 FetchLatestGitHubReleaseAsync）
-/// 平行、獨立，共用同一個 GitHub repo，但找的是不同的資產。
+/// 密碼庫可選配部件的自動安裝／更新（見 PasswordVault_獨立化_規劃.md 第 17 節「FileLocker 本體
+/// 切換消費來源」）：掃 <c>lx-kvn/PasswordVault</c> repo 的 GitHub Release 資產列表找相容的 zip、
+/// 下載、解壓縮到暫存資料夾。跟軟體本身的更新檢查（<see cref="MainWindow"/> 裡的
+/// FetchLatestGitHubReleaseAsync）平行、獨立——那邊查的是 FileLocker 自己的 Release，這裡查的
+/// 是 PasswordVault 的 Release，兩個 repo、兩組完全獨立的版號。
+///
+/// 部件原本是同一個 repo 裡的 FileLocker.PasswordLocker，遷出獨立成 PasswordVault repo 之後
+/// （見 ADR-0003），這裡從查自己 repo 改成查 PasswordVault repo——資產命名規則也跟著換了，
+/// 見 <see cref="PasswordLockerAssetSelector"/>。
 ///
 /// 不做熱重載：dll 可能正被 <see cref="PasswordLockerPluginLoader"/> 用 AssemblyLoadContext 載入中，
 /// Windows 不允許原地覆寫，所以這裡永遠解壓到 <c>plugins/PasswordLocker.pending/</c>，真正生效
@@ -20,7 +25,7 @@ namespace FileLocker.App;
 /// </summary>
 public static class PasswordLockerModuleInstaller
 {
-    private const string ReleasesApiUrl = "https://api.github.com/repos/lx-kvn/FileLocker/releases/latest";
+    private const string ReleasesApiUrl = "https://api.github.com/repos/lx-kvn/PasswordVault/releases/latest";
 
     private const string ManifestFileName = "install_manifest.json";
     private const string UninstallMarkerFileName = "PasswordLocker.uninstall-marker";

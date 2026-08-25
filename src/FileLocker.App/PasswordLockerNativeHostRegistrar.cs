@@ -15,7 +15,9 @@ public static class PasswordLockerNativeHostRegistrar
 {
     private const string HostName = "com.filelocker.passwordlocker";
     private const string RegistryKeyPath = @"Software\Google\Chrome\NativeMessagingHosts\" + HostName;
-    private const string HostExeFileName = "FileLocker.PasswordLockerNativeHost.exe";
+    // PasswordVault.NativeHost.exe（部件遷出獨立 repo 後的檔名，見
+    // PasswordVault_獨立化_規劃.md 第 17 節第 3 點）。
+    private const string HostExeFileName = "PasswordVault.NativeHost.exe";
 
     /// <summary>擴充功能 ID 是 Chrome 指派給這個擴充功能的固定識別碼——開發階段用「載入未封裝
     /// 項目」測試時，這個 ID 由 Chrome 依載入路徑（或 manifest.json 的 "key" 欄位，如果固定了
@@ -25,8 +27,8 @@ public static class PasswordLockerNativeHostRegistrar
     private const string ExtensionIdFileName = "extension-id.txt";
 
     /// <summary><paramref name="pluginDirectory"/> 是 plugins/PasswordLocker/ 這個資料夾——
-    /// Native Host exe、extension-id.txt 都跟 FileLocker.PasswordLocker.dll 放在一起（同一個
-    /// 部件 zip 的內容，見規劃文件第 2.2 節）。</summary>
+    /// Native Host exe、extension-id.txt 都跟 PasswordVault.Core.dll 放在一起（同一個部件 zip
+    /// 的內容）。</summary>
     public static void EnsureRegistered(string pluginDirectory)
     {
         var extensionIdPath = Path.Combine(pluginDirectory, ExtensionIdFileName);

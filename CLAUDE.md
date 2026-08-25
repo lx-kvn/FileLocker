@@ -32,9 +32,6 @@ FileLocker/
 │   ├── FileLocker.ShellExtension/           # C++ COM Shell Extension（右鍵選單）
 │   ├── FileLocker.UpdateRelauncher/         # 軟體更新下載完成、主程式關閉後負責重啟的小工具
 │   ├── FileLocker.PluginContracts/          # 可選配部件共用的介面契約（例如 IPasswordLockerPlugin）
-│   ├── FileLocker.PasswordLocker/           # 密碼庫可選配部件本體——改動後看「已知的坑」，要手動複製 DLL
-│   ├── FileLocker.PasswordLockerNativeHost/ # 瀏覽器擴充功能用的 Native Messaging Host（見 docs/adr/0002）
-│   ├── FileLocker.Extension/                # 瀏覽器擴充功能（Manifest V3，密碼庫網站自動填入用）
 │   └── FileLocker.Web/                      # Vue 3 + Vite 前端
 │       └── src/
 │           ├── App.vue                      # 主要畫面邏輯所在，較獨立的視覺已陸續拆到 components/
@@ -45,8 +42,7 @@ FileLocker/
 ├── tests/
 │   ├── FileLocker.Core.Tests/
 │   ├── FileLocker.App.Tests/
-│   ├── FileLocker.Cli.Tests/
-│   └── FileLocker.PasswordLocker.Tests/
+│   └── FileLocker.Cli.Tests/
 ├── docs/
 │   ├── adr/                                 # 架構決策紀錄（ADR），例如密碼庫獨立化、原生訊息橋接的決策
 │   ├── specs/                               # 專案級技術規格文件（FileLocker_技術規格文件.md）
@@ -62,6 +58,11 @@ FileLocker/
 │                                             # 掉的方向）跟 .af 原始檔本身，不代表前端沒複製到是漏做。
 └── installer/                               # 安裝程式打包設定
 ```
+
+密碼庫（Password Locker）可選配部件的原始碼已經遷出獨立成 [PasswordVault](https://github.com/lx-kvn/PasswordVault) repo（見
+`docs/specs/features/PasswordVault_獨立化_規劃.md`、ADR-0003），這個 repo 只透過既有的「下載外掛部件」機制取得
+PasswordVault repo 编譯產出的 `PasswordVault.Core.dll`，不再包含它的原始碼——`FileLocker.PluginContracts` 是
+FileLocker 這邊仍然維護的介面契約，兩邊都要靠它溝通。
 
 ## 建置與測試指令
 
@@ -124,7 +125,7 @@ cl /LD /EHsc /utf-8 dllmain.cpp /Fe:FileLockerShellExtension.dll /link /DEF:File
 標題列、彈窗、對話框的排版每次改動後：(1) 檢查新增的控制項有沒有意外繼承到全域規則（例如 `width: 100%`）、(2) 互動控制項（下拉選單、按鈕）不能放進視窗拖曳區內、(3) 確認在支援的最窄視窗寬度下文字不會被截斷、(4) 截圖或描述排版結果後再回報完成，不要沒看過畫面就宣告做完。
 
 ## 建置與驗證
-Commit 前一律先跑過完整測試套件（`dotnet test`，目前四個測試專案共約 395 個測試都要過；這個數字會隨開發持續增加，抓「跑完顯示失敗:0」為準，不要死記這個數字）。部署到 `Program Files` 需要提權的 shell——如果拿不到提權權限，就先建置到本機暫存資料夾，把確切的手動提權指令交給使用者執行，不要悄悄跳過驗證步驟。
+Commit 前一律先跑過完整測試套件（`dotnet test`，目前三個測試專案共約 349 個測試都要過；這個數字會隨開發持續增加，抓「跑完顯示失敗:0」為準，不要死記這個數字）。部署到 `Program Files` 需要提權的 shell——如果拿不到提權權限，就先建置到本機暫存資料夾，把確切的手動提權指令交給使用者執行，不要悄悄跳過驗證步驟。
 
 **不要自己判斷「差不多了」就直接下 `git commit`。** 當你認為工作已經到一個可以或應該 commit 的段落時，先跟使用者說一聲（例如「這輪改動看起來完整了，要 commit 嗎？」），等對方明確要求（像是直接說「commit」）才執行。使用者曾經明確要求要保留這個確認步驟。
 
@@ -133,6 +134,6 @@ Commit 前一律先跑過完整測試套件（`dotnet test`，目前四個測試
 ## 已知的坑
 單一執行個體的 Mutex 處理路徑是右鍵/上鎖這類進入點過去真的出過當機事故的地方——新增任何啟動路徑時，要處理「Mutex 已經被別的執行個體持有」的情況，並呼叫 `SetForegroundWindow`（或等效的前景焦點搶奪機制）把既有視窗搶到最前面，而不是直接結束或讓例外把行程弄崩潰。
 
-**改了密碼庫部件（`FileLocker.PasswordLocker`）之後，一定要手動把新的 `FileLocker.PasswordLocker.dll` 複製到 `src/FileLocker.App/bin/<組態>/<TFM>/plugins/PasswordLocker/`。** 密碼庫是可選配部件，`FileLocker.App` 對它沒有編譯期參考（這是刻意的架構決定，見密碼庫功能規劃第 2.1 節），所以 `dotnet build` 不會自動更新那個資料夾裡的副本——App 載入的永遠是那份手動放進去的舊 DLL。忘記複製的症狀是：新加的 IPC 訊息在舊部件的 switch 撞到 `_ => null`，前端 `requestMessage()` 等不到回應，畫面完全沒反應、DevTools 也沒有任何錯誤。這個坑實際發生過（CSV 匯出功能），耗掉很久才定位到。目前 `HandlePasswordLockerModuleRequestAsync` 已經會在部件回傳 null 時送出明確的錯誤訊息，但**根本原因還是要靠記得複製 DLL**。刻意不加自動複製的 MSBuild 步驟，因為那會讓「部件未安裝」這個狀態沒辦法用刪除資料夾的方式測試。
+**密碼庫部件的原始碼已經遷出到 [PasswordVault](https://github.com/lx-kvn/PasswordVault) repo，這個 repo 裡不再有它的原始碼可以改。** 要動密碼庫的邏輯，去那個 repo 改、build 出 `PasswordVault.Core.dll`，本機開發測試時手動複製到 `src/FileLocker.App/bin/<組態>/<TFM>/plugins/PasswordLocker/`——`FileLocker.App` 對它沒有編譯期參考（這是刻意的架構決定，密碼庫是可選配部件），所以 `dotnet build` 不會自動更新那個資料夾裡的副本，App 載入的永遠是那份手動放進去的舊 DLL。忘記複製的症狀是：新加的 IPC 訊息在舊部件的 switch 撞到 `_ => null`，前端 `requestMessage()` 等不到回應，畫面完全沒反應、DevTools 也沒有任何錯誤（這個坑實際發生過，CSV 匯出功能耗掉很久才定位到；`HandlePasswordLockerModuleRequestAsync` 已經會在部件回傳 null 時送出明確的錯誤訊息，但根本原因還是要靠記得複製 DLL）。正式使用者不受影響——`PasswordLockerModuleInstaller` 會自動從 PasswordVault repo 的 GitHub Release 下載對應版本。刻意不加自動複製的 MSBuild 步驟，因為那會讓「部件未安裝」這個狀態沒辦法用刪除資料夾的方式測試。
 
 **前端 `requestMessage()` 的每一種回應類型，都必須在 `App.vue` 的 `messageHandlers` 裡有一個對應項目呼叫 `resolvePending()`。** 漏掉的話那個 Promise 永遠不會被解開，一樣是「按了完全沒反應、沒有任何錯誤訊息」。新增 IPC 往返時，後端送回應、前端註冊處理常式這兩件事要一起做完。

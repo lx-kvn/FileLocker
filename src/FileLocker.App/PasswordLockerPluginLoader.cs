@@ -6,9 +6,12 @@ using FileLocker.PluginContracts;
 namespace FileLocker.App;
 
 /// <summary>
-/// 密碼庫是可選配部件（見 FileLocker_密碼庫_功能規劃.md 第 2 節）：偵測固定子資料夾
-/// <c>plugins/PasswordLocker/</c> 底下有沒有 dll，有就用 <see cref="AssemblyLoadContext"/>
-/// 動態載入，主體完全不在編譯期依賴 FileLocker.PasswordLocker.dll。
+/// 密碼庫是可選配部件：偵測固定子資料夾 <c>plugins/PasswordLocker/</c> 底下有沒有 dll，有就用
+/// <see cref="AssemblyLoadContext"/> 動態載入，主體完全不在編譯期依賴這個部件的組件檔。部件原本
+/// 是同一個 repo 裡的 FileLocker.PasswordLocker，遷出獨立成 PasswordVault repo 之後（見
+/// ADR-0003、PasswordVault_獨立化_規劃.md 第 17 節），這裡改成找 PasswordVault.Core.dll——
+/// <c>plugins/PasswordLocker/</c> 這個資料夾名稱刻意維持不變（純磁碟路徑，使用者看不到，改名要
+/// 背一次性遷移相容邏輯，不划算，見規劃文件第 17 節第 1 點的取捨說明）。
 /// </summary>
 public enum PasswordLockerModuleStatus
 {
@@ -25,7 +28,7 @@ public enum PasswordLockerModuleStatus
 
 public static class PasswordLockerPluginLoader
 {
-    private const string PluginAssemblyFileName = "FileLocker.PasswordLocker.dll";
+    private const string PluginAssemblyFileName = "PasswordVault.Core.dll";
 
     /// <summary>
     /// <paramref name="dataDirectory"/>／<paramref name="vaultItemExists"/> 是部件 Initialize

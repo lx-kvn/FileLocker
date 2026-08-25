@@ -3,15 +3,12 @@
     <Project Path="src/FileLocker.App/FileLocker.App.csproj" />
     <Project Path="src/FileLocker.Cli/FileLocker.Cli.csproj" />
     <Project Path="src/FileLocker.Core/FileLocker.Core.csproj" />
-    <Project Path="src/FileLocker.PasswordLocker/FileLocker.PasswordLocker.csproj" />
-    <Project Path="src/FileLocker.PasswordLockerNativeHost/FileLocker.PasswordLockerNativeHost.csproj" />
     <Project Path="src/FileLocker.PluginContracts/FileLocker.PluginContracts.csproj" />
     <Project Path="src/FileLocker.UpdateRelauncher/FileLocker.UpdateRelauncher.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FileLocker.Core.Tests/FileLocker.Core.Tests.csproj" />
     <Project Path="tests/FileLocker.Cli.Tests/FileLocker.Cli.Tests.csproj" />
-    <Project Path="tests/FileLocker.PasswordLocker.Tests/FileLocker.PasswordLocker.Tests.csproj" />
     <Project Path="tests/FileLocker.App.Tests/FileLocker.App.Tests.csproj" />
   </Folder>
 </Solution>

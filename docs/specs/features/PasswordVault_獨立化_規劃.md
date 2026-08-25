@@ -119,7 +119,7 @@ PasswordVault 內建 CLI（隨 `PasswordVault.exe` 一起發布、一起編號�
 
 擴充功能 popup／content-script 目前顯示的「FileLocker 密碼庫」等字樣，遷移後直接改稱「PasswordVault」，不保留 FileLocker 名稱過渡——跟第 2 節命名策略一致（品牌層級徹底改名，不做雙名並存），逐字文案（各處確切字串）留待實作時對照既有的 `zh-TW`／`en` locale 檔案逐一替換，這份文件不重複列出每一個字串。
 
-## 17. 尚待規劃的細節（2026-08-26 grilling 定案，尚未實作）
+## 17. 測試補齊與 FileLocker 消費端切換（2026-08-26 grilling 定案並實作完成）
 
 ### 測試覆蓋補齊
 
@@ -134,6 +134,8 @@ PasswordVault 內建 CLI（隨 `PasswordVault.exe` 一起發布、一起編號�
 
 兩個測試專案都遵照 CLAUDE.md「先寫測試」的開發流程逐一補齊，不是一次全補；這裡是回頭補測試（產品邏輯已存在、已定案），不是新功能開發，測試針對既有行為寫，不是先猜測試再讓實作遷就。
 
+**實作完成**：`PasswordVault.App.Tests`（8 個測試，移植自 `PasswordLockerNativePipeServerTests.cs`）、`PasswordVault.Cli.Tests`（5 個測試，針對新抽出的 `CliHelpers.ReadPasswordMasked`／`CliHelpers.FormatCredentialLines`）皆已完成，`dotnet test PasswordVault.slnx` 全數通過（3 個測試專案共 159 個）。`ReadPasswordMasked` 額外把 `Console.IsInputRedirected`／`Console.In` 改成可選的注入參數——實作時發現 `Console.SetIn` 並不會讓 `Console.IsInputRedirected` 跟著變（後者查的是行程實際的標準輸入控制代碼），測試沒辦法只靠換讀取來源就切到重新導向分支，只能把判斷結果一起傳進來，這是規劃階段沒有預見、動手才發現的細節。
+
 ### FileLocker 本體切換消費來源
 
 見本節開頭的更正說明——`PasswordLockerModuleInstaller.cs`／`PasswordLockerPluginLoader.cs`／`App.xaml.cs` 這幾處目前寫死指向 FileLocker 自己的 GitHub Release 與 `FileLocker.PasswordLocker.*` 系列檔名，需要改成指向 `lx-kvn/PasswordVault` 的 Release 與 `PasswordVault.Core.dll`／`PasswordVault.NativeHost.exe`。原本列的三個待定細節，這輪 grilling 已全數定案：
@@ -144,7 +146,7 @@ PasswordVault 內建 CLI（隨 `PasswordVault.exe` 一起發布、一起編號�
 
 **額外發現且一併定案的遺留項目**：`src/FileLocker.Extension/`（舊版瀏覽器擴充功能原始碼）目前 FileLocker repo 跟 PasswordVault repo 兩邊都有，第 9 節寫的「遷移後從這個 FileLocker repo 移除」這一步沒有真的做——這次一併定案：從 FileLocker repo 刪除，`PasswordVault` repo 的 `PasswordVault.Extension` 是唯一真相來源，FileLocker.App 的瀏覽器整合完全依賴部件 zip 裡帶的 `PasswordVault.NativeHost.exe`，不需要 FileLocker repo 自己再維護一份擴充功能原始碼。
 
-這一步涉及修改 FileLocker repo 本體程式碼（不是 PasswordVault repo），且 PasswordVault 那邊的發布流程需要先能產出符合「資產命名規則」的 zip（含 `PasswordVault.Core.dll` 及其相依檔案、`PasswordVault.NativeHost.exe`）才能真正對接，目前只完成規劃、尚未實作。
+**實作完成（2026-08-26）**：`PasswordLockerModuleInstaller`（改查 `lx-kvn/PasswordVault` Release）、`PasswordLockerAssetSelector`（改認新命名規則，測試先改紅燈再改實作）、`PasswordLockerPluginLoader`（改找 `PasswordVault.Core.dll`）、`PasswordLockerNativeHostRegistrar`／`App.xaml.cs`（改找 `PasswordVault.NativeHost.exe`）皆已完成，`src/FileLocker.PasswordLocker/`／`src/FileLocker.PasswordLockerNativeHost/`／`src/FileLocker.Extension/`／`tests/FileLocker.PasswordLocker.Tests/` 這幾個重複的舊原始碼一併從 FileLocker repo 刪除（連同 `FileLocker.slnx`／`FileLocker.App.Tests.csproj` 的對應參照），`dotnet test FileLocker.slnx` 全數通過（3 個測試專案共 349 個）。**尚未完成的部分**：PasswordVault 那邊的發布流程還沒能真正產出符合「資產命名規則」的 zip（含 `PasswordVault.Core.dll` 及其相依檔案、`PasswordVault.NativeHost.exe`），所以「FileLocker.App 實際從 Release 自動下載、切換部件生效」這條路徑目前只驗證到程式碼層級，還沒有機會人工實測。
 
 ### 資產命名規則（PasswordVault 版）
 

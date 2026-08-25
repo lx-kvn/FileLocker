@@ -2,8 +2,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\FileLocker.Core\FileLocker.Core.csproj" />
-    <!-- 只依賴介面契約，不依賴 FileLocker.PasswordLocker 本體——密碼庫是可選配部件（見
-         FileLocker_密碼庫_功能規劃.md 第 2 節），編譯期完全不引用它，執行期才用
+    <!-- 只依賴介面契約，不依賴部件本體（PasswordVault.Core.dll，遷出獨立成 PasswordVault repo，
+         見 PasswordVault_獨立化_規劃.md）——密碼庫是可選配部件，編譯期完全不引用它，執行期才用
          AssemblyLoadContext 動態載入（見 PasswordLockerPluginLoader）。 -->
     <ProjectReference Include="..\FileLocker.PluginContracts\FileLocker.PluginContracts.csproj" />
   </ItemGroup>

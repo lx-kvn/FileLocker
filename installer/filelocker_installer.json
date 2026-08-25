@@ -20,7 +20,7 @@
   "dependencies": [
     "dotnet_desktop"
   ],
-  "file_associations": [".locked", ".flocked"],
+  "file_associations": ".locked,.flocked",
   "add_to_path": true,
   "path_target_exe": "cli/FileLocker.Cli.exe",
   "restart_explorer_on_update": true

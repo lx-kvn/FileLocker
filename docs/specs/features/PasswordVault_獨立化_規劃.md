@@ -148,6 +148,10 @@ PasswordVault 內建 CLI（隨 `PasswordVault.exe` 一起發布、一起編號�
 
 **實作完成（2026-08-26）**：`PasswordLockerModuleInstaller`（改查 `lx-kvn/PasswordVault` Release）、`PasswordLockerAssetSelector`（改認新命名規則，測試先改紅燈再改實作）、`PasswordLockerPluginLoader`（改找 `PasswordVault.Core.dll`）、`PasswordLockerNativeHostRegistrar`／`App.xaml.cs`（改找 `PasswordVault.NativeHost.exe`）皆已完成，`src/FileLocker.PasswordLocker/`／`src/FileLocker.PasswordLockerNativeHost/`／`src/FileLocker.Extension/`／`tests/FileLocker.PasswordLocker.Tests/` 這幾個重複的舊原始碼一併從 FileLocker repo 刪除（連同 `FileLocker.slnx`／`FileLocker.App.Tests.csproj` 的對應參照），`dotnet test FileLocker.slnx` 全數通過（3 個測試專案共 349 個）。**尚未完成的部分**：PasswordVault 那邊的發布流程還沒能真正產出符合「資產命名規則」的 zip（含 `PasswordVault.Core.dll` 及其相依檔案、`PasswordVault.NativeHost.exe`），所以「FileLocker.App 實際從 Release 自動下載、切換部件生效」這條路徑目前只驗證到程式碼層級，還沒有機會人工實測。
 
+**實測發現且修正（2026-08-26，同一天稍晚）**：使用者實際同時開著 `FileLocker.App` 跟 `PasswordVault.exe` 測試時發現，兩邊的密碼庫資料完全不一致（FileLocker 那邊 22 筆真實資料，PasswordVault 那邊只有 2 筆——回頭查是這輪稍早測試時塞進去的假資料）。根因：這輪切換消費來源只處理了「去哪個 repo 找部件、部件叫什麼名字」，沒有處理「密碼庫**資料**實際存在哪個資料夾」——`FileLocker.App` 把 `PasswordLockerPluginContext` 的 `dataDirectory` 指向自己既有的 `%LocalAppData%\FileLocker\PasswordLocker\`，`PasswordVault.exe` 指向自己的 `%LocalAppData%\PasswordVault\PasswordLocker\`，兩邊各自初始化同一份共用程式庫、但各自指向不同資料夾，變成兩份互相獨立、不同步的密碼庫，不是真正共用同一份——這違背了第 3 節「兩個消費端共用同一份密碼庫」的原始設計意圖（雖然規劃文件裡沒有把這句話講得很白，但第 7 節「資料遷移」的既有描述已經暗示了這個最終狀態）。
+
+修正：`FileLocker.App` 改成指向跟 `PasswordVault.exe` 相同的共用路徑（`%LocalAppData%\PasswordVault\PasswordLocker\`），啟動時比照 `PasswordVault.Core.LegacyDataMigration` 同一套邏輯（複製不刪舊檔、新舊路徑都有資料時新路徑優先安靜略過）自動搬移舊資料——但這段邏輯不能直接呼叫 `LegacyDataMigration`（`FileLocker.App` 編譯期不依賴部件本體，是刻意的架構決定），改成在 `App.xaml.cs` 內部獨立複製一份等價的小邏輯（`MigratePasswordLockerDataIfNeeded`，不到 20 行）。實測搬移正確（22／23 筆真實資料從 FileLocker 舊路徑搬到共用新路徑），`dotnet test` 349 個測試全過。
+
 ### 資產命名規則（PasswordVault 版）
 
 沿用既有 `PasswordLockerAssetSelector` 的設計精神（版本相容區間，理由見該檔案的 XML doc 註解），只換品牌前綴。原本 `PasswordLocker_vX.Y.Z_x.y.z-x.y.z.zip` 這種三組版本號緊貼在一起的寫法容易眼花撩亂（哪個是自己版本、哪個是相容區間上下限不容易一眼看出），改良為插入固定字詞當視覺分隔：
@@ -159,6 +163,12 @@ PasswordVault_v{PasswordVault.Core 自己的版本}_for-FileLocker-{相容最小
 例如 `PasswordVault_v0.1.0_for-FileLocker-1.3.0-to-2.0.0.zip`：一眼就看得出是「`0.1.0` 版的 PasswordVault，給 FileLocker 用，相容 1.3.0 到 2.0.0」，不需要先知道這個命名慣例才看得懂。解析端（`PasswordLockerAssetSelector` 的後繼者）只是多認 `for-FileLocker-`／`-to-` 這兩個固定字串，正則表達式複雜度不變。
 
 相容區間**由 `PasswordVault` repo 每次更新 `vendor/FileLocker.PluginContracts.dll` 時手動決定並填入**（見該 repo `vendor/README.md`「已知的坑」——只有 FileLocker 那份介面契約變動時才需要重新 vendor），不自動推算：開發者需要對照 FileLocker 那邊介面契約異動的 commit／版本，判斷這次要標記的相容範圍上下限。這一步刻意維持人工判斷、不寫進自動化流程——跟 CLI_setup／CLI_zip 那輪「新流程先手動、驗證過沒有意外的坑再收進自動化」同樣的考量。
+
+## 待辦事項
+
+- **`PasswordVault.exe` 自己的 Native Messaging Host 註冊機制尚未實作**：目前只有 `PasswordVaultNativePipeServer`（Named Pipe Server 本體）遷移過來，對應的「寫入 `com.filelocker.passwordlocker.json` manifest、登記 `HKCU\Software\Google\Chrome\NativeMessagingHosts\...`」這一段（比照 `FileLocker.App` 那邊的 `PasswordLockerNativeHostRegistrar`）還沒有 `PasswordVault` 自己的版本——見 `PasswordVault.Extension/README.md` 已經記錄的同一個缺口。
+  - **實際觀察到的症狀**（2026-08-26）：目前登記在 Chrome 底下的 manifest 路徑，是先前某次跑 `FileLocker.App` Debug 建置時寫下的舊路徑，跟使用者實際在跑的 `PasswordVault.exe`（或 Program Files 安裝版 `FileLocker.exe`，該台機器上這個安裝版根本沒裝密碼庫部件）路徑都對不上。兩邊 Pipe Server 各自的 `VerifyClientIsExpectedHost` 安全檢查會因為路徑不符直接切斷連線，瀏覽器擴充功能收到「Pipe is broken」；且因為兩邊搶同一條 Named Pipe（見第 8 節），這次連線被哪一邊接走帶有隨機性，導致「時好時壞」。
+  - **How to apply**：補這塊時要一併考慮「兩邊都能各自正確註冊、但只有一份 manifest 位置」的情境——目前設計是後啟動的一方發現 Pipe 已被佔用就不再起自己的 Server（第 8 節），但**登錄機碼／manifest 路徑該由誰寫、寫誰的 exe 路徑**這件事目前完全沒定案，需要在動工前先想清楚，不然會重演這次「manifest 指向的路徑，兩邊實際在跑的程式都對不上」的狀況。
 
 ## 已完成之待辦
 

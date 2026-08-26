@@ -148,7 +148,15 @@ public partial class App : Application
         PasswordLockerModuleInstaller.SwapPendingInstallIfPresent();
         PasswordLockerModuleInstaller.SyncInstallManifest();
 
-        var passwordLockerDir = Path.Combine(appDataDir, "PasswordLocker");
+        // 密碼庫資料改指向跟 PasswordVault.exe 共用的同一個實體資料夾（PasswordVault_獨立化_規劃.md
+        // 第 7 節「資料遷移」原本就設想的最終狀態）——實測發現這一步在切換消費來源那輪漏做了：
+        // FileLocker.App 跟 PasswordVault.exe 各自把 PasswordVault.Core 指向自己的資料夾，變成
+        // 兩份各自獨立、彼此不同步的密碼庫，而不是真正共用同一份。
+        var legacyPasswordLockerDir = Path.Combine(appDataDir, "PasswordLocker");
+        var passwordLockerDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "PasswordVault", "PasswordLocker");
+        MigratePasswordLockerDataIfNeeded(legacyPasswordLockerDir, passwordLockerDir);
         (_passwordLockerModuleStatus, _passwordLockerPlugin) = PasswordLockerPluginLoader.Load(
             passwordLockerDir, uuid => _vaultIndexCache!.GetItems().Any(entry => entry.Uuid == uuid));
 
@@ -211,6 +219,45 @@ public partial class App : Application
                 "FileLocker",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
+        }
+    }
+
+    /// <summary>
+    /// 把密碼庫資料從 FileLocker 舊路徑複製到跟 PasswordVault.exe 共用的新路徑——邏輯跟
+    /// PasswordVault.Core 的 LegacyDataMigration.MigrateIfNeeded 完全一樣（複製不刪舊檔；
+    /// 新舊路徑都已經有資料時新路徑優先，安靜略過），但這裡不能直接呼叫那份程式碼：
+    /// FileLocker.App 在編譯期刻意不依賴部件本體（密碼庫是可選配部件），只能執行期用
+    /// AssemblyLoadContext 動態載入，沒辦法在載入部件「之前」就先呼叫它裡面的靜態方法。
+    /// 這段小邏輯（不到 20 行）獨立複製一份，換取不需要為了一次性的資料搬移，開一個
+    /// InternalsVisibleTo 或額外的介面契約。失敗（例如磁碟權限問題）安靜吞掉，不擋住
+    /// 整個啟動流程——比照 PasswordVault.App 那邊同一個決策的理由。
+    /// </summary>
+    private static void MigratePasswordLockerDataIfNeeded(string oldDataDirectory, string newDataDirectory)
+    {
+        try
+        {
+            const string CredentialsFileName = "credentials.json";
+            var oldCredentialsPath = Path.Combine(oldDataDirectory, CredentialsFileName);
+            if (!File.Exists(oldCredentialsPath))
+            {
+                return;
+            }
+
+            var newCredentialsPath = Path.Combine(newDataDirectory, CredentialsFileName);
+            if (File.Exists(newCredentialsPath))
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(newDataDirectory);
+            foreach (var sourceFile in Directory.GetFiles(oldDataDirectory))
+            {
+                var destinationPath = Path.Combine(newDataDirectory, Path.GetFileName(sourceFile));
+                File.Copy(sourceFile, destinationPath, overwrite: false);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
         }
     }
 

@@ -79,6 +79,26 @@ FileLocker 本體 UI 上「密碼庫」分頁的中文名稱維持不變——�
 
 使用者同時安裝 `FileLocker.App` 與 `PasswordVault.exe` 時，兩邊會搶同一條 Named Pipe。共存規則沿用這個專案既有的單一執行個體 Mutex 處理哲學（見 `CLAUDE.md`「已知的坑」）：**互相偵測、先來後到，不強制接手**——兩邊啟動時都先檢查 Pipe 有沒有被佔用，沒被佔用才自己起 Server；已經有一邊在跑的話，晚啟動的那一邊就不再重複起自己的 Server，但其他功能（視窗、密碼庫本身的操作）不受影響。即使 `FileLocker.App` 後啟動、發現 Pipe 已經被 `PasswordVault.exe` 佔用，也不會搶過來——理由是強制接手需要設計一套跨行程協商訊息，確保接手當下沒有正在處理中的請求被中斷，複雜度與這個功能的實際需求不成比例，跟 ADR-0001 拒絕「擁有權轉移」方案是同一種「不為了邊緣情境的體驗細節換取不成比例架構成本」的判斷。
 
+### 8.1 實測發現的缺口：兩邊各自的 NativeHost.exe 副本與註冊表互相打架（2026-08-26）
+
+`PasswordVault.exe` 這一側的 Native Messaging Host 註冊邏輯這輪規劃時說要做（見上方段落），但實際遷移時被排除在 `git filter-repo` 範圍外、延後處理（見 `src/PasswordVault.Extension/README.md` 現況說明），也就是說**目前只有 `FileLocker.App` 真的會呼叫 `PasswordLockerNativeHostRegistrar.EnsureRegistered`**，`PasswordVault.exe` 完全沒有對應邏輯。
+
+單純之後幫 `PasswordVault.exe` 補一份自己的註冊呼叫，並不能真正解決共存問題——會出現兩套「搶先」機制互相打架：
+
+- **註冊表**（`HKCU\Software\Google\Chrome\NativeMessagingHosts\com.filelocker.passwordlocker`）：兩邊都在啟動時自我修復、覆寫成自己認得的路徑，所以是**最後啟動的一方贏**。
+- **Named Pipe**：先搶到的一方持有連線，是**最先啟動的一方贏**。
+
+這兩個「贏家」判斷邏輯不一致，可能出現「Chrome 被註冊表指向 A 的轉接程式副本，但 Pipe 被 B 持有」的組合——A 的轉接程式連上 Pipe 時，B 的 `VerifyClientIsExpectedHost` 拿它自己認得的路徑（A 的轉接程式跟 B 認得的路徑不同）去比對，比對失敗，連線被判定不合法而中斷（「Pipe is broken」）。這正是使用者實測時回報的現象。
+
+**修正方向（已定案，尚未實作）**：不要讓兩邊各自帶一份自己的轉接程式副本，改成兩邊共用同一個實體檔案、同一個註冊值——概念上跟第 7 節「密碼庫資料改指向共用路徑」是同一招：
+
+1. 找一個兩邊都能穩定讀寫、不受各自安裝路徑影響的共用位置放這支轉接程式（例如 `%LocalAppData%\PasswordVault\NativeHost\`，不是任何一邊各自的安裝資料夾）。
+2. 誰先啟動，就負責把轉接程式複製到這個共用位置（如果還沒有的話）。
+3. **兩邊的 Pipe 伺服器（`PasswordLockerNativePipeServer`／`PasswordVaultNativePipeServer`）的 `expectedClientExePath` 都改成認這同一個共用路徑**，不再各自認自己安裝資料夾裡的那份——這樣不管誰贏得 Pipe、誰贏得註冊表，雙方講的都是同一個地址，不會再對不上。
+4. 註冊表寫入的內容，兩邊寫入的值最終會收斂成同一個（都指向這個共用路徑），不會再因為「誰後寫」而流失一致性。
+
+需要改動的地方：`FileLocker.App`（`PasswordLockerNativeHostRegistrar`、`PasswordLockerNativePipeServer` 建構時傳入的 `expectedClientExePath`）、`PasswordVault.App`（新增自己的註冊邏輯、`PasswordVaultNativePipeServer` 建構時傳入的 `expectedClientExePath` 也要跟著改）。
+
 ## 9. 發布方式
 
 `PasswordVault.exe` 的安裝程式發布在獨立的 GitHub repo／Release，不掛在 FileLocker 現有的 repo 底下。原始碼本身也遷過去（見 [ADR-0003](../../adr/0003-passwordvault-separate-repo.md)），這份 repo 是新 repo 唯一真相來源，`FileLocker.PasswordLocker`／`FileLocker.Extension` 遷移後從這個 FileLocker repo 移除。

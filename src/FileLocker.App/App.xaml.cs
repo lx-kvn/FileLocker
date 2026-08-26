@@ -175,10 +175,10 @@ public partial class App : Application
             () => _passwordLockerPlugin,
             RequestBrowserVerificationAsync,
             () => Dispatcher.InvokeAsync(() => ShowMainWindow("passwordLocker")).Task,
-            // PasswordVault.NativeHost.exe（部件遷出獨立 repo 後的檔名，見
-            // PasswordVault_獨立化_規劃.md 第 17 節第 3 點）——plugins/PasswordLocker/ 這個
-            // 資料夾名稱本身刻意維持不變，只有裡面的檔名跟著換。
-            Path.Combine(AppContext.BaseDirectory, "plugins", "PasswordLocker", "PasswordVault.NativeHost.exe"));
+            // 兩邊 App（FileLocker.App／PasswordVault.exe）共用同一個轉接程式實體檔案的路徑，
+            // 不再各自認自己安裝資料夾裡的那份（見 PasswordVault_獨立化_規劃.md 第 8.1 節、
+            // PasswordLockerNativeHostRegistrar 開頭的說明）。
+            PasswordLockerNativeHostRegistrar.SharedExePath);
         _passwordLockerPipeServer.Start();
 
         _settingsManager = settingsManager;

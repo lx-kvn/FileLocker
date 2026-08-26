@@ -99,6 +99,13 @@ FileLocker 本體 UI 上「密碼庫」分頁的中文名稱維持不變——�
 
 需要改動的地方：`FileLocker.App`（`PasswordLockerNativeHostRegistrar`、`PasswordLockerNativePipeServer` 建構時傳入的 `expectedClientExePath`）、`PasswordVault.App`（新增自己的註冊邏輯、`PasswordVaultNativePipeServer` 建構時傳入的 `expectedClientExePath` 也要跟著改）。
 
+**實作完成（2026-08-26，同一天稍晚）**：共用位置固定為 `%LocalAppData%\PasswordVault\NativeHost\`。
+
+- `FileLocker.App`：`PasswordLockerNativeHostRegistrar` 新增 `SharedExePath`（固定回傳共用路徑字串，不檢查檔案是否存在）與 `EnsureSharedExeCopied`（誰先啟動就把 `plugins/PasswordLocker/` 底下所有 `PasswordVault.NativeHost.*` 檔案複製到共用位置，共用位置已經有檔案就什麼都不做，不比對版本新舊）；manifest 的 `path` 欄位改寫共用路徑。`App.xaml.cs` 建構 `PasswordLockerNativePipeServer` 時的 `expectedClientExePath` 也改傳 `SharedExePath`。
+- `PasswordVault.App`：新增 `PasswordVaultNativeHostSync`（同一套邏輯的獨立實作，因為兩個 repo 沒有共用程式碼），`App.xaml.cs` 啟動時呼叫 `EnsureCopiedFrom(AppContext.BaseDirectory)` 後，`PasswordVaultNativePipeServer` 的 `expectedClientExePath` 改傳 `SharedExePath`。**這裡刻意沒有一併補上 `PasswordVault.exe` 自己的登錄檔／manifest 寫入邏輯**——那是待辦事項另一個獨立缺口（見下方待辦事項一節），目前只有 `FileLocker.App` 會寫登錄檔，這次只需要確保它寫入的 `path` 指向共用位置即可收斂一致，不需要 `PasswordVault.exe` 也重複寫一次登錄檔。
+- 實測：先靜默啟動 `FileLocker.exe --startup`，確認共用資料夾被建立、四個檔案（`.exe`/`.dll`/`.deps.json`/`.runtimeconfig.json`）都複製過去、manifest 的 `path` 欄位正確指向共用路徑；關掉後再啟動 `PasswordVault.exe --startup`，確認共用資料夾已存在時不會重複複製、程式正常啟動不崩潰。`dotnet test` 兩邊都全數通過（FileLocker 349 個、PasswordVault 159 個）。
+- **尚未驗證**：兩邊 App 同時開著、透過真實 Chrome 擴充功能實際觸發一次自動填入，確認不再出現「Pipe is broken」——這一步需要瀏覽器環境與已載入的擴充功能，留給使用者實機操作確認。
+
 ## 9. 發布方式
 
 `PasswordVault.exe` 的安裝程式發布在獨立的 GitHub repo／Release，不掛在 FileLocker 現有的 repo 底下。原始碼本身也遷過去（見 [ADR-0003](../../adr/0003-passwordvault-separate-repo.md)），這份 repo 是新 repo 唯一真相來源，`FileLocker.PasswordLocker`／`FileLocker.Extension` 遷移後從這個 FileLocker repo 移除。

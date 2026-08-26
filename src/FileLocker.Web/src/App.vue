@@ -3694,6 +3694,19 @@ body {
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
   text-align: left;
+  /* 使用者回饋：雙擊畫面上任何文字（不管是顯示用的內文還是按鈕上的字）都會被選取，
+     這是網頁預設行為，但在一個桌面應用程式裡看起來很突兀（原生應用程式的介面文字
+     本來就選不到）。整個 .app 底下預設關掉文字選取，輸入框／文字區域／明確標記
+     contenteditable 或需要複製的內容（例如 .recovery-key-display，見下方該規則的
+     user-select: all）另外個別開回來，不能一刀切連恢復金鑰、密碼這種使用者需要
+     複製的內容也選不到。 */
+  user-select: none;
+}
+
+.app input,
+.app textarea,
+.app [contenteditable='true'] {
+  user-select: text;
 }
 
 /* Vite 專案範本預設的 style.css 會設定 #app { text-align: center } 跟 h1 的字級/顏色，

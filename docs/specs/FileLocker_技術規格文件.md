@@ -1,6 +1,6 @@
 # FileLocker 技術規格文件
 
-版本：v3.2（第 21～24 節重新整理：資料夾防護、軟體更新檢查依序調整為第 21、22 節，已知限制與待辦事項拆成兩個獨立項目並移至文件最末尾，符合 CLAUDE.md 撰寫規範）| 最後更新：2026-08-02
+版本：v3.3（配合通盤檢討五輪改善同步更新：第 5 節新增單檔案分散式加密與 `.flocked` 格式、第 8 節改為保護等級分層與四套憑證命名、第 9 節鎖定政策依用途分列、第 13 節 IPC 對應表、第 14.3 節改為側欄導覽與信封流程、第 15 節 CLI 用法、第 21 節新增自動重新上鎖與標記檔驗證）| 最後更新：2026-08-27
 
 ---
 
@@ -15,18 +15,19 @@
 
 **核心特性**：
 1. 前後端分離架構：C# 後端（Core Engine + Protocol 分派層）+ Vue 3 前端（透過 WebView2 呈現），兩邊只透過一份 JSON 訊息協定溝通（見第 13 節）
-2. 主頁 + 已加密項目清單（檔案與資料夾皆可解密並選擇儲存位置）
-3. 加密後內容改名為 UUID，移至集中管理區（Vault）
+2. 側欄導覽四個領域（檔案加密／資料夾防護／密碼庫／設定）；加密與解密是疊在清單上的信封懸浮層，不是獨立分頁（見第 14.3 節）
+3. 加密後內容改名為 UUID，移至集中管理區（Vault）；亦可選擇「獨立加密」把密文留成一顆自帶驗證材料、可脫離 Vault 解密的 `.flocked` 檔案（見第 5.3～5.4 節）
 4. 原位置留下 `.locked` 指標檔，內容經 HMAC-SHA256 簽章防竄改
 5. 雙擊 `.locked` 檔案跳出原生 WPF 密碼輸入視窗，正確後解密還原
 6. 支援右鍵批次選取多個檔案/資料夾一次加密；CLI 也支援批次加密／解密／刪除
-7. 三種互相獨立的解鎖方式：密碼（必要）、Passkey（Windows Hello，裝置綁定）、恢復金鑰（一次性顯示的備援代碼）
+7. 三種互相獨立的解鎖方式：項目密碼（必要）、Passkey（Windows Hello，裝置綁定）、恢復金鑰（一次性顯示的備援代碼）
 8. Vault 位置可由使用者隨時在設定頁自訂，可指向雲端同步資料夾達成跨裝置加密備份
-9. 「關鍵操作驗證」機制：清除使用紀錄等破壞性操作可設定 Windows Hello 驗證門檻
+9. 破壞性動作依「後果不可逆程度」分四層，最高層（永久刪除加密項目）要求密碼＋Windows Hello＋最終確認（見第 8.2 節）
 10. 介面設計參考 Apple HIG 與 emilkowalski/skills 的動效細節做法
 11. 支援繁體中文／英文雙語，前端文案與後端常見錯誤情境皆有對應翻譯
-12. 資料夾防護（Folder Guard）：獨立分頁，右鍵直接上鎖/解鎖資料夾，共用密碼＋選配 Passkey，純 ACL 限制不加密內容（見第 21 節）
+12. 資料夾防護（Folder Guard）：獨立分頁，右鍵直接上鎖/解鎖資料夾，共用的「防護密碼」＋選配 Passkey，純 ACL 限制不加密內容；另有雙擊解鎖與閒置自動重新上鎖兩個選配功能（見第 21 節）
 13. 設定頁可一鍵檢查軟體更新，直接下載並啟動安裝程式（見第 22 節）
+14. 加密與解密皆顯示真實進度（數字來自實際處理掉的位元組數），GUI 與 CLI 同一個來源
 
 ---
 
@@ -172,7 +173,7 @@ Task<DeleteRecordResult> TryDeleteRecordAsync(string uuid, bool force = false)
 
 ---
 
-## 5. 資料夾加密設計
+## 5. 資料夾加密與單檔案分散式加密
 
 採用「封裝後加密」策略：資料夾加密時，先用 `System.IO.Compression.ZipFile.CreateFromDirectory` 把整個資料夾打包成一個暫存 zip，再把這個 zip 當成一份「檔案」丟進第 4 節的檔案加密流程（完全複用，不需要另外設計一套資料夾專屬的加解密機制）。
 
@@ -205,6 +206,59 @@ Task<DeleteRecordResult> TryDeleteRecordAsync(string uuid, bool force = false)
 5. **例外處理**：App 啟動時會呼叫 `FolderArchiver` 的清理方法，掃描 `%TEMP%\FileLocker\` 資料夾，清除任何殘留的暫存 zip（避免程式崩潰、斷電導致明文資料一直留在磁碟上）。
 
 原位置的 `.locked` 指標檔：資料夾加密完成後，整個原始資料夾會被刪除，改成在同一位置產生一個 `{資料夾名稱}.locked` 檔案（單一檔案，非資料夾），內容同樣只記錄對應 UUID（+ 簽章）。
+
+---
+
+### 5.3 單檔案分散式加密（`.flocked`）
+
+加密時可勾選的選項（UI 顯示為「獨立加密」）：加密結果不存進 Vault 集中管理區，改成在原地（或使用者指定的資料夾）留下一顆自帶完整密文的 `.flocked` 檔案，不產生 `.locked` 指標檔。`StorageMode` 列舉（`Vault`／`Standalone`）記在 `.meta.json`，跟 `LockStatus`（這筆加密有沒有真正完成）是兩個互相獨立的軸。完整的功能規劃見 [`單檔案分散式加密_功能規劃.md`](features/單檔案分散式加密_功能規劃.md)。
+
+跟集中庫模式的差異只在密文放哪裡與 commit 階段做什麼，加密演算法、金鑰衍生、交易模型全部共用：
+
+- **Pending 階段**：兩種模式都把密文寫進 Vault 的 `{uuid}.enc` 暫存位置，Standalone 只是在密文前面多寫一段 `.flocked` header。這樣 commit 時只要把這個檔案整個 `File.Move` 到最終位置就是一份合法的 `.flocked`，不需要重新讀寫整份密文；Rollback 也直接沿用既有的 `_vault.DeleteItem(uuid)`，不必另外設計一套暫存檔清理機制。
+- **Commit 階段**（`CommitStandaloneEncryptAsync`）：補上檔尾的 metadata 區塊（見第 5.4 節）、`File.Move` 到最終位置、更新 `OriginalPath` 指向新位置，然後才安全清除原始明文。
+- **Vault 仍留一份 metadata**（`{uuid}.meta.json`）當書籤，沒有對應的 `.enc`——「已加密清單」因此仍然列得出這些項目，並提供「前往檔案原始位置」按鈕。
+
+風險提示：`.flocked` 檔案本身就是唯一副本，遺失、損毀或誤刪即永久遺失，沒有集中管理區可以找回。前端在第一次勾選這個選項時以一次性彈窗告知，確認後才啟用。
+
+### 5.4 `.flocked` 檔案格式
+
+```
+┌─ Header（31 bytes，加密開始之前寫入）─────────────┐
+│ Magic bytes (4 bytes)          "FLKD"            │
+│ 版本號 (1 byte)                                    │
+│ Header 總長度 (2 bytes, big-endian)                │
+│ UUID (16 bytes，原始 GUID 位元組，非 36 字元字串)     │
+│ 保留欄位 (8 bytes，目前全部寫 0)                     │
+├─ 密文（ChunkedCipher 串流，見第 3.2 節）───────────┤
+├─ 檔尾（v2 起，commit 階段追加）───────────────────┤
+│ Metadata JSON (UTF-8, N bytes)                   │
+│ N (4 bytes, big-endian)                          │
+│ 檔尾 magic (4 bytes)           "FLKM"             │
+└─────────────────────────────────────────────────┘
+```
+
+**「Header 總長度」欄位不寫死成常數**：往後若要使用原本填 0 的保留空間放真正用得到的欄位（例如壓縮旗標、chunk size 提示），只要沒有動到既有欄位的位置與意義，就不需要跳版本號——讀取端永遠照這個欄位讀走「宣告的長度」，不會因為長度變了就讀錯位移、把密文串流的開頭吃掉一截。真正不相容的格式變動（欄位順序或意義改變）才跳版本號，讀到不認得的版本直接判定失敗，不猜測著解析。
+
+**UUID 以明碼寫在 header**：UUID 本身不是機密（`.locked` 指標檔同樣是明碼 UUID ＋簽章，同一個資安假設），真正需要保護的密碼與加密金鑰完全不在 header 裡。`FolderArchiver` 掃描巢狀鎖定項目時需要能從完整密文中識別出 UUID，這是 header 存在的原始理由。
+
+**header 本身沒有簽章**：`.flocked` 的完整性由後面密文串流自己的 AES-GCM Auth Tag 保護，header 被竄改頂多讓 UUID 讀錯或巢狀偵測誤判，不會讓人拿到明文，解密仍然需要正確的項目密碼。
+
+#### v2：驗證材料嵌入檔尾
+
+v1 的檔案只有 UUID，解密時鹽值、Argon2 參數、密碼驗證雜湊全部要回 Vault 查 `{uuid}.meta.json`——也就是說它並不是 UI 上宣稱的「獨立可攜」：複製到其他裝置無法解密，Vault 遺失或重建之後所有既存的 `.flocked` 也一起無法解密。v2 把這份 metadata 嵌進檔案本身。
+
+**metadata 放在檔尾而不是接在 header 之後，因為**寫入時機對不上：header 必須在加密開始之前就寫（密文緊接在它後面），但 Passkey／恢復金鑰的包裝金鑰是整份內容加密完成之後才產生的。放檔尾的話，commit 階段對既有的暫存密文檔直接 append 再 `File.Move` 即可，維持 O(1) 的搬移成本；若改為接在 header 之後，每次 commit 都必須把整份密文重讀重寫一次，大型項目的差異極為顯著。
+
+**此結構要求呼叫端框出密文的範圍**：`ChunkedCipher.DecryptStream` 讀到串流結束為止，不框範圍會把檔尾的開頭四個位元組當成下一個區塊的長度前綴解析。`Io/BoundedReadStream` 承擔這個職責——不改由 `ChunkedCipher` 自行接收長度參數，因為「密文到哪裡結束」是 `.flocked` 這個容器格式的問題，而 `ChunkedCipher` 同時服務集中庫模式（整個 `.enc` 檔案就是密文），那邊沒有這個概念。
+
+**版本號提升至 2**：v1 的讀取端遇到 v2 檔案會把檔尾當成密文的一部分解析，產生難以理解的「內容損毀」錯誤；提升版本號使舊版明確拒絕，而不是給出誤導性的失敗。讀取端接受版本 1 與 2，讀到 v1 就退回既有行為（向 Vault 查詢 metadata），既有檔案維持可解密。
+
+**`OriginalPath` 與 `StandaloneDestinationDir` 不嵌入**：這兩個欄位對解密沒有作用（還原位置看的是 `.flocked` 檔案現在放在哪），保留只會讓一顆設計上就是要被帶走、被轉交的檔案順便洩漏使用者的資料夾結構。使用者未指定還原位置時，改用 `.flocked` 檔案目前所在的資料夾，這也才符合「搬到哪就在哪還原」的可攜語意。
+
+**metadata 來源的優先順序**：Vault 查得到就以 Vault 那份為準，查不到才讀檔尾（`LockService.ResolveMetadataForDecrypt`）。順序不可對調——同一台裝置上使用者可能事後重新設定過該項目的 Passkey，那種變更只反映在 Vault 的 `.meta.json` 上，檔尾那份是加密當下固定寫死的。檔尾那份的定位是「Vault 不在了」時的後備。
+
+**路徑式解密入口**：`DecryptFlockedFileAsync`（密碼）／`DecryptFlockedFileByRecoveryKeyAsync`／`DecryptFlockedFileByPasskeyAsync`。需要以「檔案路徑」為起點的入口，是因為 Vault 不在時呼叫端手上只有這顆檔案，沒有紀錄可以先查出 UUID。Passkey 之所以也提供，是為了涵蓋「同一台裝置、但 Vault 遺失或重建」——憑證仍在本機 TPM 內、包裝過的內容金鑰在檔尾，兩者湊齊即可解開。GUI 的信封解密流程另外把使用者挑中的 `.flocked` 路徑一路傳到 `VerifyDecrypt*`／`CommitPendingDecryptAsync`（`PendingDecrypt` 記錄型別的 `FlockedPath` 欄位），讓「別人給的 `.flocked`」在那條流程裡也解得開。
 
 ---
 
@@ -278,19 +332,46 @@ void ClearHistory()                                              // 純粹清空
 
 `AppSettings.CriticalActionCredentialName`（`string?`）是唯一的狀態欄位：`null` 代表沒設定過／已停用；非空代表已設定。這個欄位同時身兼「是否啟用」兩用，沒有另外的布林開關——好處是「停用」跟「未設定過」是同一種狀態，不需要維護兩套邏輯分支。
 
-### 8.2 前端使用情境與驗證強度
+### 8.2 保護等級分層與前端使用情境
 
-| 操作 | 是否需要先設定過 | 驗證時機 |
+破壞性動作要通過幾道關卡，依據是「後果有多不可逆」，不是「動作名稱聽起來多嚴重」。判斷本身抽在前端的 `src/protectionTiers.js`（純函式，有測試把對照表固定住），四層定義如下：
+
+| 層級 | 判準 | 驗證要求 | 適用動作 |
+|---|---|---|---|
+| T0 | 完全可逆、無資料損失 | 無 | 切換語言／主題／視窗控制鈕造型、展開清單、前往資料夾、查看說明 |
+| T1 | 取回自己的內容 | 一次身分證明（項目密碼／Passkey／恢復金鑰） | 解密、資料夾解鎖 |
+| T2 | 影響範圍大但可復原 | 密碼＋明確確認 | 搬移 Vault、停用資料夾防護、停用 Passkey、清除使用紀錄 |
+| T3 | 內容永久消失 | 密碼＋關鍵操作驗證＋最終確認 | 永久刪除加密項目 |
+
+規則可收斂為單一句子：**已設定過關鍵操作驗證時，T2 以上一律要求驗證；未設定過則退回確認彈窗，但 T3 必定要求密碼。**
+
+T0 與 T1 不在 `ACTION_TIERS` 對照表裡：T0 本來就不經過任何額外關卡，T1 的身分證明是各自流程內建的（解密要項目密碼、資料夾解鎖要防護密碼），不是這裡這種「額外加一道門」的性質。對照表查不到的動作一律當成 T3 處理——之後新增破壞性動作卻忘記登記時，寧可多問幾道，也不要靜悄悄地一路放行。
+
+各動作的實際互動：
+
+| 操作 | 層級 | 未設定過關鍵操作驗證時 | 已設定過時 |
+|---|---|---|---|
+| **永久刪除加密項目** | T3 | 重新輸入該項目的項目密碼 → 最終確認彈窗 | 項目密碼 → Windows Hello → 最終確認彈窗 |
+| **清除使用紀錄** | T2 | 確認彈窗 → 最終確認彈窗 | 確認彈窗（確定鍵即 Windows Hello 觸發鍵）→ 驗證 → 最終確認彈窗 |
+| **搬移 Vault 位置** | T2 | 直接放行 | 開啟資料夾選擇器之前先要求驗證 |
+| **停用關鍵操作驗證本身** | — | 不適用（沒設定過就沒有東西可停用） | 停用前必須先通過一次驗證，避免已取得裝置操作權限的第三人單純點一下就把保護關掉 |
+
+身分驗證與破壞性意圖確認一律分開問，不合併成一步。已設定過關鍵操作驗證時，第一個確認彈窗的確定鍵本身就是「觸發 Windows Hello」的按鈕（紅底白字、帶白色版 Passkey 圖示，讓使用者知道按下去會發生什麼）；驗證通過後跳出的第二個彈窗是純文字的最終確認，不再帶 Passkey 圖示，因為身分已經驗證過，那一步純粹是不可逆動作的最後提醒。
+
+**CLI 的 `delete` 不套用 T3 的密碼門**：這不是遺漏。能執行 CLI 的人本來就能直接開啟 Vault 資料夾刪除 `{uuid}.enc` 與 `{uuid}.meta.json`，效果與 `delete` 完全相同；要求輸入密碼只會擋到照規矩使用的擁有者，並讓「無 GUI 環境可操作」這個存在目的（見第 15 節）失效。T3 的密碼門防的是「有人在已登入的桌面上操作 GUI」，不是「有人取得了檔案系統存取權」——後者本來就不在任何一道 UI 關卡的防護範圍內。
+
+### 8.3 四套憑證的命名與遺失後果
+
+系統中並存四套互相獨立的驗證方式。它們在 UI 上曾經都叫「密碼」、也都能搭配 Passkey，但遺失之後的結果差異極大——這是四者之間最具實質意義的區別，因此各自給定專屬名詞，並在各自的設定畫面載明遺失後果。
+
+| 名稱 | 範圍 | 遺失後果 |
 |---|---|---|
-| **清除使用紀錄** | 是，沒設定過整個功能直接擋住，不給「不驗證」的路徑 | 每次清除前都要重新通過一次 Windows Hello |
-| **搬移 Vault 位置** | 否——沒設定過就直接放行，維持原本行為 | 只有已經設定過，才會在開啟資料夾選擇器前先要求驗證 |
-| **停用關鍵操作驗證本身** | 是 | 停用前必須先通過一次驗證，避免已取得裝置操作權限的第三人單純點一下就把保護關掉 |
+| **項目密碼**（Item password） | 每個加密的檔案或資料夾各自一組，加密當下設定 | 未啟用 Passkey 或恢復金鑰時永久無法復原，不設任何後門 |
+| **防護密碼**（Guard password） | 整個資料夾防護功能共用一組 | 不造成資料遺失——該功能不加密內容，存取權可自行取回（見第 21.1 節） |
+| **關鍵操作驗證** | App 層級，不綁定任何特定項目 | 不是密碼而是 Windows Hello 憑證；遺失或換裝置時到設定頁重新設定一次即可 |
+| **密碼庫主密碼** | 可選配部件，與上述三者無關 | 依 PasswordVault repo 自身的設計，見該專案文件 |
 
-清除紀錄的完整互動是刻意設計成三步驟（不是「先驗證再問一次」的兩步驟）：
-
-1. 彈窗「確定要刪除所有紀錄嗎？」，確定按鈕本身就是「使用 Passkey 驗證身份」的觸發鍵（紅底白字，帶白色版 Passkey 圖示）。
-2. 按下後才真的觸發 Windows Hello 挑戰簽章。
-3. 驗證通過後才跳出第二個、純文字的最終確認彈窗（不再需要 Passkey 圖示，因為身份已經驗證過），確認後才真的送出清除。
+資料夾防護設定頁的說明只講「忘記不會造成資料遺失、跟加密不同」這個**結果**；取回存取權的**具體操作步驟**放在使用說明彈窗，不放在常駐文案——那條途徑是必要的復原手段，但不需要在使用者尚未遇到問題時就主動把操作步驟公告在門上。
 
 ---
 
@@ -298,12 +379,16 @@ void ClearHistory()                                              // 純粹清空
 
 `Security/LockoutTracker.cs`，只作用在**密碼**這條解鎖路徑（Passkey／恢復金鑰不受影響，理由見第 6.4 節）。
 
-| 參數 | 值 |
-|---|---|
-| 觸發門檻 | 連續錯誤 5 次 |
-| 基礎鎖定時間 | 30 秒 |
-| 最長鎖定時間 | 3600 秒（1 小時） |
-| 延遲公式 | `min(30 × 2^min(連續錯誤次數-5, 10), 3600)` 秒，每多錯一次鎖越久，指數成長直到封頂 |
+觸發門檻固定為連續錯誤 5 次；起跳秒數與上限由建構子帶入，兩個用途各自套用不同的政策：
+
+| 用途 | 基礎鎖定時間 | 最長鎖定時間 | 延遲公式 | 鍵值 |
+|---|---|---|---|---|
+| 加密（解密該項目） | 30 秒 | 3600 秒（1 小時） | `min(30 × 2^min(連續錯誤次數-5, 10), 3600)` 秒 | 該項目的 UUID |
+| 資料夾防護（解鎖） | 5 秒 | 60 秒 | `min(5 × 2^min(連續錯誤次數-5, 10), 60)` 秒 | 固定常數 `folder-guard-unlock` |
+
+**資料夾防護的上限低很多，因為**它的威脅模型是「同一台裝置上的其他人隨手嘗試」，而且忘記防護密碼時本來就可以透過檔案總管的安全性設定自行取回存取權（見 ADR-0001，使用說明也會告知）——鎖一小時擋不住知道這條路的人，實際上只會把打錯字的擁有者關在門外一小時。60 秒足以讓隨手嘗試的人放棄、也足以讓擁有者察覺，機制的強度跟它實際能達成的目的才對得上。加密那一側維持較長的上限，因為那裡的密碼是唯一的門，遺失即永久無法復原，把持續嘗試的人拖到不划算是合理的。
+
+資料夾防護的鍵值是代表整個功能的常數而不是逐項目，因此鎖定會同時影響所有防護中的資料夾，這是接受的取捨。Passkey 兩邊都略過鎖定機制，理由見第 6.4 節。
 
 狀態儲存在一個獨立的本機 JSON 檔案（不放在 Vault 內、不隨雲端同步——鎖定狀態是「這台裝置」的暫時狀態，不該跨裝置共享），以 UUID 為鍵，寫入用 `AtomicFile.WriteAllText`（原子寫入），存取全部包在一個靜態鎖裡避免併發寫入互相干擾。驗證成功會整筆清掉重置。
 
@@ -409,10 +494,11 @@ resolvePending(responseType, data)                        // messageHandlers 裡
 
 | 訊息 type | 處理方法 |
 |---|---|
-| `encrypt` | `HandleEncryptRequestAsync`（批次，串流回報進度） |
-| `decrypt` / `decryptByUuid` / `decryptByPasskey` / `decryptByRecoveryKey` | 對應四條解密路徑 |
-| `decryptBatch` | `HandleDecryptBatchRequestAsync`（密碼路徑批次） |
-| `getPathSizes` | `HandleGetPathSizesRequestAsync` |
+| `encryptPending` / `commitEncrypt` / `rollbackPendingEncrypt` | 信封加密流程三段式，唯一的加密路徑（見第 14.3 節） |
+| `verifyDecryptPassword` / `verifyDecryptPasskey` / `verifyDecryptRecoveryKey` | 信封解密流程的驗證階段，三條驗證路徑各一 |
+| `commitPendingDecrypt` / `cancelPendingDecrypt` | 信封解密流程的落地／取消 |
+| `decryptByUuid` / `decryptByPasskey` / `decryptByRecoveryKey` | 清單頁直接解密的三條路徑（走密碼彈窗，不是信封） |
+| `decryptBatch` | `HandleDecryptBatchRequestAsync`（摺疊群組「全部解鎖」，密碼路徑批次） |
 | `checkNestedLocks` | `HandleCheckNestedLocksRequestAsync` |
 | `saveRecoveryKeyToFile` | `HandleSaveRecoveryKeyToFileRequest` |
 | `inspectLockedFile` | `HandleInspectLockedFileRequest` |
@@ -422,6 +508,11 @@ resolvePending(responseType, data)                        // messageHandlers 裡
 | `pickFile` / `pickFolder` | 原生檔案/資料夾選擇器 |
 | `listVault` / `listHistory` | 清單頁兩個子頁籤 |
 | `deleteRecord` / `verifyPasswordForDelete` | 永久刪除流程 |
+| `lockFolders` / `unlockFolder` / `unlockAllFolders` / `listFolderGuard` / `removeFolderGuardEntry` / `unlockFoldersForEncryption` | 資料夾防護（見第 21 節） |
+| `setupFolderGuardCredential` / `setupFolderGuardPasskey` / `disableFolderGuardPasskey` / `disableFolderGuard` / `setFolderGuardDoubleClickUnlock` / `setFolderGuardAutoRelock` | 資料夾防護的憑證與選配功能設定 |
+| `checkForUpdates` / `downloadAndInstallUpdate` / `openReleasesPage` | 軟體更新檢查（見第 22 節） |
+| `restartApp` | 密碼庫部件安裝／更新完成後重啟生效。送出端是共用元件 `@lx-kvn/password-locker-ui`，不在這個 repo 的前端程式碼裡（`openReleasesPage` 亦同） |
+| `openFolderInExplorer` | 在檔案總管開啟指定資料夾 |
 | `windowMinimize` / `windowMaximizeToggle` / `windowClose` | 視窗控制，內嵌處理，不透過 Protocol 層 |
 | `filesDroppedFromWebView` | 拖放檔案（見第 14.1 節） |
 | 其餘未知 `type` | 記錄到 console，不中斷 |
@@ -430,25 +521,45 @@ resolvePending(responseType, data)                        // messageHandlers 裡
 
 ### 13.3 後端 → 前端訊息（`messageHandlers` 對應表，節錄關鍵分組）
 
-- **加密**：`encryptBatchStarted` / `encryptItemResult` / `encryptBatchDone`
-- **解密**：`decryptResult` / `decryptByUuidResult` / `decryptByPasskeyResult` / `decryptByRecoveryKeyResult` / `decryptBatchStarted` / `decryptBatchItemResult` / `decryptBatchDone`
+- **加密（信封流程）**：`encryptPendingBatchStarted` / `encryptProgress` / `encryptPasskeyVerifying` / `encryptPendingItemResult` / `encryptPendingBatchDone` / `commitEncryptResult` / `rollbackPendingEncryptResult`
+- **解密（信封流程）**：`verifyDecryptPasswordResult` / `verifyDecryptPasskeyResult` / `verifyDecryptRecoveryKeyResult` / `decryptProgress` / `commitPendingDecryptResult`
+- **解密（清單頁）**：`decryptByUuidResult` / `decryptByPasskeyResult` / `decryptByRecoveryKeyResult` / `decryptBatchStarted` / `decryptBatchItemResult` / `decryptBatchDone`
 - **清單/設定**：`vaultList` / `vaultChanged` / `historyList` / `settingsResult` / `updateSettingResult` / `changeVaultPathResult`
 - **關鍵操作驗證**：`setupCriticalActionResult` / `verifyCriticalActionResult` / `disableCriticalActionResult` / `clearHistoryResult`
-- **其餘**：`pathPicked` / `pathsPicked` / `pathPickCancelled` / `pathSizesResult` / `nestedLockCheckResult` / `saveRecoveryKeyToFileResult` / `inspectLockedFileResult` / `deleteRecordResult` / `verifyPasswordForDeleteResult` / `windowStateChanged` / `filesDropped` / `initialPaths`（第二個執行個體把路徑轉交過來時用）/ `error`
+- **其餘**：`pathPicked` / `pathsPicked` / `pathPickCancelled` / `nestedLockCheckResult` / `saveRecoveryKeyToFileResult` / `inspectLockedFileResult` / `deleteRecordResult` / `verifyPasswordForDeleteResult` / `windowStateChanged` / `filesDropped` / `initialPaths`（第二個執行個體把路徑轉交過來時用）/ `error`
 
-`pathSizesResult`／`nestedLockCheckResult`／`setupCriticalActionResult`／`verifyCriticalActionResult`／`disableCriticalActionResult` 這幾個單純是 `resolvePending()` 的傳遞站，實際邏輯在呼叫端的 `await requestMessage(...)` 之後。
+`nestedLockCheckResult`／`setupCriticalActionResult`／`verifyCriticalActionResult`／`disableCriticalActionResult` 這幾個單純是 `resolvePending()` 的傳遞站，實際邏輯在呼叫端的 `await requestMessage(...)` 之後。
+
+**每一種 `requestMessage()` 的回應類型都必須在 `messageHandlers` 裡有一個對應項目呼叫 `resolvePending()`。** 漏掉的話那個 Promise 永遠不會被解開，症狀是「按了完全沒反應、也沒有任何錯誤訊息」。新增 IPC 往返時，後端送回應、前端註冊處理常式這兩件事要一起做完。同理，移除一條往返時要整條移除（前端呼叫端、前端處理常式、後端分派、後端處理方法），不要只砍其中一半留下半接狀態。
 
 ### 13.4 `VaultProtocolHandlers`：Protocol 層完整介面
 
 這一層是 `MainWindow` 與 `LockService`/`VaultManager` 之間的轉譯層，本身不依賴任何 WPF/WebView2 型別，可以直接單元測試：
 
 ```csharp
-IAsyncEnumerable<EncryptItemResponse> EncryptBatchAsync(IReadOnlyList<string> paths, string password, string? hint, bool enablePasskey, bool enableRecoveryKey, IntPtr ownerWindowHandle)
-Task<UnlockResult> DecryptAsync(string lockedMarkerPath, string password)
+// 加密：信封流程三段式（GUI 唯一使用的路徑）
+IAsyncEnumerable<EncryptPendingItemResponse> EncryptPendingBatchAsync(IReadOnlyList<string> paths, string password, string? hint, bool enablePasskey, bool enableRecoveryKey, IntPtr ownerWindowHandle, IProgress<double>? progress, Action<bool>? onPasskeyVerifying, StorageMode storageMode, string? destinationDir)
+Task<LockResult> CommitEncryptAsync(string uuid)
+Task RollbackPendingEncryptAsync(string uuid)
+
+// 解密：信封流程 Verify/Commit/Cancel 三兄弟（GUI 唯一使用的路徑）
+Task<VerifyPasswordResult> VerifyDecryptPasswordAsync(string uuid, string password, string? flockedPath = null)
+Task<VerifyPasswordResult> VerifyDecryptByPasskeyAsync(string uuid, IntPtr ownerWindowHandle, string? flockedPath = null)
+Task<VerifyPasswordResult> VerifyDecryptByRecoveryKeyAsync(string uuid, string recoveryKeyInput, string? flockedPath = null)
+Task<UnlockResult> CommitPendingDecryptAsync(string uuid, string? destinationDir, IProgress<double>? progress = null)
+Task CancelPendingDecryptAsync(string uuid)
+
+// 解密：清單頁直接解密（走密碼彈窗，不是信封）
 Task<UnlockResult> DecryptByUuidAsync(string uuid, string password, string? destinationDir)
 Task<UnlockResult> DecryptByPasskeyAsync(string uuid, IntPtr ownerWindowHandle, string? destinationDir)
 Task<UnlockResult> DecryptByRecoveryKeyAsync(string uuid, string recoveryKeyInput, string? destinationDir)
 IAsyncEnumerable<DecryptBatchItemResponse> DecryptBatchAsync(IReadOnlyList<string> uuids, string password)
+
+// 一次到位的加解密：GUI 不從這裡進來，見下方說明
+IAsyncEnumerable<EncryptItemResponse> EncryptBatchAsync(IReadOnlyList<string> paths, string password, string? hint, bool enablePasskey, bool enableRecoveryKey, IntPtr ownerWindowHandle, Action<bool>? onPasskeyVerifying)
+Task<UnlockResult> DecryptAsync(string filePath, string password)
+
+// 其餘
 InspectLockedFileResponse InspectLockedFile(string path)
 Task<IReadOnlyList<PathSizeInfo>> GetPathSizesAsync(IReadOnlyList<string> paths)
 Task<int> CheckNestedLockCountAsync(IReadOnlyList<string> paths)
@@ -464,9 +575,14 @@ Task<IReadOnlyList<VaultListItemResponse>> ListVaultAsync()
 IReadOnlyList<HistoryListItemResponse> ListHistory()
 Task<DeleteRecordResult> DeleteRecordAsync(string uuid)
 Task<VerifyPasswordResult> VerifyPasswordAsync(string uuid, string password)
+static string? ResolveDestinationDirFromRequest(JsonElement request)
 ```
 
-`ListVaultAsync` 會用 `VaultIndexCache.GetItems()` 當資料來源、自我修復孤兒快取列，逐項檢查即時的指標檔狀態（`MarkerStatusChecker`），用 `AsParallel()` 平行化，依建立時間新到舊排序。`DeleteRecordAsync` 把「查無此紀錄」也當成功處理（自我修復孤兒快取項目）。
+`EncryptBatchAsync` 與 `DecryptAsync`（一次到位版本）目前沒有 GUI 呼叫端——前端一律走信封流程的三段式，對應的 IPC 分派已經移除。保留它們的理由是：它們並非第二套加解密實作（內部分別就是 `EncryptPendingAsync` 加 `CommitEncryptAsync`、以及 `LockService.DecryptFileAsync`），包裝的都是 CLI 仍在使用的核心 API，同時是協定層測試建立既有加密項目的共用起點。兩者的 XML 註解已載明此狀況，避免後續閱讀者誤判為遺留死碼。
+
+`GetPathSizesAsync` 同樣沒有呼叫端——它原本服務的估算式進度條已移除，保留是因為第 5 節記載但尚未實作的「加密前顯示預估所需空間」會直接重用它（見第 24.1 節）。
+
+`ListVaultAsync` 會用 `VaultIndexCache.GetItems()` 當資料來源、自我修復孤兒快取列，逐項檢查即時的指標檔狀態（`MarkerStatusChecker`），用 `AsParallel()` 平行化，依建立時間新到舊排序。`DeleteRecordAsync` 把「查無此紀錄」也當成功處理（自我修復孤兒快取項目）。`InspectLockedFile` 在 Vault 查不到該筆 uuid 且檔案是 `.flocked` 時，會退回讀檔尾嵌入的 metadata（見第 5.4 節），讓別人給的檔案在畫面上也顯示得出檔名、提示與可用的解鎖方式。
 
 ---
 
@@ -506,17 +622,35 @@ Task<VerifyPasswordResult> VerifyPasswordAsync(string uuid, string password)
 - **內容寬度**：表單類頁籤（加密/解密/設定）維持適中寬度（760px）；已加密清單頁（表格內容）寬度上限放寬到 1180px，跟著視窗寬度伸展，切換頁籤時寬度變化有過渡動畫。
 - **長文字處理**：長路徑/長檔名一律截斷成一行 + 刪節號，滑鼠移上去用原生 `title` 屬性顯示完整內容。
 
-### 14.3 主視窗四個頁籤
+### 14.3 主視窗導覽與各畫面
 
-- **加密**：三步驟精靈（`encryptStep` 1→2→3）。
-  - **步驟一（選項目）**：多選檔案對話框 + 可重複點「選擇資料夾」加入，或拖放。還沒選項目時是佔滿版面的拖放卡片（虛線框，同時是空狀態跟拖放目標）；已選取時改實線邊框清單卡片；選超過一個項目時 Passkey／恢復金鑰勾選框自動鎖住（見第 4.5 節）。
-  - **步驟二（密碼與選項）**：密碼＋確認密碼、提示、Passkey／恢復金鑰勾選。送出後先問一次每個項目的檔案大小（`getPathSizes`），估算耗時跑一個前快後慢（`1 - Math.pow(1-t, 2.2)`）、只逼近 92% 的進度條動畫，真正完成時才補滿；含資料夾的批次會先顯示「壓縮中」再切「加密中」；下方即時顯示每個項目的加密結果。
-  - **步驟三（完成頁）**：批次真正結束後才切過來，顯示最終結果清單＋「完成」按鈕，使用者主動按下才回到步驟一並清空表單。
-- **解密**：手動選 `.locked` 檔案 + 輸入密碼（Enter 直接送出）；選檔後自動查詢是否支援 Passkey／恢復金鑰快速解鎖；還原位置固定用 `.locked` 檔案目前所在的資料夾。
-- **已加密清單**：兩個子頁籤：
-  - **已加密檔案**：讀取 Vault 目前實際存在的項目，可用密碼／Passkey／恢復金鑰個別解鎖；「永久刪除」獨立成表格每列最前面一欄的圖示按鈕，點下去要求重新輸入密碼（`VerifyPasswordAsync`，見第 4.4 節）驗證通過後再跳最終確認彈窗，兩層都通過才真的送出刪除。同一批次加密的項目摺疊成一組。第一次載入顯示骨架畫面（最短顯示 300ms 避免資料回來太快一閃而過）。
-  - **使用紀錄**：本機操作日誌（`history.jsonl`），跟 Vault 目前狀態無關，項目就算已經解密或刪除，紀錄仍然保留；可設定「關鍵操作驗證」後清除（見第 8 節）。
-- **設定**：Vault 位置顯示＋搬移按鈕（含第 8 節的條件式驗證）；語言下拉；主題按鈕；關鍵操作驗證區塊（設定/重新設定/停用）；使用說明按鈕（彈窗，分「基本操作」「運作原理」「注意事項」「關鍵操作驗證」四段）。
+導覽是左側的側欄（`components/AppSidebar.vue`），取代早期版本的頂部水平分頁列。四個項目：
+
+| 項目 | 翻譯 key | 到達的畫面 |
+|---|---|---|
+| 檔案加密 | `nav.fileEncryption` | 已加密清單（`activeTab = 'list'`） |
+| 資料夾防護 | `tab.folderGuard` | 資料夾防護頁 |
+| 密碼庫 | `tab.passwordLocker` | 密碼庫頁（可選配部件，見 ADR-0003） |
+| 設定 | `tab.settings` | 設定頁 |
+
+四個 label 一律用名詞，不使用畫面內指向加密動作的 `tab.encrypt`：「檔案加密」這個項目實際到達的是已加密清單，用動詞命名會跟到達的畫面對不上；改成名詞之後四個項目都是「領域」，而且跟「資料夾防護」形成對照，一眼看得出本工具的兩種保護機制分別管什麼。側欄可收合成只剩圖示（`useSidebar.js` 保存狀態），收合時滑鼠移上去或鍵盤 focus 會顯示提示框（teleport 到 `body`，位置由 `tooltipPosition.js` 的純函式計算——側欄本身有 `overflow: hidden` 供收合動畫使用，提示框若是它的子元素會被裁掉）。
+
+**加密與解密不是分頁，是疊在目前畫面上的懸浮層（信封流程）**：對應定案文件的信封比喻——「加密」「解密」都是從清單頁彈出來的短暫任務，不該把使用者整個導去另一個頁面，關掉信封退回的永遠是原本在看的清單。
+
+- **加密（`EnvelopeEncrypt.vue`）**：`encryptPhase` 依序為 `form` → `processing` → `confirming` → `committing` → `flying`。
+  - **選項目**：多選檔案對話框、可重複點「選擇資料夾」加入，或拖放。選超過一個項目時 Passkey／恢復金鑰勾選框自動鎖住（見第 4.5 節）。
+  - **密碼與選項**：項目密碼＋確認、提示、Passkey／恢復金鑰／獨立加密三個勾選。密碼欄下方固定顯示一行「忘記會怎樣」（見第 8.2 節下方的憑證命名說明）。送出後走 `encryptPending`，進度條顯示的是**後端回報的真實百分比**（`encryptProgress`，數字來自 `ChunkedCipher` 實際處理掉的位元組數），不是依檔案大小估算的動畫；等待 Windows Hello 期間後端阻塞、不會回報新的百分比，送出按鈕的文字改顯示「等待驗證」，避免定住不動的數字被誤認為當機。
+  - **確認與寄出**：pending 完成後播「郵戳／確認」畫面，使用者確認才送 `commitEncrypt` 真正落地，接著播寄出飛走動畫，動畫結束自動回到已加密清單。取消會 `rollbackPendingEncrypt`，且不清空表單欄位，讓使用者可以改一個地方再送一次。
+  - 加密只有這一條路徑。早期曾有第二套「一次到位」的流程（前端送 `encrypt`、配一條依檔案大小估算時間的假進度條），已整套移除。
+- **解密（`EnvelopeDecrypt.vue`）**：選檔 → `inspectLockedFile` 讀唯讀資訊（確認是合法的加密檔案才播信封）→ 依項目支援的方式驗證（`verifyDecryptPassword`／`verifyDecryptPasskey`／`verifyDecryptRecoveryKey`）→ 驗證成功後抽出「選存放位置」sheet → `commitPendingDecrypt` 真正還原。還原中時「選擇存放位置」按鈕的文字換成「還原中... N%」，數字同樣是後端回報的真實進度（`decryptProgress`）。挑中的若是 `.flocked`，路徑會一併送給後端，讓 Vault 查不到該筆紀錄時可以改讀檔尾嵌入的驗證材料（見第 5.4 節）。
+- **已加密清單**：兩個子頁籤。
+  - **已加密檔案**：讀取 Vault 目前實際存在的項目，可用項目密碼／Passkey／恢復金鑰個別解鎖；「永久刪除」獨立成表格每列最前面一欄的圖示按鈕，驗證強度見第 8.2 節。同一批次加密的項目摺疊成一組。第一次載入顯示骨架畫面（最短顯示 300ms 避免資料回來太快一閃而過）。
+  - **使用紀錄**：本機操作日誌（`history.jsonl`），跟 Vault 目前狀態無關，項目就算已經解密或刪除，紀錄仍然保留；清除的驗證強度見第 8.2 節。
+- **設定**：由上而下依序為 Vault 位置顯示＋搬移按鈕、語言下拉、主題按鈕、背景常駐開關、跟隨 Windows 啟動開關、視窗控制鈕造型三選一、關鍵操作驗證區塊、資料夾防護憑證區塊（防護密碼／Passkey、雙擊解鎖與自動重新上鎖選項）、使用說明按鈕、軟體更新檢查。三個系統層級開關對應 `AppSettings` 的欄位：
+  - **背景常駐**（`MinimizeToTrayEnabled`，預設開啟）：關閉所有視窗不結束程式，改成留在系統匣（見 `TrayIconManager`），資料夾防護的閒置自動重新上鎖計時器才能持續運作。
+  - **跟隨 Windows 啟動**（`LaunchAtStartupEnabled`，預設開啟）：由 `StartupRegistrar` 登記在 `HKEY_CURRENT_USER` 底下，不需要系統管理員權限。跟上一個開關互相獨立，使用者可能只想要其中一個效果。
+  - **視窗控制鈕造型**（`WindowControlStyle`，預設 `macos`）：`macos`（圓點、左上角）／`windows-native`（方形貼邊、右上角，貼近 Windows 11 原生行為）／`windows-styled`（圓角方形、右上角，用 App 自己的強調色／危險色而不是 OS 原生紅／灰）。三種都仍是 Vue 畫的，不是換成原生系統控制項。
+- **使用說明彈窗**：分「基本操作」「運作原理」「注意事項」「四套密碼分別是什麼」「關鍵操作驗證」「資料夾防護」「密碼庫」數段。其中「四套密碼分別是什麼」集中對照四套憑證的遺失後果，見第 8.3 節。
 
 ### 14.4 密碼輸入小視窗（`PasswordPromptWindow`）
 
@@ -555,17 +689,24 @@ App 圖示（工作列/Alt+Tab）：純平面白色鑰匙孔圖形 + 黃銅色�
 已隨安裝程式一起發布並加入系統 PATH，見第 19 節。
 
 ```
-FileLocker.Cli --encrypt <路徑1> [路徑2 ...]
-FileLocker.Cli --unlock <.locked 路徑1> [路徑2 ...]
-FileLocker.Cli --unlock-recovery <uuid> <恢復金鑰> [還原目的地資料夾]
-FileLocker.Cli --list
-FileLocker.Cli --delete <uuid1> [uuid2 ...]
+FileLocker.Cli encrypt <路徑1> [路徑2 ...] [--standalone [--destination <資料夾>]]
+FileLocker.Cli unlock <.locked 或 .flocked 路徑1> [路徑2 ...]
+FileLocker.Cli unlock-recovery <uuid 或 .flocked 路徑> <恢復金鑰> [還原目的地資料夾]
+FileLocker.Cli list
+FileLocker.Cli delete <uuid1> [uuid2 ...]
+FileLocker.Cli completion <bash|zsh|pwsh>
 ```
 
-- `--encrypt`／`--unlock`／`--delete` 都支援一次傳多個路徑或 uuid：密碼（或刪除確認）只問一次，套用到所有項目，個別項目的成功/失敗各自列出，結尾印一行「N 筆成功、M 筆失敗」（只有多筆時才印）。內部邏輯跟 GUI 端的批次加密（`EncryptBatchAsync`）同一套：項目數 > 1 才產生 `batchId`。
-- `--unlock-recovery` 維持單筆——uuid + 恢復金鑰是一對一綁定，沒有自然的批次意義。
+子命令（不帶開頭 `--`）是現在推薦的寫法；舊的 `--encrypt` 等旗標寫法完整保留、行為完全不變，用到時印一行過時提醒到 stderr（見第 24.2 節「CLI 使用體驗現代化」）。全域旗標：`--lang <zh-TW|en>`、`--output`／`-o <text|json>`、`-h`／`--help`、`--version`。
+
+- `encrypt`／`unlock`／`delete` 都支援一次傳多個路徑或 uuid：密碼（或刪除確認）只問一次，套用到所有項目，個別項目的成功/失敗各自列出，結尾印一行「N 筆成功、M 筆失敗」（只有多筆時才印）。內部邏輯跟 GUI 端的批次加密同一套：項目數 > 1 才產生 `batchId`。
+- **`--standalone`**：對應 GUI 的「獨立加密」勾選（單檔案分散式加密，見第 5.3 節），加密結果不進 Vault，改成留下一顆 `.flocked` 檔案。**`--destination <資料夾>`** 指定 `.flocked` 的落腳位置，只能搭配 `--standalone` 使用（單獨給會直接判定為參數錯誤——集中庫模式的密文位置是 Vault，沒有「存到別的地方」這個概念）。
+- `unlock` 依副檔名分派給 `.locked` 或 `.flocked` 的解密方式，判斷本身收斂在 `LockService.DecryptFileAsync`，GUI 呼叫同一個方法（這裡曾經各自手刻過一份，其中一份漏改導致 `.flocked` 解密失敗，見第 24.2 節）。
+- `unlock-recovery` 維持單筆——uuid ＋ 恢復金鑰是一對一綁定，沒有自然的批次意義。第一個參數可以是 uuid，也可以是一顆 `.flocked` 檔案的路徑：`.flocked` 把解密所需的驗證材料嵌在檔案本身（見第 5.4 節），換一台裝置或 Vault 遺失時呼叫端手上只有這顆檔案，沒有紀錄可以先查出 uuid。傳路徑時 uuid 從檔頭讀出，`--output json` 的 `uuid` 欄位仍然是真正的 uuid 而不是路徑。
+- `delete` 只需要 y／n 確認，不要求輸入項目密碼——理由見第 8.2 節末段。`--dry-run`／`-n` 只預覽會刪什麼、不真的執行；`--yes`／`-y` 跳過確認。
 - **環境變數 `FILELOCKER_VAULT_PATH`**：覆寫預設 Vault 位置，未設定時跟 GUI 主程式共用同一個預設路徑（`%LocalAppData%\FileLocker\Vault`），方便無 GUI 環境（排程工作、遠端伺服器）指到跟主程式相同或不同的 Vault。
-- **密碼輸入**：`Console.IsInputRedirected` 時（管線/排程輸入）退回不遮罩的 `Console.ReadLine()`（`Console.ReadKey` 在輸入重新導向時會直接丟例外）；一般互動情境逐字元讀取、顯示 `*`、支援 Backspace。
+- **密碼輸入**：`Console.IsInputRedirected` 時（管線/排程輸入）退回不遮罩的 `Console.ReadLine()`（`Console.ReadKey` 在輸入重新導向時會直接丟例外）；一般互動情境逐字元讀取、顯示 `*`、支援 Backspace。腳本情境另有 `--password-stdin`／`--password-file <路徑>` 兩個旗標（兩者不能同時使用）。沒有輸入任何密碼時 `encrypt`／`unlock` 會明確印出「沒有輸入密碼，已取消這次操作」並以失敗結束——底層的 `Argon2KeyDerivation.VerifyPassword` 現在也會把空密碼直接判定為驗證失敗，不再把函式庫的例外原樣往上丟（見第 24.2 節）。
+- **進度顯示**：`encrypt`／`unlock`／`unlock-recovery` 執行中顯示真實百分比（`ConsoleProgressReporter`），數字來自 `ChunkedCipher` 實際處理掉的位元組數，跟 GUI 端的進度條同一個來源。`--output json` 或輸出被導向檔案／管線時自動關閉。`delete` 不顯示進度——那是純 metadata 操作，沒有位元組可以量。
 - **不用 `VaultIndexCache`**：CLI 每次執行都是全新短命的行程，沒有常駐的 `FileSystemWatcher` 保持快取最新，直接呼叫 `VaultManager.ScanAll()` 全量掃描（慢一點但保證即時正確）——實測過如果用快取，加密完馬上下一次 `--list` 會看不到剛加密的項目。
 - **Passkey 不在 CLI 提供**：`KeyCredentialManager` 一定會跳出 Windows Hello 系統 UI，這跟「無 GUI 環境可操作」的存在目的直接衝突；之後如果要支援，應該是另一個獨立指令，不是塞進 `--encrypt` 裡。
 
@@ -666,7 +807,7 @@ C++（`dllmain.cpp`），CLSID `{A1B2C3D4-E5F6-4789-9ABC-DEF012345678}`。實作
 | 關鍵操作驗證 | 設定/停用（自身受驗證保護）、清除紀錄強制驗證、搬移 Vault 條件式驗證 | 完成 |
 | Metadata 層 | `.meta.json` 讀寫、SQLite 本機快取索引、`FileSystemWatcher` 即時監控 | 完成 |
 | CLI | `--encrypt`／`--unlock`／`--unlock-recovery`／`--list`／`--delete`，支援批次操作（多路徑/uuid）、`FILELOCKER_VAULT_PATH` 環境變數與管線輸入 | 完成（不涵蓋 Passkey，設計上刻意排除） |
-| WebView2 + Vue 3 前端 | 4 個主頁籤、密碼視窗、Vault 位置設定（瀏覽資料夾/搬移）、GUI 視覺美化（無邊框視窗、設計系統、深色模式、拖放檔案、進度條、動效細節）、IPC 協定 | 完成 |
+| WebView2 + Vue 3 前端 | 側欄導覽（四個項目）、信封加密／解密流程、密碼視窗、Vault 位置設定（瀏覽資料夾/搬移）、GUI 視覺美化（無邊框視窗、設計系統、深色模式、拖放檔案、真實進度回報、動效細節）、IPC 協定 | 完成 |
 | Shell Extension（C++ 最小化元件） | 右鍵選單、多選批次支援、資料夾防護上鎖/解鎖兩個命令 id | 完成 |
 | Shell Extension 自動註冊 | App 啟動時自我檢查/註冊（`*` + `Directory` 加密選單、資料夾防護命名空間 CLSID），不需安裝程式處理 | 完成 |
 | `.locked` 副檔名關聯 | 由安裝程式 `installer_config.json` 的 `file_associations` 處理 | 完成 |
@@ -676,7 +817,12 @@ C++（`dllmain.cpp`），CLSID `{A1B2C3D4-E5F6-4789-9ABC-DEF012345678}`。實作
 | 多語言 | 前端靜態文字、後端錯誤代碼（含搬移 Vault／存恢復金鑰失敗訊息） | 完成 |
 | 雲端同步情境測試 | 模擬多裝置同步、衝突情境 | 自動化測試完成；跨裝置人工實測待使用者自行進行 |
 | 資料夾防護（Folder Guard） | 純 ACL 資料夾存取限制（不加密）、共用密碼＋選配 Passkey、右鍵上鎖/解鎖、清單頁管理，見第 21 節 | 完成 |
-| 資料夾防護：雙擊已上鎖資料夾直接解鎖 | `.lockfolder` 標記檔＋檔案關聯技術路線（取代已放棄的 Shell Namespace Extension） | 邏輯完成、單元測試通過，實際雙擊互動待人工實測，見第 21.6 節 |
+| 資料夾防護：雙擊已上鎖資料夾直接解鎖 | `.lockfolder` 標記檔＋檔案關聯技術路線（取代已放棄的 Shell Namespace Extension），標記檔以防護索引驗證 | 邏輯完成、單元測試通過，實際雙擊互動待人工實測，見第 21.6 節 |
+| 資料夾防護：解鎖後閒置自動重新上鎖 | 選配開關＋分鐘數設定、`DispatcherTimer` 週期檢查與啟動補跑 | 完成，見第 21.7 節 |
+| 單檔案分散式加密（`.flocked`） | 「獨立加密」選項、`.flocked` v2 格式（驗證材料嵌入檔尾、可脫離 Vault 解密）、Pending/Commit/Rollback、GUI／CLI 雙邊支援 | 完成，見第 5.3～5.4 節；雙擊解密的人工互動驗證待正式打包安裝程式後進行 |
+| 保護等級分層 | 依「後果不可逆程度」分四層，永久刪除為 T3、清除使用紀錄為 T2，判斷抽成有測試覆蓋的純函式 | 完成，見第 8.2 節 |
+| 四套憑證命名區隔 | 項目密碼／防護密碼／關鍵操作驗證／密碼庫主密碼，各自載明遺失後果 | 完成，見第 8.3 節 |
+| 真實進度回報 | 加密與解密皆由 `ChunkedCipher` 回報實際處理的位元組數，GUI 與 CLI 共用同一個來源 | 完成，見第 15 節與第 14.3 節 |
 | 軟體更新檢查 | 設定頁一鍵檢查 GitHub Release、下載安裝檔並啟動，見第 22 節 | 完成 |
 | 打包安裝程式 | 對接 mac-style-windows-installer，含 `.locked` 檔案關聯、圖示接入 | 完成，見第 19 節 |
 | CLI 隨裝發布 | `FileLocker.Cli` 打包進 `cli/` 子資料夾，安裝程式透過 `path_target_exe` 加入系統 PATH | 完成，見第 19 節 |
@@ -739,11 +885,25 @@ ACL 拒絕規則掛在目前登入帳號的 SID 上，FileLocker App 自己的�
 - `FolderGuardUnlockMarkerFile`（C#）：上鎖時（若啟用這個選配功能）在資料夾旁邊、同一層額外建立一個 `{資料夾名稱}.lockfolder` 檔案，內容純文字記錄真正資料夾的完整路徑（不是靠檔名反推，資料夾改名或搬動不會讓標記檔失效）。這個標記檔是資料夾的**同層兄弟**，不是資料夾內部的東西，寫入/刪除完全不受資料夾本身的 ACL 影響，不需要像舊版 `desktop.ini` 那樣搶在 ACL 生效前寫入、還要另外補一條 Allow 規則。
 - `FolderGuardProtection.Apply`/`Remove`/`SwitchMode`：ACL 現在永遠是唯一的保護來源，兩種模式（啟用/不啟用雙擊解鎖）保護強度完全一樣，差別只在要不要多放這個標記檔——不像舊版方案需要在 ACL 與命名空間標記之間二選一、還要處理兩者互斥切換的邊界情況。
 - `ShellExtensionRegistrar.RegisterLockFolderMarkerAssociation`：App 啟動時在 `HKEY_CURRENT_USER\Software\Classes\.lockfolder` 底下自我註冊標準的副檔名開啟動作（純資料，不是 COM 登錄），指到 `FileLocker.App.exe --folder-guard-unlock-marker "%1"`，圖示直接借用主程式執行檔本身內嵌的圖示，不需要另外準備 `.ico` 資源。
-- `App.xaml.cs` 的 `HandleFolderGuardUnlockMarkerLaunch`：收到的參數是標記檔自己的路徑，讀出裡面記錄的真正資料夾路徑後，轉呼叫既有的 `HandleFolderGuardUnlockLaunch`（跟右鍵選單「解鎖」共用同一套流程）；讀不到的標記檔（被搬移/刪除/內容損毀）直接忽略，不中止批次裡其他還讀得到的項目。
+- `App.xaml.cs` 的 `HandleFolderGuardUnlockMarkerLaunch`：收到的參數是標記檔自己的路徑，先交給 `FolderGuardService.ResolveUnlockMarkerTargetsAsync` 換成真正可以拿去解鎖的資料夾路徑，再轉呼叫既有的 `HandleFolderGuardUnlockLaunch`（跟右鍵選單「解鎖」共用同一套流程）；讀不到或驗不過的標記檔各自跳過，不中止批次裡其他還讀得到的項目。一筆都通不過時呼叫 `ShutdownIfNoWindowsRemain`——這個行程是被雙擊觸發起來的，沒有視窗會開就必須結束，不能留下看不見也殺不掉的行程。
+- **標記檔的驗證判準是「比對防護索引」**：讀出的資料夾路徑必須確實存在於 `FolderGuardStore` 且狀態為 `Locked`，否則整筆忽略。標記檔內容只是純文字路徑、沒有任何自我保護（相對照之下 `.locked` 指標檔有 HMAC-SHA256 簽章並驗證 UUID 格式），索引才是「這個資料夾現在到底有沒有在防護中」的權威來源；內容被改成指向任何不在索引中的路徑都不會有作用。回傳的是索引裡那份路徑而非標記檔寫的那份，避免大小寫與尾端分隔符差異造成後續比對落差。
+- **不對標記檔加註簽章，因為**它擋不住上述以外的情況——內容被改成指向另一個確實在防護中的資料夾時，也只是替那個資料夾跳出解鎖彈窗，解鎖本身仍然要通過防護密碼或 Passkey，不構成繞過；但加註簽章會使使用者磁碟上既有的標記檔全部失效，必須重新上鎖一次才能恢復雙擊解鎖功能。
 
 **這個做法的代價**：資料夾旁邊多了一個額外的 `.lockfolder` 項目，在「依檔案類型分組」的檢視下會被歸到跟資料夾不同的分組，不是原本設想的「雙擊資料夾本身」那麼無縫——這是使用者在確認方向時已經知情接受的取捨，換來的是不用再碰任何 COM／`IShellFolder` 程式碼，風險大幅降低，且 ACL 保護強度完全不受影響（舊版命名空間方案為了避開死結，一度必須放棄 ACL，保護範圍縮小成「只擋 Explorer 雙擊」，這個做法不需要這個犧牲）。
 
 **驗證狀態**：C# 端邏輯已補上單元測試（`FolderGuardDoubleClickModeTests.cs`）並全數通過，Shell Extension DLL 移除命名空間擴充後重新編譯無警告無錯誤，但**實際雙擊互動尚未經過完整人工實測驗證**。
+
+---
+
+### 21.7 選配功能：解鎖後閒置自動重新上鎖
+
+`FolderGuardData` 的 `AutoRelockEnabled`（預設關閉）與 `AutoRelockMinutes` 控制的選配功能：資料夾解鎖之後超過設定的分鐘數，自動重新套回 ACL 拒絕規則，防止解鎖後忘記手動鎖回去。
+
+- **「閒置」是從解鎖那一刻起算的經過時間**，不是偵測滑鼠鍵盤有沒有動作——後者需要全域輸入監聽，成本與風險都不成比例，而這個功能要防的是「解鎖完就忘了」，用經過時間衡量已經足夠。
+- **判斷集中在 `FolderGuardService.RelockExpiredEntriesAsync`**：`App.xaml.cs` 的 `DispatcherTimer`（每 60 秒）與 App 啟動時的補跑都呼叫同一個方法，呼叫端不需要區分是計時器觸發還是啟動補跑。方法本身冪等——沒到期的項目每次呼叫都直接略過，重複呼叫沒有副作用；`AutoRelockEnabled` 關閉時整個方法是 no-op。單筆重新上鎖失敗不中止整批（跟 `LockFoldersAsync` 同一個容錯原則），只是不會出現在回傳清單裡。
+- **真的重新上鎖了至少一個項目時才觸發 `EntriesAutoRelocked` 事件**，只帶被重新上鎖的路徑清單。呼叫端（`App.xaml.cs`／`MainWindow`）靠這個約定決定要不要跳通知，不用自己再檢查清單是否為空。
+- **只有 FileLocker 在執行時才會生效**：完全關閉 App 的期間不會自動重新上鎖，因此這個功能實務上依賴設定頁的「背景常駐」開關（`MinimizeToTrayEnabled`，見第 14.3 節）——關閉所有視窗後留在系統匣，計時器才能持續運作。
+- 重新上鎖不會強制關閉當時開著的檔案，只是資料夾之後的存取會被擋下來。
 
 ---
 
@@ -764,6 +924,10 @@ ACL 拒絕規則掛在目前登入帳號的 SID 上，FileLocker App 自己的�
 - **沒有數位簽章，也沒有執行檔完整性驗證機制**：詳見第 19 節的評估與取捨——需要另外採購程式碼簽署憑證，不是安裝程式工具本身能解決的事；「程式自己在啟動時檢查自身雜湊值」評估後不採用，因為攻擊者能竄改執行檔內容的同時，也能連檢查邏輯本身一起改掉，只能擋住意外損毀、擋不住真正有心的竄改，容易給人錯誤的安全感。安裝檔與更新下載回來的安裝檔執行時，Windows SmartScreen 可能會跳出警告。
 - **軟體更新檢查僅支援透過正式安裝版比對版本**：見第 22 節，需要本機存在 `installer_config.json`（僅由 mac-style-windows-installer 安裝時放入）且能連上 `api.github.com`；直接以原始碼執行的開發版不會顯示版本資訊，這不算錯誤情境。
 - **資料夾防護「雙擊已上鎖資料夾直接解鎖」啟用時，保護方式多一個額外的 `.lockfolder` 檔案**：見第 21.6 節，這個標記檔在「依檔案類型分組」的檔案總管檢視下會被歸到跟資料夾不同的分組——是確認技術方向時已知情接受的取捨，換來的是不需要任何 COM／`IShellFolder` 程式碼、ACL 保護強度也不受影響。
+- **改版前產生的 v1 `.flocked` 檔案無法回溯補上驗證材料**：那些檔案的檔尾沒有 metadata 區塊（見第 5.4 節），仍然只能靠 Vault 解密，換裝置或 Vault 遺失後即無法開啟。要補上必須改寫既有檔案本身（不只是追加，還得同步更新版本號欄位），屬於會動到使用者現有資料的操作，不執行。受影響的檔案解密後重新以獨立加密模式加密一次，產生的即為 v2 格式。
+- **v2 `.flocked` 使檔案攜帶密碼驗證雜湊**：這是兌現「獨立可攜」承諾的必要條件——沒有驗證材料就無法在缺少 Vault 的環境判斷密碼是否正確。雜湊本身不可逆推回密碼，曝光程度與 `.meta.json` 存放於雲端同步資料夾時相同，但檔案的可攜性使它更容易離開使用者的控制範圍。
+- **加密表單在視窗高度接近下限時會超出畫面且無法捲動**：`MinHeight="600"` 附近時，密碼頁的「上一步」與「加密」兩顆按鈕會落在可視範圍之外——信封懸浮層是固定定位，不計入 `.app` 的捲動高度。修正方向是讓密碼頁的 sheet 在放不下時自己可以捲動，但該元件的抽出動畫是 transform 驅動的，加上 `overflow` 會建立新的包含區塊並裁切子元素，需要一併驗證動畫沒有被破壞。已列入待辦。
+- **`vault.config.json` 的 ACL 硬化在雲端同步情境下不成立**：該檔案以 Windows ACL 限制為僅目前使用者可存取（見第 10.1 節），但第 11.2 節的雲端同步設計同時鼓勵把 Vault 指向同步資料夾供多台裝置共用，兩者的目的互相抵消。
 - **背景模式（系統匣常駐）下，主視窗與系統匣選單的實際彈出位置不穩定**：`MainWindow` 為了保留 DWM 原生最大化動畫，自行攔截 `WM_NCCALCSIZE`／`WM_GETMINMAXINFO` 把非客戶區視覺收縮到 0（見「無邊框視窗」相關章節），這使得 WPF 內建的視窗定位邏輯（`WindowStartupLocation="CenterScreen"`，以及系統匣選單原本用 `PresentationSource.CompositionTarget` 換算 DPI 的做法）算出來的位置會偏掉。已改成不透過 WPF 座標系統，直接用 `GetWindowRect`／`GetMonitorInfo`／`SetWindowPos` 等 Win32 API 以物理像素運算並設定位置，但實測後主視窗與系統匣選單的彈出位置仍不如預期（主視窗會跑到螢幕角落、選單會跑到螢幕最頂端而非游標附近）——已排查兩輪，根因尚未完全確認，暫時擱置；不影響功能本身可以正常開啟與操作，僅彈出的位置不理想。
 
 ---
@@ -772,7 +936,9 @@ ACL 拒絕規則掛在目前登入帳號的 SID 上，FileLocker App 自己的�
 
 ### 24.1 進行中
 
-- **單檔案分散式加密**：加密功能新增一個每次可勾選的選項（UI 顯示為「獨立加密」），讓使用者選擇不把加密內容存進 Vault 集中管理區，改成原地（或使用者指定的位置）留下一顆自帶完整密文的 `.flocked` 檔案，不產生 `.locked` 指標檔。程式碼實作（資料層、`.flocked` 格式、Pending/Commit/Rollback 交易模型、IPC／前端 UI、CLI、檔案總管雙擊解密與安裝程式設定、一次性風險提示、清單頁「前往檔案原始位置」按鈕）已全部完成，只剩需要正式打包安裝程式後才能做的雙擊解密人工互動驗證，完整規劃與細節見 [`單檔案分散式加密_功能規劃.md`](features/單檔案分散式加密_功能規劃.md) 第 9、11 節。
+- **單檔案分散式加密的雙擊解密人工驗證**：功能本身已完成（見第 5.3～5.4 節），只剩需要正式打包安裝程式後才能做的雙擊 `.flocked` 解密互動驗證，見 [`單檔案分散式加密_功能規劃.md`](features/單檔案分散式加密_功能規劃.md) 第 9、11 節。
+- **加密表單在最小視窗高度下會溢出且無法捲動**：見第 23 節已知限制。
+- **加密前顯示預估所需空間**：第 5 節記載但尚未實作。`VaultProtocolHandlers.GetPathSizesAsync` 已存在且有測試覆蓋，實作時可直接重用，但需要重新建立對應的 IPC 往返（原本的往返只服務已移除的估算式進度條，一併清掉了，見 [`通盤檢討_改善計畫.md`](features/通盤檢討_改善計畫.md) 第 1 輪）。
 - **雲端同步跨裝置人工實測**：見第 11.2 節，目前僅完成自動化測試（模擬多裝置同步、衝突情境），跨裝置的完整人工實測待使用者自行進行。
 - **雙擊已上鎖資料夾直接解鎖的實際互動驗證**：見第 21.6 節，`.lockfolder` 標記檔機制的 C# 端邏輯已完成並通過單元測試，但實際雙擊標記檔跳出解鎖彈窗的互動流程尚待完整人工實測。
 - **背景模式主視窗／系統匣選單彈出位置排查**：見第 23 節已知限制，已改用 Win32 API 直接以物理像素定位，但實測位置仍不如預期，根因尚未確認，待後續找時間深入排查。
@@ -783,6 +949,13 @@ ACL 拒絕規則掛在目前登入帳號的 SID 上，FileLocker App 自己的�
 
 以下項目過去曾列在待辦／已知限制中，目前已完成，記錄於此保留歷史脈絡：
 
+- **通盤檢討與五輪改善**（詳見 [`通盤檢討_改善計畫.md`](features/通盤檢討_改善計畫.md)）。一次針對「單獨看每個設計都有寫明理由，但組合起來互相矛盾」所做的檢討，分五輪執行：
+  - **第 1 輪：收斂加密流程的雙軌狀態，並修正側欄命名**。信封流程導入時保留的舊「一次到位」加密路徑（含依檔案大小估算的假進度條）整套移除；執行時另外發現「巢狀資料夾防護解鎖並重試」的引導整條無法被觸發——它唯一的呼叫端掛在舊路徑的結果處理常式上，而舊路徑的入口函式已無任何呼叫端，形成沒有入口的封閉迴圈，使用者只會看到一則錯誤訊息，一併修復並改接到信封流程。側欄「加密」改名為「檔案加密」，四個導覽項目統一為名詞。
+  - **第 2 輪：`.flocked` 檔案自足化與 `.lockfolder` 驗證**。`.flocked` 升級至 v2、驗證材料改為嵌入檔尾（見第 5.4 節）；`.lockfolder` 標記檔改以防護索引為驗證判準（見第 21.6 節）。
+  - **第 3 輪：保護等級一致化**。永久刪除提升至 T3、清除使用紀錄下降至 T2、規則收斂為單一句子（見第 8.2 節）；資料夾防護的鎖定退避上限由 1 小時降至 60 秒（見第 9 節）；四套憑證各自命名並載明遺失後果（見第 8.3 節）。
+  - **第 4 輪：進度回報一致化**。解密補上真實進度回報，CLI 由忙碌旋轉指示器改為真實百分比（見第 15 節）。
+  - **第 5 輪：技術規格文件同步**（即本次更新）。
+- **修正空密碼會讓 CLI 崩潰**：`Argon2KeyDerivation.VerifyPassword` 把空密碼原樣交給 Konscious 的 Argon2 建構子，那裡會丟 `ArgumentException`，結果是整個行程帶著 stack trace 結束，而不是回報「密碼不正確」（`FileLocker.Cli unlock` 在 stdin 為空時即可重現）。修正放在 `VerifyPassword` 開頭直接回報驗證失敗——判斷放在這一層而不是各個輸入端，是因為每個呼叫端各自檢查一次遲早會漏掉一個，`unlock` 就是漏掉的那一個。加密路徑本來就不允許空密碼，所以空密碼永遠不可能是正確的，回報失敗即為正確語意。
 - **打包安裝程式**：對接 mac-style-windows-installer，含 `.locked` 檔案關聯與圖示接入，見第 19 節。
 - **CLI 隨裝發布**：`FileLocker.Cli` 打包進 `cli/` 子資料夾，安裝程式透過 `path_target_exe` 加入系統 PATH，見第 19 節。
 - **PasswordVault 獨立化——FileLocker 本體切換消費來源**：`PasswordLockerModuleInstaller`（改查 `lx-kvn/PasswordVault` Release）、`PasswordLockerAssetSelector`（改認新命名規則）、`PasswordLockerPluginLoader`（改找 `PasswordVault.Core.dll`）、`PasswordLockerNativeHostRegistrar`／`App.xaml.cs`（改找 `PasswordVault.NativeHost.exe`）皆已完成並通過單元測試；`plugins/PasswordLocker/` 資料夾名稱依定案維持不變。額外清掉 FileLocker repo 裡重複的舊原始碼：`src/FileLocker.PasswordLocker/`、`src/FileLocker.PasswordLockerNativeHost/`、`src/FileLocker.Extension/`、`tests/FileLocker.PasswordLocker.Tests/`——這些已經遷出成為 `PasswordVault` repo 的唯一真相來源，見 [`PasswordVault_獨立化_規劃.md`](features/PasswordVault_獨立化_規劃.md) 第 17 節、ADR-0003。

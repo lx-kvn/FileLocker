@@ -29,6 +29,11 @@ import EnvelopeDecrypt from './components/EnvelopeDecrypt.vue'
 import { sendMessage, requestMessage, resolvePending, rejectAllPending } from './composables/useIpc.js'
 import { useSidebar } from './composables/useSidebar.js'
 import {
+  parseNestedGuardedPaths,
+  formatNestedGuardedNames,
+  shouldOfferNestedGuardedRetry,
+} from './nestedGuardedRetry.js'
+import {
   groupVaultItems,
   batchPreviewText as batchPreviewTextPure,
   nestedLockPreviewText as nestedLockPreviewTextPure
@@ -167,7 +172,10 @@ const pageWidthTab = ref(activeTab.value)
 // 側欄把 encrypt／decrypt／list 三個分頁合併成一個「加密」導覽項目：list（票根清單）是
 // 這個項目的預設落地頁，encrypt／decrypt 精靈仍是原本內容、只是從清單頁的工具列按鈕進入，
 // 不是各自獨立的頂層分頁。
-const SIDEBAR_KEY_BY_TAB = { encrypt: 'encrypt', decrypt: 'encrypt', list: 'encrypt', folderGuard: 'folderGuard', passwordLocker: 'passwordLocker', settings: 'settings' }
+// 側欄「檔案加密」這個項目涵蓋已加密清單跟加密 overlay 兩種畫面狀態。原本還有一個 decrypt
+// 鍵，但那個畫面在解密改成信封流程之後就不存在了（沒有任何地方會把 activeTab 設成 'decrypt'），
+// 留著只會讓人以為還有一個到不了的分頁。
+const SIDEBAR_KEY_BY_TAB = { encrypt: 'encrypt', list: 'encrypt', folderGuard: 'folderGuard', passwordLocker: 'passwordLocker', settings: 'settings' }
 const sidebarActiveKey = computed(() => SIDEBAR_KEY_BY_TAB[activeTab.value] || 'encrypt')
 const { collapsed: sidebarCollapsed, toggle: toggleSidebar } = useSidebar()
 
@@ -312,10 +320,12 @@ const folderGuardSetupPasswordConfirm = ref('')
 // HandleFolderGuardLockLaunch），這裡暫存那批路徑，設定完成後自動接著上鎖，不用使用者
 // 再手動選一次資料夾。
 const folderGuardPendingLockPaths = ref([])
-// 加密流程撞到巢狀防護中的資料夾（見 LockService.EncryptAsync 的 FolderGuardContainsNestedGuarded
-// 錯誤碼）、使用者確認解鎖後，要重新送出的原始加密請求——只在單一項目加密時提供這個「解鎖並
-// 重試」的引導，批次多筆的重試協調複雜度不成比例，直接照一般錯誤訊息處理即可。
-const pendingNestedGuardedRetry = ref(null)
+// 加密流程撞到巢狀防護中的資料夾（見 LockService.EncryptPendingAsync 的
+// FolderGuardContainsNestedGuarded 錯誤碼）、使用者要解鎖並重試時，暫存那批要解鎖的子資料夾
+// 路徑，交給密碼輸入彈窗用。重試本身不需要暫存加密參數——重試直接再呼叫一次
+// submitEncryptPending()，它讀的就是 encryptPaths／encryptPassword 這些表單狀態本身，而信封
+// 流程失敗時會退回 form 階段、不清空這些欄位（見 cancelEncryptPending 的說明），所以重試當下
+// 表單內容跟第一次送出時完全相同。
 
 // ---- 加密頁籤：分兩步驟，第一步只選檔案/資料夾，第二步才是密碼跟進階選項——
 // 兩者視覺權重差很多（一個是必經流程，一個是偶爾用得到的進階功能），分開後主線操作
@@ -362,14 +372,19 @@ async function onRequestToggleStandaloneMode(checked) {
 const recoveryKeyDisplay = ref('') // 非空字串時顯示恢復金鑰彈窗
 const recoveryKeySaveState = ref('') // '' | 'saved' | 'acknowledged'
 
-// ---- 信封加密流程（Phase 2b）：全新的一組狀態/函式，刻意不跟下面舊版 isEncrypting／
-// encryptItemResults／假進度那一套共用——那一套目前只剩巢狀資料夾防護重試（見
-// handleNestedGuardedEncrypt）這個邊角案例還在用舊的一次到位 sendMessage('encrypt', ...)，
-// 拆開兩套避免互相污染狀態。已知的落差：重試那個邊角案例目前完成時不會有任何視覺回饋（沒有
-// 進度條、不會播信封動畫），只會安靜地完成、清單頁刷新——這是刻意的範圍縮小，不是遺漏，
-// 之後如果要補這塊視覺一致性再回頭處理。
+// ---- 信封加密流程：全站唯一的加密路徑。
+//
+// 曾經有第二套「一次到位」的舊流程（前端送 encrypt、配一條依檔案大小估算時間的假進度條），
+// 在信封流程導入時保留下來當作範圍縮小的過渡，只剩巢狀資料夾防護重試還在用它。實際追查後
+// 發現那條重試唯一的觸發點掛在舊流程自己的結果處理常式上，而舊流程的入口函式已經沒有任何
+// 呼叫端，整條變成沒有入口的封閉迴圈——使用者撞到「內含防護中的資料夾」時只會看到一個錯誤
+// 訊息，拿不到解鎖重試的引導。舊流程已整套移除，重試改接到這裡（見
+// handleNestedGuardedEncrypt），加密只剩這一條路，進度也一律是後端回報的真實百分比。
 const encryptPhase = ref('form') // 'form' | 'processing' | 'confirming' | 'committing' | 'flying'
 const encryptRealProgressPercent = ref(0)
+// 後端正在等 Windows Hello 驗證——這段期間真實進度本來就會停在原地，用這個旗標把進度文字
+// 換成「等待驗證」，讓使用者知道畫面不動是在等人，不是當掉了。
+const encryptWaitingPasskey = ref(false)
 const encryptPendingItems = ref([]) // 這一輪 pending 完成的逐項結果 { path, uuid, success, errorMessage, note, recoveryKey }
 let encryptCommitsExpected = 0
 let encryptCommitsDone = 0
@@ -395,6 +410,7 @@ async function submitEncryptPending() {
 
   encryptPhase.value = 'processing'
   encryptRealProgressPercent.value = 0
+  encryptWaitingPasskey.value = false
   encryptPendingItems.value = []
 
   const isBatch = encryptPaths.value.length > 1
@@ -477,131 +493,11 @@ function onEncryptFlyAwayComplete() {
     refreshList()
   })
 }
-const isEncrypting = ref(false)
-
-// ---- 加密進度條：不是真正的加解密進度回報（那需要深入 ChunkedCipher 的每個區塊往外送
-// 訊息，工程量大很多），是依項目數量／檔案大小預估一個合理的耗時，跑一個前快後慢的動畫，
-// 實際完成時直接補到 100%——只是體驗用的視覺回饋，不是精確的進度。 ----
-const encryptProgressPercent = ref(0)
-// 目前是「壓縮中」還是「加密中」——只有批次裡有資料夾項目時才會用到 compressing 這個階段，
-// 純檔案批次會直接維持在 encrypting，不會多顯示一個用不到的階段。
-const encryptPhaseLabel = ref('encrypting')
-let progressAnimationFrame = null
-let progressStartedAt = 0
-let progressEstimatedDurationMs = 0
-let progressCompressionMs = 0
-// Passkey（Windows Hello）驗證期間會阻塞等待使用者操作，這段時間要從動畫的已耗時裡扣掉，
-// 不然恢復後 elapsed 會突然多算一大截，畫面上進度條像是瞬間跳了一段。
-let progressPausedAt = 0
-let progressTotalPausedMs = 0
-
-function requestPathSizes(paths) {
-  return requestMessage('getPathSizes', 'pathSizesResult', { paths })
-}
-
 // 加密前掃描選取項目裡有沒有巢狀 .locked 檔案——純資訊性用途，數量只拿來顯示一個不擋
-// 流程的提示（見 submitEncrypt），不是像 requestPathSizes 那樣影響進度條估算。
+// 流程的提示（見 submitEncryptPending），不影響加密行為本身。
 function requestNestedLockCount(paths) {
   return requestMessage('checkNestedLocks', 'nestedLockCheckResult', { paths })
 }
-
-// 粗略假設本機加密大概每秒能處理 80MB（含 Argon2 延展、串流加解密、安全清除原始檔案這些
-// 疊加起來的體感速度，不是精確測出來的吞吐量，這裡只追求「數量級大致合理」，不是準確計時）。
-const ESTIMATED_BYTES_PER_MS = (80 * 1024 * 1024) / 1000
-
-// 資料夾項目的預估時間裡，抓 30% 算成「壓縮」階段、其餘算「加密」階段——資料夾加密的實際
-// 流程是先打包成 zip 再加密那個 zip（見規格文件 3.2 節），這裡的比例一樣是粗略假設
-// （壓縮通常比完整的加解密快一些），不是量測出來的精確數字。
-const FOLDER_COMPRESSION_SHARE = 0.3
-
-function estimateEncryptPhases(itemCount, items) {
-  const baseMs = 500 // 每次加密固定會有的開銷（Argon2 金鑰衍生、寫檔案），不太隨大小變化
-  const perItemMs = 200 // 項目數量本身的額外負擔（愈多檔案，即使都很小，逐一處理也要時間）
-  let totalMs = baseMs + perItemMs * itemCount
-  let compressionMs = 0
-
-  for (const item of items) {
-    const itemMs = item.bytes / ESTIMATED_BYTES_PER_MS
-    totalMs += itemMs
-    if (item.isFolder) {
-      compressionMs += itemMs * FOLDER_COMPRESSION_SHARE
-    }
-  }
-
-  totalMs = Math.max(700, totalMs)
-  // 壓縮階段最多只能佔掉「總時間扣掉一點緩衝」，不能整個估算時間都花在壓縮上，
-  // 不然畫面會顯示「壓縮中」一路跑到接近完成，看起來像壓縮跟加密根本沒有分開。
-  compressionMs = Math.min(compressionMs, Math.max(0, totalMs - 200))
-
-  return { totalMs, compressionMs }
-}
-
-let progressTickFn = null
-
-function startFakeProgress(itemCount, items) {
-  cancelFakeProgress()
-  encryptProgressPercent.value = 0
-  progressPausedAt = 0
-  progressTotalPausedMs = 0
-
-  const hasFolder = items.some((item) => item.isFolder)
-  const { totalMs, compressionMs } = estimateEncryptPhases(itemCount, items)
-  progressStartedAt = performance.now()
-  progressEstimatedDurationMs = totalMs
-  progressCompressionMs = compressionMs
-  encryptPhaseLabel.value = hasFolder && compressionMs > 0 ? 'compressing' : 'encrypting'
-
-  progressTickFn = (now) => {
-    const elapsed = now - progressStartedAt - progressTotalPausedMs
-    const t = Math.min(1, elapsed / progressEstimatedDurationMs)
-    // 前快後慢的緩動曲線——一開始跑得比較快，愈接近預估時間愈慢。故意只逼近 92%，
-    // 不會自己衝到 100%：真正的完成要等後端回報，避免進度條在實際做完之前就宣告結束，
-    // 跟接下來冒出來的結果訊息對不上會很奇怪。
-    const eased = 1 - Math.pow(1 - t, 2.2)
-    encryptProgressPercent.value = Math.min(92, eased * 92)
-    encryptPhaseLabel.value = (hasFolder && elapsed < progressCompressionMs) ? 'compressing' : 'encrypting'
-    if (t < 1) {
-      progressAnimationFrame = requestAnimationFrame(progressTickFn)
-    }
-  }
-  progressAnimationFrame = requestAnimationFrame(progressTickFn)
-}
-
-function cancelFakeProgress() {
-  if (progressAnimationFrame !== null) {
-    cancelAnimationFrame(progressAnimationFrame)
-    progressAnimationFrame = null
-  }
-}
-
-// 後端跳出 Windows Hello 驗證視窗、阻塞等待使用者操作時呼叫——停止動畫並把耗時定格在
-// 目前的百分比，不讓假進度條在使用者還沒完成驗證前繼續往前跑。
-function pauseFakeProgress() {
-  if (progressPausedAt !== 0) return // 已經是暫停狀態，不重複記錄
-  cancelFakeProgress()
-  progressPausedAt = performance.now()
-  encryptPhaseLabel.value = 'waitingPasskey'
-}
-
-// Windows Hello 驗證結束（不論成功/取消/失敗）後呼叫——把剛剛暫停掉的時間長度累加進
-// 「總暫停時長」，讓動畫從暫停前的進度接著跑，不會因為扣掉暫停時間而整段跳過去。
-function resumeFakeProgress() {
-  if (progressPausedAt === 0 || progressTickFn === null) return
-  progressTotalPausedMs += performance.now() - progressPausedAt
-  progressPausedAt = 0
-  progressAnimationFrame = requestAnimationFrame(progressTickFn)
-}
-
-function finishFakeProgress() {
-  cancelFakeProgress()
-  progressTickFn = null
-  progressPausedAt = 0
-  encryptProgressPercent.value = 100
-  setTimeout(() => { encryptProgressPercent.value = 0 }, 350)
-}
-const encryptBatchTotal = ref(0)
-const encryptItemResults = ref([]) // 批次加密逐項回報的結果
-const encryptSuccessItemsForLocker = ref([]) // 這次批次成功的項目 { uuid, path }，加密完成後用來詢問要不要存進密碼庫（規劃文件第 4 節）
 
 // ---- 獨立解密流程（信封＋Sheet，定案文件 §1.11）----
 // 選定的 .locked 檔案的唯讀 metadata（inspectLockedFile 查回來的），也是信封上顯示的內容。
@@ -766,76 +662,11 @@ function handleOperationResult(data, { onSuccess, successMessage, failureFallbac
 // 新增一種訊息類型變成「在這個物件裡加一個 key」，不是「在共用鏈裡插隊」，鏈不會再無限變長。
 // 每個 handler 只做這一種訊息該做的事，彼此互不干擾，順序也不重要。
 const messageHandlers = {
-  encryptBatchStarted(data) {
-    encryptBatchTotal.value = data.totalCount
-    encryptItemResults.value = []
-    encryptSuccessItemsForLocker.value = []
-  },
-
+  // 後端跳出 Windows Hello 驗證視窗、阻塞等待使用者操作的期間，真實進度本來就會停在原地
+  // （後端沒有在處理位元組，不會回報新的百分比）——這裡只負責換掉進度文字，讓使用者知道
+  // 畫面不動是在等驗證，不是當掉了。
   encryptPasskeyVerifying(data) {
-    if (data.verifying) {
-      pauseFakeProgress()
-    } else {
-      resumeFakeProgress()
-    }
-  },
-
-  encryptItemResult(data) {
-    if (data.success) {
-      markLocalVaultMutation()
-    }
-    // 加密流程撞到巢狀防護中的資料夾：只在單一項目加密時額外提供「解鎖並重試」引導
-    // （見 handleNestedGuardedEncrypt 說明），失敗結果本身仍然照常推進 encryptItemResults，
-    // 讓完成頁一樣看得到這筆失敗紀錄。
-    if (data.errorCode === 'FOLDER_GUARD_CONTAINS_NESTED_GUARDED' && encryptPaths.value.length <= 1) {
-      handleNestedGuardedEncrypt(data)
-    }
-    let note = ''
-    if (data.passkeyRequested && !data.passkeyEnabled) {
-      note = t('note.passkeyNotEnabled')
-    } else if (data.passkeyEnabled) {
-      note = t('note.passkeyEnabled')
-    }
-    encryptItemResults.value.push({
-      path: data.path,
-      success: data.success,
-      errorMessage: translateError(data.errorCode, data.errorDetail, data.errorMessage),
-      note
-    })
-    if (data.success) {
-      encryptSuccessItemsForLocker.value.push({ uuid: data.uuid, path: data.path })
-    }
-    if (data.recoveryKey) {
-      recoveryKeyDisplay.value = data.recoveryKey
-      recoveryKeySaveState.value = ''
-    }
-  },
-
-  encryptBatchDone() {
-    isEncrypting.value = false
-    finishFakeProgress()
-    encryptPaths.value = []
-    // 存密碼庫的詢問要用到這次的密碼，得在下面清空欄位之前先留一份——密碼庫的密碼跟
-    // 加密表單欄位是兩個獨立的變數，這裡不是共用同一份記憶體，只是把值複製過去用。
-    const passwordUsed = encryptPassword.value
-    const successItems = encryptSuccessItemsForLocker.value
-    // 密碼是敏感資料，不管這次成功還是失敗，都不該一直留在欄位裡——失敗的話重新輸入
-    // 一次不是很大的負擔，但讓密碼長時間留在畫面上是不必要的風險。提示文字不算敏感資料，
-    // 但同一批既然結束了，一起清掉、準備接下一批比較乾淨。這些欄位在完成頁用不到，
-    // 不用等使用者按「完成」才清。
-    encryptPassword.value = ''
-    encryptPasswordConfirm.value = ''
-    hint.value = ''
-    // 這是巢狀資料夾防護重試（handleNestedGuardedEncrypt）唯一還在用的舊路徑，不會被新版
-    // 信封 UI 觸發——沒有完成頁可以切了（那個畫面已經被信封流程取代），直接切到清單頁讓
-    // 使用者自己去看結果，理由跟信封流程 onEncryptFlyAwayComplete 的收尾一致。
-    activeTab.value = 'list'
-    // 不 await：這是加密完成後「順便問一下」的附加流程，不該卡住畫面切換——
-    // 使用者已經看得到加密結果，詢問存密碼庫的彈窗晚個幾百毫秒才跳出來沒有關係。
-    // 密碼庫元件（@lx-kvn/password-locker-ui）自己判斷要不要問——這裡用永遠掛載但隱藏
-    // 的那份實例（hiddenPasswordLockerRef），不是分頁裡可見的那份，因為使用者這時候
-    // 不一定停在密碼庫分頁上。
-    hiddenPasswordLockerRef.value?.offerSaveEncryptedFiles(passwordUsed, successItems)
+    encryptWaitingPasskey.value = !!data.verifying
   },
 
   // ---- 信封加密流程（Phase 2b）：pending/commit/rollback 三兄弟的回應處理，見 2a／2b 後端 ----
@@ -849,18 +680,21 @@ const messageHandlers = {
   },
 
   encryptPendingItemResult(data) {
-    // 巢狀防護資料夾這個邊角案例目前仍走舊的 handleNestedGuardedEncrypt／submitEncrypt
-    // 一次到位路徑（見上面「信封加密流程」區塊開頭的說明），這裡不用重複處理。
     let note = ''
     if (data.passkeyRequested && !data.passkeyEnabled) {
       note = t('note.passkeyNotEnabled')
     } else if (data.passkeyEnabled) {
       note = t('note.passkeyEnabled')
     }
+    // errorCode／errorDetail 除了翻譯成訊息之外還要原封不動留一份：批次結束時要靠它們判斷
+    // 這次失敗是不是「內含防護中的資料夾」，能不能提供解鎖並重試的引導（見
+    // encryptPendingBatchDone）。只留翻譯後的字串就沒辦法再判斷了。
     encryptPendingItems.value.push({
       path: data.path,
       uuid: data.uuid,
       success: data.success,
+      errorCode: data.errorCode,
+      errorDetail: data.errorDetail,
       errorMessage: translateError(data.errorCode, data.errorDetail, data.errorMessage),
       note
     })
@@ -871,14 +705,25 @@ const messageHandlers = {
   },
 
   encryptPendingBatchDone() {
+    encryptWaitingPasskey.value = false
     const anySuccess = encryptPendingItems.value.some((item) => item.success)
     if (anySuccess) {
       encryptPhase.value = 'confirming'
-    } else {
-      const firstError = encryptPendingItems.value[0]
-      showToast(firstError ? firstError.errorMessage : t('alert.genericError', { message: '' }))
-      encryptPhase.value = 'form'
+      return
     }
+
+    const firstError = encryptPendingItems.value[0]
+    encryptPhase.value = 'form'
+
+    // 內含防護中的子資料夾：改成提供「解鎖並重試」的引導，不是丟一個使用者無從處理的錯誤
+    // 訊息。在這裡（批次結束）判斷而不是在逐項結果裡判斷，是因為引導本身是非同步的彈窗，
+    // 放在逐項結果會跟接著抵達的批次結束訊息交錯，變成彈窗跟錯誤 toast 同時出現。
+    if (firstError && shouldOfferNestedGuardedRetry(firstError.errorCode, encryptPaths.value.length)) {
+      handleNestedGuardedEncrypt(firstError.errorDetail)
+      return
+    }
+
+    showToast(firstError ? firstError.errorMessage : t('alert.genericError', { message: '' }))
   },
 
   commitEncryptResult(data) {
@@ -982,10 +827,6 @@ const messageHandlers = {
     }
   },
 
-  pathSizesResult(data) {
-    resolvePending('pathSizesResult', data.items)
-  },
-
   nestedLockCheckResult(data) {
     resolvePending('nestedLockCheckResult', data.count)
   },
@@ -1007,9 +848,8 @@ const messageHandlers = {
     // 那個訊息原本該回的 xxxResult 類型——任何一個 requestMessage() 呼叫如果剛好撞上，
     // 沒有這行會永遠卡住、畫面完全沒反應，見 rejectAllPending 的說明。
     rejectAllPending(data.message)
-    isEncrypting.value = false
-    cancelFakeProgress()
-    encryptProgressPercent.value = 0
+    encryptRealProgressPercent.value = 0
+    encryptWaitingPasskey.value = false
     isLoadingList.value = false
     isLoadingHistory.value = false
     // 信封流程進行中途發生嚴重錯誤，退回表單頁讓使用者看得到 toast、可以重新來過——
@@ -1752,20 +1592,21 @@ function relockFolderGuardItem(item) {
 /// 對應規劃文件第 8 節：加密流程掃描到巢狀防護中的資料夾而中止，前端跳彈窗列出這些子資料夾，
 /// 使用者確認後解鎖（Passkey 優先、沒設定則密碼）、成功才重新送出原本的加密請求。只在單一項目
 /// 加密時提供這個引導——批次多筆的重試協調複雜度不成比例，直接照一般錯誤訊息處理即可。
-async function handleNestedGuardedEncrypt(data) {
-  const nestedPaths = (data.errorDetail || '').split('|').filter(Boolean)
-  const nestedNames = nestedPaths.map((p) => p.split(/[\\/]/).pop()).join('、')
-  const retry = {
-    paths: [...encryptPaths.value],
-    password: encryptPassword.value,
-    hint: hint.value,
-    enablePasskey: enablePasskey.value,
-    enableRecoveryKey: enableRecoveryKey.value
+///
+/// 重試直接再呼叫一次 submitEncryptPending()，不另外組一份加密參數快照：信封流程失敗時會退回
+/// form 階段但不清空表單欄位，所以那些欄位在重試當下跟第一次送出時完全相同，額外複製一份反而
+/// 會多出一個要跟表單狀態同步的來源。這條引導過去掛在已經沒有入口的舊加密流程上（整條無法
+/// 被觸發），改接到信封流程之後才真的會出現。
+async function handleNestedGuardedEncrypt(errorDetail) {
+  const nestedPaths = parseNestedGuardedPaths(errorDetail)
+  if (nestedPaths.length === 0) {
+    return
   }
 
-  const confirmed = await askConfirm(t('folderGuard.nestedGuardedPrompt', { names: nestedNames }), {
-    confirmLabel: t('folderGuard.unlock')
-  })
+  const confirmed = await askConfirm(
+    t('folderGuard.nestedGuardedPrompt', { names: formatNestedGuardedNames(nestedPaths) }),
+    { confirmLabel: t('folderGuard.unlock') }
+  )
   if (!confirmed) {
     return
   }
@@ -1774,16 +1615,13 @@ async function handleNestedGuardedEncrypt(data) {
   if (folderGuardPasskeyEnabled.value) {
     const result = await requestMessage('unlockFoldersForEncryption', 'unlockFoldersForEncryptionResult', { paths: nestedPaths })
     if (result.success) {
-      isEncrypting.value = true
-      encryptItemResults.value = []
-      sendMessage('encrypt', retry)
+      submitEncryptPending()
     } else {
       showToast(translateError(result.errorCode, result.errorDetail, t('folderGuard.unlockFailed')))
     }
     return
   }
 
-  pendingNestedGuardedRetry.value = retry
   passwordPromptContext.value = { mode: 'folderGuardNestedEncrypt', nestedPaths }
   passwordPromptValue.value = ''
 }
@@ -2074,42 +1912,6 @@ function handleDecryptDone() {
   decryptCommitState.value = { status: 'idle' }
 }
 
-async function submitEncrypt() {
-  // 理論上按不到第二步（第一步的「下一步」按鈕沒選項目就不能按），這裡保留防禦性檢查。
-  if (encryptPaths.value.length === 0) {
-    encryptItemResults.value = [{ path: '', success: false, errorMessage: t('encrypt.passwordRequired'), note: '' }]
-    return
-  }
-  if (!encryptPassword.value) {
-    encryptItemResults.value = [{ path: '', success: false, errorMessage: t('encrypt.passwordRequired'), note: '' }]
-    return
-  }
-  if (encryptPassword.value !== encryptPasswordConfirm.value) {
-    encryptItemResults.value = [{ path: '', success: false, errorMessage: t('encrypt.passwordMismatch'), note: '' }]
-    return
-  }
-  const nestedLockCount = await requestNestedLockCount(encryptPaths.value)
-  if (nestedLockCount > 0) {
-    showToast(t('alert.nestedLockNotice', { count: nestedLockCount }), 'info')
-  }
-
-  isEncrypting.value = true
-  encryptItemResults.value = []
-
-  const sizeItems = await requestPathSizes(encryptPaths.value)
-  startFakeProgress(encryptPaths.value.length, sizeItems)
-
-  // 多個項目時，Passkey／恢復金鑰在畫面上已經鎖住不能勾，這裡再保險一次，不管前端狀態怎樣都不送出去。
-  const isBatch = encryptPaths.value.length > 1
-  sendMessage('encrypt', {
-    paths: encryptPaths.value,
-    password: encryptPassword.value,
-    hint: hint.value,
-    enablePasskey: isBatch ? false : enablePasskey.value,
-    enableRecoveryKey: isBatch ? false : enableRecoveryKey.value
-  })
-}
-
 // 清單頁用密碼解密：一律還原到原始位置，不問要存到哪裡。
 // 回饋：清單解密不再詢問要還原到哪裡，「自己選地方存」那個分支（曾經存在的
 // pendingDecryptItem／pendingDecryptMode）整個拿掉了，不是隱藏起來，destinationDir 直接
@@ -2165,8 +1967,6 @@ async function submitPasswordPrompt() {
       showToast(translateError(result.errorCode, result.errorDetail, t('folderGuard.unlockFailed')))
     }
   } else if (ctx.mode === 'folderGuardNestedEncrypt') {
-    const retry = pendingNestedGuardedRetry.value
-    pendingNestedGuardedRetry.value = null
     const result = await requestMessage('unlockFoldersForEncryption', 'unlockFoldersForEncryptionResult', {
       paths: ctx.nestedPaths, password
     })
@@ -2174,11 +1974,9 @@ async function submitPasswordPrompt() {
       showToast(translateError(result.errorCode, result.errorDetail, t('folderGuard.unlockFailed')))
       return
     }
-    if (retry) {
-      isEncrypting.value = true
-      encryptItemResults.value = []
-      sendMessage('encrypt', retry)
-    }
+    // 解鎖成功，重新送出原本那次加密——讀的是表單狀態本身，不需要事先保存快照
+    // （見 handleNestedGuardedEncrypt 的說明）。
+    submitEncryptPending()
   } else if (ctx.mode === 'folderGuardDisable') {
     const result = await requestMessage('disableFolderGuard', 'disableFolderGuardResult', { password })
     if (result.success) {
@@ -3158,6 +2956,7 @@ const isAnyBlockingModalOpen = computed(() =>
           :is-dark-theme="isDarkTheme"
           :phase="encryptPhase"
           :progress-percent="encryptRealProgressPercent"
+          :waiting-passkey="encryptWaitingPasskey"
           :pending-summary="encryptPendingSummary"
           :recovery-key-modal-open="!!recoveryKeyDisplay"
           @pick-file="pickFile"

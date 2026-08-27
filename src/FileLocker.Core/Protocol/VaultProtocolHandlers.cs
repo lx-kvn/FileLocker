@@ -40,6 +40,15 @@ public sealed class VaultProtocolHandlers
         _settings = settings;
     }
 
+    /// <summary>
+    /// 一次到位的批次加密（加密＋寫 marker＋刪原始檔一步完成），薄包裝 LockService.EncryptAsync。
+    ///
+    /// GUI 目前不從這裡進來——前端一律走信封流程的 EncryptPendingBatchAsync／CommitEncryptAsync
+    /// 三段式，對應的 encrypt 訊息分派已經移除（見通盤檢討改善計畫第 1 輪）。保留這個方法的理由是
+    /// 它包裝的 LockService.EncryptAsync 本身仍然是 CLI 的正式入口（CLI 不需要「取消」中間態），
+    /// 這裡維持同一組語意的協定層對應，也是協定層測試建立既有加密項目時的共用起點。它不是第二套
+    /// 加密實作——內部就是 EncryptPendingAsync 加 CommitEncryptAsync，跟信封流程同一顆核心。
+    /// </summary>
     public async IAsyncEnumerable<EncryptItemResponse> EncryptBatchAsync(
         IReadOnlyList<string> paths, string password, string? hint,
         bool enablePasskey, bool enableRecoveryKey, IntPtr ownerWindowHandle,
@@ -105,10 +114,15 @@ public sealed class VaultProtocolHandlers
     public Task RollbackPendingEncryptAsync(string uuid)
         => _lockService.RollbackPendingEncryptAsync(uuid);
 
-    /// <summary>對應「解密」頁籤手動選檔案的入口——依副檔名分派給 .locked／.flocked 對應解密方式
-    /// 這件事本身現在收斂進 LockService.DecryptFileAsync（架構檢視後下移，CLI 的 --unlock 也
-    /// 呼叫同一個方法），這裡只是薄包裝。InspectLockedFile 因為要讀的是「顯示用資訊」而不是
-    /// 「解密」，用途不同，維持自己一份判斷不變。</summary>
+    /// <summary>一次到位的單檔解密——依副檔名分派給 .locked／.flocked 對應解密方式這件事本身
+    /// 收斂在 LockService.DecryptFileAsync（架構檢視後下移，CLI 的 unlock 也呼叫同一個方法），
+    /// 這裡只是薄包裝。InspectLockedFile 因為要讀的是「顯示用資訊」而不是「解密」，用途不同，
+    /// 維持自己一份判斷不變。
+    ///
+    /// GUI 目前不從這裡進來——原本的「解密」頁籤已被信封解密流程取代，那條路走的是
+    /// InspectLockedFile 取得 uuid 之後的 VerifyDecrypt*／CommitPendingDecryptAsync 三段式，
+    /// 對應的 decrypt 訊息分派已經移除（見通盤檢討改善計畫第 1 輪）。保留理由同 EncryptBatchAsync：
+    /// 包裝的是 CLI 正式在用的核心方法，並非第二套解密實作。</summary>
     public Task<UnlockResult> DecryptAsync(string filePath, string password)
         => _lockService.DecryptFileAsync(filePath, password);
 

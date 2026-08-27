@@ -1,6 +1,6 @@
 {
+  "nav.fileEncryption": "檔案加密",
   "tab.encrypt": "加密",
-  "tab.decrypt": "解密",
   "tab.list": "已加密清單",
   "tab.settings": "設定",
   "sidebar.collapse": "收合側欄",

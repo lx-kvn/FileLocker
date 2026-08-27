@@ -270,6 +270,23 @@ describe('EnvelopeEncrypt', () => {
     expect(wrapper.find('[data-action="submit"]').attributes('disabled')).toBeDefined()
   })
 
+  // 後端等 Windows Hello 期間不會回報新的百分比，進度條本來就會停住——按鈕文字要改成
+  // 「等待驗證」，不然畫面看起來像卡在某個百分比不動。
+  it('waitingPasskey 為 true 時，送出按鈕改顯示等待 Windows Hello，不再顯示百分比', async () => {
+    const wrapper = mountEnvelope({
+      paths: ['C:\\a.txt'], phase: 'processing', progressPercent: 42, waitingPasskey: true,
+    })
+    await vi.advanceTimersByTimeAsync(2000)
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-action="next"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(500)
+    await wrapper.vm.$nextTick()
+
+    const submitText = wrapper.find('[data-action="submit"]').text()
+    expect(submitText).toBe('encrypt.waitingPasskey')
+    expect(submitText).not.toContain('42')
+  })
+
   it('拖曳懸停時（定案文件 §1.6）：本體圖示切成對應張數、提示文字隱藏、canvas 帶浮起陰影 class', async () => {
     const wrapper = mountEnvelope()
     await vi.advanceTimersByTimeAsync(2000)

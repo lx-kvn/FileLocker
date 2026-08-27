@@ -340,10 +340,6 @@ public partial class MainWindow : Window
 
             switch (type)
             {
-                case "encrypt":
-                    await HandleEncryptRequestAsync(root);
-                    break;
-
                 case "encryptPending":
                     await HandleEncryptPendingRequestAsync(root);
                     break;
@@ -354,10 +350,6 @@ public partial class MainWindow : Window
 
                 case "rollbackPendingEncrypt":
                     await HandleRollbackPendingEncryptRequestAsync(root);
-                    break;
-
-                case "decrypt":
-                    await HandleDecryptRequestAsync(root);
                     break;
 
                 case "decryptByUuid":
@@ -417,10 +409,6 @@ public partial class MainWindow : Window
 
                 case "filesDroppedFromWebView":
                     HandleFilesDroppedFromWebView(e);
-                    break;
-
-                case "getPathSizes":
-                    await HandleGetPathSizesRequestAsync(root);
                     break;
 
                 case "checkNestedLocks":
@@ -566,58 +554,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task HandleEncryptRequestAsync(JsonElement request)
-    {
-        var paths = request.GetProperty("paths").EnumerateArray()
-            .Select(p => p.GetString() ?? "")
-            .Where(p => !string.IsNullOrWhiteSpace(p))
-            .ToList();
-
-        var password = request.GetProperty("password").GetString() ?? "";
-        var hint = request.TryGetProperty("hint", out var hintProp) ? hintProp.GetString() : null;
-        var enablePasskey = request.TryGetProperty("enablePasskey", out var passkeyProp) && passkeyProp.GetBoolean();
-        var enableRecoveryKey = request.TryGetProperty("enableRecoveryKey", out var recoveryProp) && recoveryProp.GetBoolean();
-
-        // 視窗控制代碼是 WPF 平台細節，只有這裡（呼叫端）拿得到，往下傳給協定分派層當一般參數，
-        // 那一層不需要知道「視窗」這個概念存在。
-        var ownerWindowHandle = enablePasskey ? new WindowInteropHelper(this).Handle : IntPtr.Zero;
-
-        SendToFrontend(new { type = "encryptBatchStarted", totalCount = paths.Count });
-
-        var successCount = 0;
-
-        // 每完成一個項目就馬上回報，前端可以即時更新清單，不用等全部跑完才看到結果——
-        // 這裡只負責「收到一筆就送一次 WebView2 訊息」，逐項的業務邏輯在 EncryptBatchAsync 裡。
-        await foreach (var item in _protocolHandlers.EncryptBatchAsync(
-            paths, password, hint, enablePasskey, enableRecoveryKey, ownerWindowHandle,
-            verifying => SendToFrontend(new { type = "encryptPasskeyVerifying", verifying })))
-        {
-            if (item.Success)
-            {
-                successCount++;
-            }
-
-            // 前端讀的是攤平的欄位（data.path／data.success／...），不是巢狀的 data.item.xxx，
-            // 這裡要攤平回去，維持既有的線上協定格式不變。
-            SendToFrontend(new
-            {
-                type = "encryptItemResult",
-                item.Path,
-                item.Success,
-                item.Uuid,
-                item.LockedMarkerPath,
-                item.ErrorMessage,
-                item.ErrorCode,
-                item.ErrorDetail,
-                item.PasskeyRequested,
-                item.PasskeyEnabled,
-                item.RecoveryKey
-            });
-        }
-
-        SendToFrontend(new { type = "encryptBatchDone", totalCount = paths.Count, successCount });
-    }
-
     /// <summary>
     /// 對應信封加密流程 Phase 2b：跟 HandleEncryptRequestAsync 平行的版本，走 pending 交易模型
     /// （只把加密內容安全寫進 Vault，不寫 marker、不刪原始檔），完成後前端會先播「郵戳／確認」
@@ -704,24 +640,6 @@ public partial class MainWindow : Window
         await _protocolHandlers.RollbackPendingEncryptAsync(uuid);
 
         SendToFrontend(new { type = "rollbackPendingEncryptResult", uuid });
-    }
-
-    private async Task HandleDecryptRequestAsync(JsonElement request)
-    {
-        var lockedMarkerPath = request.GetProperty("path").GetString() ?? "";
-        var password = request.GetProperty("password").GetString() ?? "";
-
-        var result = await _protocolHandlers.DecryptAsync(lockedMarkerPath, password);
-
-        SendToFrontend(new
-        {
-            type = "decryptResult",
-            result.Success,
-            result.RestoredPath,
-            result.ErrorMessage,
-            result.ErrorCode,
-            result.ErrorDetail
-        });
     }
 
     /// <summary>
@@ -1024,26 +942,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 純粹給前端「假的進度條」估算時間用——不是真正的加解密進度回報，只是先問一次每個項目
-    /// 的大小跟型別（檔案/資料夾），讓前端可以依大小/數量/型別分類決定進度動畫要跑多久、
-    /// 資料夾項目要不要多顯示一段「壓縮中」的階段。抓不到大小（例如檔案剛好被移走、資料夾
-    /// 存取被拒）就當作 0，這只是體驗用的估算功能，不該讓錯誤影響到後面真正的加密流程能不能跑。
-    /// 資料夾大小用遞迴列舉加總，可能要花一點時間，所以丟到背景執行緒。
-    /// </summary>
-    private async Task HandleGetPathSizesRequestAsync(JsonElement request)
-    {
-        var paths = request.GetProperty("paths").EnumerateArray()
-            .Select(p => p.GetString() ?? "")
-            .ToList();
-
-        var items = await _protocolHandlers.GetPathSizesAsync(paths);
-
-        SendToFrontend(new { type = "pathSizesResult", items });
-    }
-
-    /// <summary>
     /// 加密前的巢狀鎖定掃描——純資訊性用途，前端拿到數量後只會顯示一個不擋流程的提示，
-    /// 不是像 getPathSizes 那樣影響進度條估算，也不需要因為抓不到資料而特別處理錯誤情境。
+    /// 不影響加密行為本身，也不需要因為抓不到資料而特別處理錯誤情境。
     /// </summary>
     private async Task HandleCheckNestedLocksRequestAsync(JsonElement request)
     {

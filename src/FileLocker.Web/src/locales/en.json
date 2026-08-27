@@ -1,6 +1,6 @@
 {
+  "nav.fileEncryption": "File Encryption",
   "tab.encrypt": "Encrypt",
-  "tab.decrypt": "Decrypt",
   "tab.list": "Encrypted Items",
   "tab.settings": "Settings",
   "sidebar.collapse": "Collapse sidebar",

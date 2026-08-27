@@ -15,11 +15,13 @@ function mountSidebar(props = {}) {
 }
 
 describe('AppSidebar', () => {
+  // 導覽項目一律用名詞（檔案加密／資料夾防護／密碼庫／設定），不沿用畫面內的動作用詞
+  // tab.encrypt——點「檔案加密」到達的是已加密清單，用動詞命名會跟實際到達的畫面對不上。
   it('展開狀態下顯示 4 個 nav 項目的文字 label', () => {
     const wrapper = mountSidebar()
     const labels = wrapper.findAll('.app-sidebar__nav-item .label').map((el) => el.text())
     expect(labels).toEqual([
-      'tab.encrypt',
+      'nav.fileEncryption',
       'tab.folderGuard',
       'tab.passwordLocker',
       'tab.settings',
@@ -58,7 +60,7 @@ describe('AppSidebar', () => {
   it('每個 nav 項目都帶 aria-label，收合時文字被隱藏但螢幕閱讀器仍讀得到項目名稱', () => {
     const wrapper = mountSidebar()
     const first = wrapper.findAll('.app-sidebar__nav-item')[0]
-    expect(first.attributes('aria-label')).toBe('tab.encrypt')
+    expect(first.attributes('aria-label')).toBe('nav.fileEncryption')
   })
 
   it('收合狀態下 mouseenter 會顯示對應項目的提示框，mouseleave 會隱藏', async () => {

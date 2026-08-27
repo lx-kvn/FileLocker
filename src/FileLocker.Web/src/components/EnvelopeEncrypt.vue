@@ -61,6 +61,10 @@ const props = defineProps({
   // 'flying'：commit 成功，播寄出動畫。App.vue 依 IPC 回應狀態決定目前是哪一階段。
   phase: { type: String, default: 'form' },
   progressPercent: { type: Number, default: 0 },
+  // 後端正在等 Windows Hello 驗證。這段期間 progressPercent 不會前進（後端阻塞在等使用者
+  // 操作，沒有位元組在被處理），只顯示一個定住不動的百分比會讓人以為卡住了，所以改成顯示
+  // 「等待驗證」。驗證結束後後端會再送一次 verifying=false，百分比接著跑。
+  waitingPasskey: { type: Boolean, default: false },
   pendingSummary: { type: String, default: null },
   // 回饋：勾了恢復金鑰的話，App.vue 的恢復金鑰彈窗（全域 modal-overlay，不是這個元件內部
   // 的 sheet）會在 confirming 階段自動跳出來——要等使用者關掉那個彈窗，確認 sheet 的抽出
@@ -494,6 +498,14 @@ const progressScale = computed(() => Math.max(0, Math.min(100, props.progressPer
 
 const nextDisabled = computed(() => props.paths.length === 0)
 const submitDisabled = computed(() => props.phase === 'processing' || !props.password || props.password !== props.passwordConfirm)
+
+// 送出按鈕三種狀態：閒置顯示動作名稱；處理中顯示真實百分比；等 Windows Hello 期間百分比
+// 不會前進，改顯示等待文字（見 waitingPasskey prop 的說明）。
+const submitButtonLabel = computed(() => {
+  if (props.phase !== 'processing') return props.t('encrypt.submit')
+  if (props.waitingPasskey) return props.t('encrypt.waitingPasskey')
+  return `${props.t('encrypt.submit')}... ${Math.round(props.progressPercent)}%`
+})
 </script>
 
 <template>
@@ -681,7 +693,7 @@ const submitDisabled = computed(() => props.phase === 'processing' || !props.pas
       <div class="step2-actions">
         <button class="button button--secondary" type="button" :disabled="phase === 'processing'" @click="goBackToPicker">{{ t('encrypt.back') }}</button>
         <button class="button button--primary" type="button" data-action="submit" :disabled="submitDisabled" @click="emit('submit')">
-          {{ phase === 'processing' ? `${t('encrypt.submit')}... ${Math.round(progressPercent)}%` : t('encrypt.submit') }}
+          {{ submitButtonLabel }}
         </button>
       </div>
     </div>

@@ -22,11 +22,14 @@ const props = defineProps({
 const emit = defineEmits(['toggle-collapse', 'navigate'])
 
 // 圖示直接在 template 裡用 v-if 切換（4 個固定項目，沒有多到需要動態 component 對照表），
-// 這裡只列出 key／label，順序就是畫面上由上到下的順序。label 直接沿用原本頂部分頁列的
-// tab.* 翻譯 key（"加密"／"資料夾防護"／"密碼庫"／"設定"）——文字內容跟原本分頁一模一樣，
-// 沒必要為了側欄另外新增一組重複的翻譯字串。
+// 這裡只列出 key／label，順序就是畫面上由上到下的順序。
+//
+// 四個 label 一律用名詞（"檔案加密"／"資料夾防護"／"密碼庫"／"設定"），不沿用畫面內指向
+// 加密動作的 tab.encrypt："檔案加密" 這個項目實際到達的是已加密清單（見 App.vue 的
+// onSidebarNavigate），用動詞命名會跟到達的畫面對不上；改成名詞之後四個項目都是「領域」，
+// 而且跟 "資料夾防護" 形成對照，一眼看得出本工具的兩種保護機制分別管什麼。
 const navItems = [
-  { key: 'encrypt', labelKey: 'tab.encrypt' },
+  { key: 'encrypt', labelKey: 'nav.fileEncryption' },
   { key: 'folderGuard', labelKey: 'tab.folderGuard' },
   { key: 'passwordLocker', labelKey: 'tab.passwordLocker' },
   { key: 'settings', labelKey: 'tab.settings' },

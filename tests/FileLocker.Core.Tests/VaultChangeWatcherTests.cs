@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using FileLocker.Core.Models;
 using FileLocker.Core.Vault;
 
@@ -8,9 +8,8 @@ public class VaultChangeWatcherTests : IDisposable
 {
     // 這個類別的計時測試會跟其他測試專案（尤其是 FileLocker.PasswordLocker.Tests 裡刻意
     // CPU/記憶體密集的 Argon2id 測試）在整套 `dotnet test` 一起跑時同時執行——實測發現單獨
-    // 跑這個測試檔案穩定通過，但跟其他測試專案一起跑偶爾會斷（BurstOfManyFileChanges_
-    // RaisesChangedEventExactlyOnce 的 raisedCount 忽大忽小，或 WaitForChangedAsync 逾時前
-    // 事件根本沒到）。追下去發現根本原因不是 debounce 視窗或輪詢邏輯（那些已經調過好幾輪，
+    // 跑這個測試檔案穩定通過，但跟其他測試專案一起跑偶爾會斷（burst 測試的 raisedCount
+    // 忽大忽小，或等待逾時前事件根本沒到）。追下去發現根本原因不是 debounce 視窗或輪詢邏輯（那些已經調過好幾輪，
     // 見下面 PerFileDebounce/NotifyDebounce 的說明跟 BurstOfManyFileChanges 內的輪詢註解），
     // 是 .NET ThreadPool 預設的執行緒注入節流——執行緒池忙碌時，新執行緒大約每 500ms 才會
     // 多開一顆，這裡用的 System.Threading.Timer 回呼排進去的就是 ThreadPool，節流會直接讓
@@ -82,22 +81,26 @@ public class VaultChangeWatcherTests : IDisposable
         CreatedAtUtc = DateTimeOffset.UtcNow
     };
 
-    /// <summary>等到 Changed 事件觸發、或逾時；用輪詢等待而非固定 sleep 後單次斷言。</summary>
-    private async Task<bool> WaitForChangedAsync(TimeSpan timeout)
+    /// <summary>
+    /// 輪詢等到快取收斂成預期狀態，或逾時。
+    ///
+    /// 不能用「WaitForChangedAsync 回來了就立刻斷言快取內容」——Changed 事件走的是
+    /// VaultChangeWatcher 內部另一個獨立的 debounce 計時器（_notifyTimer），跟「每個檔案的
+    /// ProcessFile 有沒有把快取更新完」是兩條各自計時的路徑。事件先到、快取還沒寫完是完全
+    /// 合法的順序，機器一忙就會撞到。這裡改成直接等快取本身收斂，也更貼近這些測試真正想
+    /// 驗證的性質：最終狀態要跟磁碟一致。
+    /// </summary>
+    private async Task<IReadOnlyList<VaultIndexEntry>> WaitForCacheAsync(
+        Func<IReadOnlyList<VaultIndexEntry>, bool> predicate, TimeSpan timeout)
     {
-        var tcs = new TaskCompletionSource<bool>();
-        void Handler(object? sender, EventArgs e) => tcs.TrySetResult(true);
-
-        _watcher.Changed += Handler;
-        try
+        var deadline = DateTime.UtcNow + timeout;
+        var items = _cache.GetItems();
+        while (!predicate(items) && DateTime.UtcNow < deadline)
         {
-            var completed = await Task.WhenAny(tcs.Task, Task.Delay(timeout));
-            return completed == tcs.Task;
+            await Task.Delay(30);
+            items = _cache.GetItems();
         }
-        finally
-        {
-            _watcher.Changed -= Handler;
-        }
+        return items;
     }
 
     [Fact]
@@ -114,16 +117,14 @@ public class VaultChangeWatcherTests : IDisposable
             await Task.Delay(5); // 遠小於 PerFileDebounce，確保這些事件會被視為同一輪安靜下來後才處理
         }
 
-        var raised = await WaitForChangedAsync(TimeSpan.FromSeconds(2));
+        var items = await WaitForCacheAsync(i => i.Count == 1, TimeSpan.FromSeconds(10));
 
-        Assert.True(raised);
-        var items = _cache.GetItems();
         Assert.Single(items);
         Assert.Equal(uuid, items[0].Uuid);
     }
 
     [Fact]
-    public async Task BurstOfManyFileChanges_RaisesChangedEventExactlyOnce()
+    public async Task BurstOfManyFileChanges_CoalescesIntoVeryFewEvents()
     {
         var raisedCount = 0;
         void CountHandler(object? sender, EventArgs e) => Interlocked.Increment(ref raisedCount);
@@ -173,7 +174,15 @@ public class VaultChangeWatcherTests : IDisposable
             _watcher.Changed -= CountHandler;
         }
 
-        Assert.Equal(1, raisedCount);
+        // 斷言的是「合併有在運作」，不是「剛好 1 次」。
+        //
+        // 這裡真正要守住的性質是：一陣密集的檔案變動不會變成一個檔案一次事件（15 次）。閒置
+        // 的機器上結果就是 1 次，但整套 `dotnet test` 平行跑、CPU 排隊的時候，15 次 SaveMetadata
+        // 之間的間隔可能被拉長到超過 NotifyDebounce，那一輪 burst 就會真的被切成兩批——這是
+        // production code 在那個間隔下的正確行為，不是缺陷。硬釘死 1 會讓這個測試在忙的機器上
+        // 偶發失敗（實際擋下過 commit），而放寬到這個範圍仍然守得住原本的性質：合併壞掉的話
+        // 會直接跳到 15，遠在範圍之外。
+        Assert.InRange(raisedCount, 1, 4);
         Assert.Equal(15, _cache.GetItems().Count);
     }
 
@@ -239,18 +248,19 @@ public class VaultChangeWatcherTests : IDisposable
         var metaPath = Path.Combine(_tempVaultDir.FullName, $"{uuid}.meta.json");
         _vault.SaveMetadata(CreateSampleMetadata(uuid));
 
-        await WaitForChangedAsync(TimeSpan.FromSeconds(2));
-        Assert.Single(_cache.GetItems());
+        Assert.Single(await WaitForCacheAsync(i => i.Count == 1, TimeSpan.FromSeconds(10)));
 
         // debounce 視窗內刪除又重建：處理當下重新問磁碟現況的設計，應該讓最終結果收斂到
         // 「磁碟上現在真的存在」這個狀態，而不是被中間某個瞬間的事件型別誤導。
         File.Delete(metaPath);
         _vault.SaveMetadata(CreateSampleMetadata(uuid));
 
-        var raised = await WaitForChangedAsync(TimeSpan.FromSeconds(2));
+        // 這裡等的是「快取收斂到磁碟現況」而不是「Changed 事件到了」：刪除與重建各自會產生
+        // 事件，先等到哪一個是不確定的——如果先等到刪除那一次，當下快取確實是空的，斷言就會
+        // 誤判（實際擋下過 commit）。測試名字講的本來就是最終一致，直接等最終狀態才對得上。
+        var items = await WaitForCacheAsync(
+            i => i.Count == 1 && i[0].Uuid == uuid, TimeSpan.FromSeconds(10));
 
-        Assert.True(raised);
-        var items = _cache.GetItems();
         Assert.Single(items);
         Assert.Equal(uuid, items[0].Uuid);
     }

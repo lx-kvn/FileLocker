@@ -32,3 +32,37 @@ export function computeTooltipPosition({
 
   return { top, left }
 }
+
+// 疊在錨點正上方（放不下就翻到下方）、水平置中的提示框位置計算。資訊圖示（.info-tooltip）
+// 用的是這一種擺法。
+//
+// 跟上面那個「放在錨點側邊」的是兩個函式而不是同一個加參數：側邊那個的取捨是左右擇一、
+// 垂直置中，這個是上下擇一、水平置中，硬共用只會變成一堆互斥的 if。兩者真正共同的部分
+// 只有「不能超出視窗邊界」這個夾限，那本來就只有兩行。
+//
+// 需要自己算絕對座標的理由跟側欄那個相同：提示框搭配 <Teleport to="body"> 渲染，脫離了
+// 原本容器的裁切範圍，所以不能再依賴 CSS 的 bottom: calc(100% + 8px) 相對定位。會需要
+// teleport 是因為信封加密的密碼卡片在視窗變矮時要能捲動（見 EnvelopeEncrypt.vue 的
+// .sheet），而一旦有了 overflow，卡片內任何超出邊界的絕對定位元素都會被裁掉。
+export function computeStackedTooltipPosition({
+  anchorRect,
+  tooltipSize,
+  viewportWidth,
+  viewportHeight,
+  gap = 8,
+  margin = 8,
+}) {
+  const above = anchorRect.top - gap - tooltipSize.height;
+  const below = anchorRect.bottom + gap;
+
+  // 預設往上開；上面放不下才翻到下面。兩邊都放不下時（提示框比視窗還高）就貼齊上緣，
+  // 至少讓開頭讀得到，而不是整塊飄到視窗外面。
+  let top = above >= margin ? above : below;
+  top = Math.max(margin, Math.min(top, viewportHeight - tooltipSize.height - margin));
+
+  const anchorCenterX = anchorRect.left + anchorRect.width / 2;
+  let left = anchorCenterX - tooltipSize.width / 2;
+  left = Math.max(margin, Math.min(left, viewportWidth - tooltipSize.width - margin));
+
+  return { top, left };
+}

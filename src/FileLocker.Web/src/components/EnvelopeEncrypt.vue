@@ -9,6 +9,7 @@
 // 8-envelope-assembled.html／12-file-tab-merged.html 裡已經被技術規格記錄推翻的做法）。
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { bumpGen, isCurrentGen } from '../composables/useAnimGen.js'
+import InfoTooltip from './InfoTooltip.vue'
 import envelopeBodyEmptyUrl from '../assets/Envelope_Body_Empty.svg'
 import envelopeBodyOneUrl from '../assets/Envelope_Body_One.svg'
 import envelopeBodyTwoUrl from '../assets/Envelope_Body_Two.svg'
@@ -637,17 +638,16 @@ const submitButtonLabel = computed(() => {
             <img v-if="passkeyIconUrl" :src="passkeyIconUrl" alt="" />
             {{ t('encrypt.passkeyLabel') }}
           </label>
-          <!-- 回饋：這裡要跟設定頁「i」提示圖示一樣的框框樣式，不是瀏覽器原生 title 那種
-               陽春提示——沿用 App.vue 全域的 .info-tooltip 系列 class（App.vue 的 <style>
-               沒有 scoped，這裡直接共用，不用自己重畫一份深色圓角泡泡）。回饋抓到的問題：
-               這顆提示圖示原本放在 <label> 裡面，被停用的 label 有 opacity:0.5，這個
-               opacity 會套用到整個子樹（就算子元素是 absolute 定位的泡泡也一樣被拖下水），
-               泡泡因此看起來像半透明、後面文字會透出來——搬到 label 外面當手足元素，不再
-               繼承那個透明度。 -->
-          <span v-if="disablePasskeyRecoveryKey" class="info-tooltip" tabindex="0">
-            <span class="info-tooltip__icon info-tooltip__icon--plain">?</span>
-            <span class="info-tooltip__bubble">{{ t('encrypt.passkeyRecoveryKeyBatchDisabled') }}</span>
-          </span>
+          <!-- 提示圖示放在 <label> 外面當手足元素，不放進去：被停用的 label 有 opacity:0.5，
+               而 opacity 會套用到整個子樹，泡泡會跟著半透明、後面的文字透出來。
+               泡泡本身由 InfoTooltip 元件 teleport 到 body 渲染（見該元件的說明），
+               所以不會被卡片的 overflow 裁掉。 -->
+          <InfoTooltip
+            v-if="disablePasskeyRecoveryKey"
+            symbol="?"
+            :width="240"
+            :text="t('encrypt.passkeyRecoveryKeyBatchDisabled')"
+          />
         </div>
         <div class="checkbox-row">
           <label :class="{ 'is-disabled': disablePasskeyRecoveryKey }">
@@ -655,10 +655,12 @@ const submitButtonLabel = computed(() => {
             <img v-if="recoveryKeyIconUrl" :src="recoveryKeyIconUrl" alt="" />
             {{ t('encrypt.recoveryKeyLabel') }}
           </label>
-          <span v-if="disablePasskeyRecoveryKey" class="info-tooltip" tabindex="0">
-            <span class="info-tooltip__icon info-tooltip__icon--plain">?</span>
-            <span class="info-tooltip__bubble">{{ t('encrypt.passkeyRecoveryKeyBatchDisabled') }}</span>
-          </span>
+          <InfoTooltip
+            v-if="disablePasskeyRecoveryKey"
+            symbol="?"
+            :width="240"
+            :text="t('encrypt.passkeyRecoveryKeyBatchDisabled')"
+          />
         </div>
         <div class="checkbox-row">
           <label>
@@ -671,10 +673,7 @@ const submitButtonLabel = computed(() => {
             <img :src="flockedIconUrl" alt="" />
             {{ t('encrypt.standaloneModeLabel') }}
           </label>
-          <span class="info-tooltip" tabindex="0">
-            <span class="info-tooltip__icon info-tooltip__icon--plain">?</span>
-            <span class="info-tooltip__bubble">{{ t('encrypt.standaloneModeHint') }}</span>
-          </span>
+          <InfoTooltip symbol="?" :width="240" :text="t('encrypt.standaloneModeHint')" />
         </div>
         <div v-if="enableStandaloneMode" class="checkbox-row checkbox-row--nested">
           <label>
@@ -858,11 +857,35 @@ const submitButtonLabel = computed(() => {
   padding: 12px 14px 13px;
   transform: translate(-50%, 0);
   opacity: 1;
+  /* 視窗變矮時讓卡片內容自己捲動。
+     卡片是 position:absolute 疊在 420px 畫布上的，高度完全不計入版面，所以整個懸浮層沒有
+     任何東西捲得到它——視窗高度低於約 775px 時，密碼頁的「上一步」「加密」兩顆按鈕就會落在
+     可視範圍外而且按不到（視窗最小高度是 600px，這個區間是使用者拉得到的）。
+     卡片頂端固定在 50vh + 35px（畫布垂直置中、卡片在畫布內 top:245px），所以底下可用的高度
+     就是 50vh - 35px，再留 8px 不要貼齊視窗下緣。內容放得下時 auto 不會顯示捲軸，一般視窗
+     大小的外觀完全不變。 */
+  max-height: calc(50vh - 43px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   /* 這個基底 transition 直接照抄 mockup 的 .sheet 預設值（見 13-sidebar-ticket-shell.html），
      只在沒有任何過場 class 匹配時當保底——正常情況下每個過場階段都有自己明確的 class
      （下面 --reveal/--settle/--fade-out/--morph-start/--fade-in/--retreat）指定要用的
      transition，不會真的落到這個保底值。 */
   transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1), opacity 160ms ease;
+}
+
+/* 內容放不下而出現捲軸時，不要讓它變成一條搶眼的灰帶蓋在卡片圓角上。 */
+.sheet::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sheet::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 3px;
+}
+
+.sheet::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .sheet--hidden {

@@ -510,4 +510,5 @@ describe('EnvelopeEncrypt', () => {
     const advance = () => vi.advanceTimersByTimeAsync(3000)
     await expect(advance()).resolves.not.toThrow()
   })
+
 })

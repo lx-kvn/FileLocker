@@ -1814,6 +1814,10 @@ async function handleDecryptPathPicked(path) {
   }
   decryptItemInfo.value = {
     uuid: result.uuid,
+    // .flocked 才記路徑：後端在 Vault 查不到這筆 uuid 時，會改讀這顆檔案檔尾嵌入的 metadata
+    // （v2 格式），讓別人給的檔案、或 Vault 遺失後的檔案在這條流程裡也解得開。挑的是 .locked
+    // 就維持 null，那種檔案本來就只是指標、沒有內容也沒有驗證材料可以嵌。
+    flockedPath: path.toLowerCase().endsWith('.flocked') ? path : null,
     originalName: result.originalName,
     hint: result.hint,
     passkeyEnabled: result.passkeyEnabled,
@@ -1831,7 +1835,8 @@ async function handleDecryptPathPicked(path) {
 async function submitDecryptPassword(password) {
   const uuid = decryptItemInfo.value?.uuid
   if (!uuid) return
-  const result = await requestMessage('verifyDecryptPassword', 'verifyDecryptPasswordResult', { uuid, password })
+  const result = await requestMessage('verifyDecryptPassword', 'verifyDecryptPasswordResult',
+    { uuid, password, flockedPath: decryptItemInfo.value.flockedPath })
   decryptVerifyState.value = result.success
     ? { status: 'success' }
     : { status: 'failed' }
@@ -1846,7 +1851,8 @@ async function submitDecryptPassword(password) {
 async function verifyDecryptPasskey() {
   const uuid = decryptItemInfo.value?.uuid
   if (!uuid) return
-  const result = await requestMessage('verifyDecryptPasskey', 'verifyDecryptPasskeyResult', { uuid })
+  const result = await requestMessage('verifyDecryptPasskey', 'verifyDecryptPasskeyResult',
+    { uuid, flockedPath: decryptItemInfo.value.flockedPath })
   decryptVerifyState.value = result.success
     ? { status: 'success' }
     : { status: 'failed', message: t('decrypt.passkeyVerifyIncomplete') }
@@ -1856,7 +1862,8 @@ async function verifyDecryptPasskey() {
 async function submitDecryptRecoveryKey(recoveryKey) {
   const uuid = decryptItemInfo.value?.uuid
   if (!uuid) return
-  const result = await requestMessage('verifyDecryptRecoveryKey', 'verifyDecryptRecoveryKeyResult', { uuid, recoveryKey })
+  const result = await requestMessage('verifyDecryptRecoveryKey', 'verifyDecryptRecoveryKeyResult',
+    { uuid, recoveryKey, flockedPath: decryptItemInfo.value.flockedPath })
   decryptVerifyState.value = result.success
     ? { status: 'success' }
     : { status: 'failed' }

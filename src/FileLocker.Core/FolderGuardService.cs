@@ -51,6 +51,49 @@ public class FolderGuardService
             .Select(e => e.Path)
             .ToList());
 
+    /// <summary>
+    /// 雙擊 `.lockfolder` 標記檔的入口用：把一批標記檔路徑換成「真的可以拿去解鎖」的資料夾路徑。
+    ///
+    /// 標記檔內容只是純文字路徑，沒有任何自我保護（相對照之下 `.locked` 指標檔有 HMAC 簽章）。
+    /// 這裡用防護索引當判準：讀出來的路徑必須確實在索引裡、而且目前狀態是 Locked，否則整筆忽略。
+    /// 索引才是「這個資料夾現在到底有沒有在防護中」的權威來源，內容被改成指向不在索引裡的任何
+    /// 路徑都不會有作用。
+    ///
+    /// 不另外對標記檔加簽章，因為它擋不住上述以外的情況——就算內容被改成指向另一個確實在防護中
+    /// 的資料夾，也只是替那個資料夾跳出解鎖彈窗，解鎖本身仍然要通過密碼或 Passkey，不構成繞過；
+    /// 但加簽章會讓使用者磁碟上既有的標記檔全部失效，得重新上鎖一次才能恢復雙擊解鎖。
+    ///
+    /// 讀不到／驗不過的項目只跳過自己那一筆，不影響同一批裡其他還讀得到的項目（既有行為）。
+    /// </summary>
+    public async Task<IReadOnlyList<string>> ResolveUnlockMarkerTargetsAsync(IReadOnlyList<string> markerPaths)
+        => await Task.Run(() =>
+        {
+            var lockedPaths = _store.ListWithSelfHeal()
+                .Where(e => e.Status == FolderGuardStatus.Locked)
+                .Select(e => e.Path)
+                .ToList();
+
+            var resolved = new List<string>();
+            foreach (var markerPath in markerPaths)
+            {
+                var target = FolderGuardUnlockMarkerFile.ReadTargetFolderPath(markerPath);
+                if (target is null)
+                {
+                    continue;
+                }
+
+                var match = lockedPaths.FirstOrDefault(p => PathsEqual(p, target));
+                if (match is not null)
+                {
+                    // 回傳索引裡那份路徑，不是標記檔寫的那份——之後的解鎖流程要拿它去比對索引，
+                    // 用同一份字串可以避免大小寫／尾端分隔符差異造成的比對落差。
+                    resolved.Add(match);
+                }
+            }
+
+            return (IReadOnlyList<string>)resolved;
+        });
+
     public async Task<IReadOnlyList<FolderGuardEntry>> ListAsync()
         => await Task.Run(() => _store.ListWithSelfHeal());
 

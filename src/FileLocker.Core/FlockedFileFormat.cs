@@ -1,6 +1,26 @@
 using System.Buffers.Binary;
+using System.Text.Json;
+using FileLocker.Core.Models;
 
 namespace FileLocker.Core;
+
+/// <summary>
+/// 一顆 `.flocked` 檔案的結構：UUID、密文實際佔用的位元組數，以及檔尾嵌入的 metadata。
+/// </summary>
+/// <param name="CiphertextLength">
+/// 密文的位元組長度，已經扣掉檔尾的 metadata 區塊。呼叫端必須照這個長度框住餵給
+/// ChunkedCipher.DecryptStream 的串流——它是讀到串流結束為止的，不框範圍會把 metadata
+/// 的開頭當成下一個區塊的長度前綴。
+/// </param>
+/// <param name="EmbeddedMetadata">
+/// 檔尾嵌入的驗證材料，null 代表這顆檔案沒有（v1 格式，或還在 Pending 階段尚未補上檔尾），
+/// 呼叫端要退回去 Vault 查 {uuid}.meta.json。
+/// </param>
+public record FlockedFileLayout(
+    string Uuid,
+    int HeaderLength,
+    long CiphertextLength,
+    LockedItemMetadata? EmbeddedMetadata);
 
 /// <summary>
 /// 對應「單檔案分散式加密」功能規劃 §4：`.flocked` 檔案本身就是完整密文（沒有 Vault 可以指過去），
@@ -36,7 +56,15 @@ public static class FlockedFileFormat
     // "FLKD"：FileLocker standalone 的縮寫，判斷檔案類型用，不是任何加密材料。
     private static readonly byte[] MagicBytes = [0x46, 0x4C, 0x4B, 0x44];
 
-    private const byte CurrentVersion = 1;
+    // "FLKM"：檔尾 metadata 區塊的結束標記（M = metadata），跟開頭的 magic 分開一組，
+    // 這樣「這個檔案有沒有嵌入 metadata」可以單獨判斷，不必依賴版本號推測。
+    private static readonly byte[] TrailerMagicBytes = [0x46, 0x4C, 0x4B, 0x4D];
+
+    private const byte CurrentVersion = 2;
+
+    // v1（只有 UUID、解密材料要回 Vault 查）的檔案在使用者磁碟上已經存在，仍然要讀得出 UUID
+    // 走回既有路徑，不能因為版本號不是最新就整份拒絕。
+    private const byte MinSupportedVersion = 1;
 
     private const int UuidLengthBytes = 16;
 
@@ -50,6 +78,15 @@ public static class FlockedFileFormat
     private const int FixedPrefixLengthBytes = 4 /* magic */ + 1 /* version */ + 2 /* header length */;
 
     private const int CurrentHeaderLengthBytes = FixedPrefixLengthBytes + UuidLengthBytes + ReservedBytesLength;
+
+    // 檔尾 metadata JSON 的長度上限。實際內容只有幾 KB，這個上限純粹是「讀到損毀或被竄改的
+    // 長度值時不要嘗試配置荒謬大小的陣列」，用意跟 ChunkedCipher.MaxChunkLengthBytes 相同。
+    private const int MaxMetadataLengthBytes = 1024 * 1024;
+
+    // 欄位命名規則跟 VaultManager 寫 .meta.json 時一致（都用型別本身的屬性名稱，沒有套用
+    // 命名策略），兩邊序列化出來的同一份 metadata 可以互相讀回來。差別只在這裡不縮排：
+    // 嵌在檔案裡的區塊不需要給人讀，省下來的空間直接反映在每顆 .flocked 檔案的大小上。
+    private static readonly JsonSerializerOptions MetadataJsonOptions = new() { WriteIndented = false };
 
     /// <summary>
     /// 把 header 寫進 output 目前的位置，寫完後呼叫端接著把 ChunkedCipher.EncryptStream 的輸出
@@ -97,7 +134,7 @@ public static class FlockedFileFormat
         }
 
         var version = prefix[MagicBytes.Length];
-        if (version != CurrentVersion)
+        if (version < MinSupportedVersion || version > CurrentVersion)
         {
             return false;
         }
@@ -149,6 +186,172 @@ public static class FlockedFileFormat
             return false;
         }
     }
+
+    /// <summary>
+    /// 把解密所需的驗證材料（鹽值、Argon2 參數、密碼驗證雜湊、Passkey／恢復金鑰的包裝金鑰等）
+    /// 序列化成 JSON 接在密文之後，讓 `.flocked` 檔案真的能獨立於 Vault 被解開。
+    ///
+    /// 放檔尾而不是接在 header 後面，是寫入時機決定的：header 必須在加密開始之前就寫下去
+    /// （密文緊接在它後面），但 Passkey／恢復金鑰的包裝金鑰是整份內容加密完成之後才產生的。
+    /// 放檔尾的話，commit 階段對既有的暫存密文檔直接 append 再 File.Move 就完成了，不需要
+    /// 把整份密文重新讀寫一次（大型項目的差別非常大）。
+    ///
+    /// <see cref="LockedItemMetadata.OriginalPath"/> 與 <see cref="LockedItemMetadata.StandaloneDestinationDir"/>
+    /// 不寫進去：這兩個欄位對解密沒有作用（還原位置看的是 `.flocked` 檔案現在放在哪，見
+    /// LockService.DecryptFlockedFileCore），留著只會讓一顆設計上就是要被帶走、被轉交的檔案
+    /// 順便洩漏使用者的資料夾結構。
+    /// </summary>
+    public static void AppendMetadataTrailer(Stream output, LockedItemMetadata metadata)
+    {
+        var portable = ToPortableMetadata(metadata);
+        var json = JsonSerializer.SerializeToUtf8Bytes(portable, MetadataJsonOptions);
+
+        Span<byte> lengthBytes = stackalloc byte[4];
+        BinaryPrimitives.WriteInt32BigEndian(lengthBytes, json.Length);
+
+        output.Write(json);
+        output.Write(lengthBytes);
+        output.Write(TrailerMagicBytes);
+    }
+
+    /// <summary>
+    /// 讀出整個 `.flocked` 檔案的結構：UUID、密文實際的位元組長度，以及檔尾嵌入的 metadata
+    /// （沒有就是 null）。
+    ///
+    /// 密文長度一定要回報出來：ChunkedCipher.DecryptStream 是一路讀到串流結束為止的，檔尾多了
+    /// metadata 區塊之後，不框出範圍它會把 metadata 的開頭當成下一個區塊的長度前綴去解析。
+    ///
+    /// 需要可 seek 的串流（實務上都是檔案）。檔尾讀不到、magic 對不上、宣告長度不合理時一律
+    /// 當作「沒有嵌入 metadata」而不是判定整個檔案損毀——退回查 Vault 的既有路徑，至少在原本
+    /// 那台裝置上還救得回來。
+    /// </summary>
+    public static bool TryReadLayout(Stream input, out FlockedFileLayout? layout)
+    {
+        layout = null;
+
+        var startPosition = input.Position;
+        if (!TryReadHeader(input, out var uuid) || uuid is null)
+        {
+            return false;
+        }
+
+        var headerLength = (int)(input.Position - startPosition);
+        var totalLength = input.Length - startPosition;
+        var afterHeaderLength = totalLength - headerLength;
+
+        var metadata = TryReadMetadataTrailer(input, afterHeaderLength, out var trailerLength)
+            ? ReadMetadataTrailer(input, trailerLength)
+            : null;
+
+        // metadata 解析失敗（JSON 壞了）時 trailerLength 仍然要扣掉——那段位元組確實不是密文，
+        // 把它餵給 ChunkedCipher 只會變成一個更難懂的「內容損毀」錯誤。
+        var ciphertextLength = metadata is null && trailerLength == 0
+            ? afterHeaderLength
+            : afterHeaderLength - trailerLength;
+
+        input.Position = startPosition + headerLength;
+        layout = new FlockedFileLayout(uuid, headerLength, ciphertextLength, metadata);
+        return true;
+    }
+
+    /// <summary>
+    /// 檢查檔尾有沒有合法的 metadata 區塊，有的話回報這個區塊（含長度欄位與 magic）總共佔了
+    /// 幾個位元組。不改變串流最後停留的位置由呼叫端負責復原。
+    /// </summary>
+    private static bool TryReadMetadataTrailer(Stream input, long afterHeaderLength, out int trailerLength)
+    {
+        trailerLength = 0;
+
+        const int SuffixLength = 4 /* metadata 長度 */ + 4 /* magic */;
+        if (afterHeaderLength < SuffixLength)
+        {
+            return false;
+        }
+
+        input.Position = input.Length - SuffixLength;
+        var suffix = new byte[SuffixLength];
+        if (ReadFully(input, suffix, 0, SuffixLength) != SuffixLength)
+        {
+            return false;
+        }
+
+        if (!suffix.AsSpan(4, 4).SequenceEqual(TrailerMagicBytes))
+        {
+            return false;
+        }
+
+        var metadataLength = BinaryPrimitives.ReadInt32BigEndian(suffix.AsSpan(0, 4));
+
+        // 上限比照 ChunkedCipher.MaxChunkLengthBytes 的用意：讀到損毀或被竄改的長度值時，
+        // 不去嘗試配置一個荒謬大小的陣列。實際的 metadata JSON 只有幾 KB。
+        if (metadataLength <= 0 || metadataLength > MaxMetadataLengthBytes)
+        {
+            return false;
+        }
+
+        if (afterHeaderLength < metadataLength + SuffixLength)
+        {
+            return false;
+        }
+
+        trailerLength = metadataLength + SuffixLength;
+        return true;
+    }
+
+    private static LockedItemMetadata? ReadMetadataTrailer(Stream input, int trailerLength)
+    {
+        const int SuffixLength = 8;
+        var metadataLength = trailerLength - SuffixLength;
+
+        input.Position = input.Length - trailerLength;
+        var json = new byte[metadataLength];
+        if (ReadFully(input, json, 0, metadataLength) != metadataLength)
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<LockedItemMetadata>(json, MetadataJsonOptions);
+        }
+        catch (JsonException)
+        {
+            // 內容不是合法 JSON（截斷、竄改）——當作沒有嵌入 metadata，理由同 TryReadLayout。
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 產生要寫進檔尾的 metadata 副本：清掉不該跟著檔案走的位置資訊，其餘原樣保留。
+    /// 用複製而不是原地修改，避免動到呼叫端手上那份等一下還要寫進 Vault 的物件。
+    /// </summary>
+    private static LockedItemMetadata ToPortableMetadata(LockedItemMetadata source) => new()
+    {
+        Status = source.Status,
+        StorageMode = source.StorageMode,
+        StandaloneDestinationDir = null,
+        Uuid = source.Uuid,
+        OriginalName = source.OriginalName,
+        OriginalPath = "",
+        PasswordVerificationHash = source.PasswordVerificationHash,
+        Salt = source.Salt,
+        Argon2TimeCost = source.Argon2TimeCost,
+        Argon2MemoryCostKb = source.Argon2MemoryCostKb,
+        Argon2Parallelism = source.Argon2Parallelism,
+        Hint = source.Hint,
+        Type = source.Type,
+        OriginalSizeBytes = source.OriginalSizeBytes,
+        CreatedAtUtc = source.CreatedAtUtc,
+        LastAccessedAtUtc = source.LastAccessedAtUtc,
+        ContainsNestedLocks = [.. source.ContainsNestedLocks],
+        PasskeyEnabled = source.PasskeyEnabled,
+        PasskeyCredentialName = source.PasskeyCredentialName,
+        PasskeyChallenge = source.PasskeyChallenge,
+        PasskeyWrappedContentKey = source.PasskeyWrappedContentKey,
+        RecoveryKeyEnabled = source.RecoveryKeyEnabled,
+        RecoveryKeyWrappedContentKey = source.RecoveryKeyWrappedContentKey,
+        BatchId = source.BatchId,
+    };
 
     /// <summary>Stream.Read 不保證一次讀滿，比照 ChunkedCipher 既有的同名輔助方法。</summary>
     private static int ReadFully(Stream stream, byte[] buffer, int offset, int count)

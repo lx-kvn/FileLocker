@@ -1,7 +1,8 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using FileLocker.Core.Crypto;
 using FileLocker.Core.FolderPackaging;
 using FileLocker.Core.History;
+using FileLocker.Core.Io;
 using FileLocker.Core.Models;
 using FileLocker.Core.SecureDelete;
 using FileLocker.Core.Security;
@@ -34,7 +35,13 @@ public class LockService
     /// </summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, PendingDecrypt> _pendingDecrypts = new();
 
-    private sealed record PendingDecrypt(LockedItemMetadata Metadata, byte[]? ContentKey, string? Password, string UnlockMethod);
+    /// <param name="FlockedPath">
+    /// 使用者這次實際挑中的 `.flocked` 檔案路徑（不是 `.flocked` 就是 null）。Commit 階段要靠它
+    /// 讀密文、決定還原位置、清掉來源檔——metadata 可能是從檔尾嵌入的那份讀出來的（Vault 查不到
+    /// 時的後備），那份不帶原始路徑，反推不出檔案在哪。
+    /// </param>
+    private sealed record PendingDecrypt(
+        LockedItemMetadata Metadata, byte[]? ContentKey, string? Password, string UnlockMethod, string? FlockedPath);
 
     /// <summary>
     /// historyLogger／lockoutTracker 都是選填的：CLI 原型或單元測試不一定需要，傳 null 就單純不記錄／不鎖定，
@@ -425,12 +432,23 @@ public class LockService
                 // 既有慣例，不假設呼叫端一定先幫忙建好。
                 Directory.CreateDirectory(targetParentDir);
             }
-            File.Move(_vault.GetEncContentPath(uuid), finalFlockedPath);
-
             metadata.OriginalPath = metadata.StandaloneDestinationDir is null
                 ? originalPath
                 : Path.Combine(metadata.StandaloneDestinationDir, metadata.OriginalName);
             metadata.Status = LockStatus.Committed;
+
+            // 把解密所需的驗證材料附到密文之後，讓這顆檔案真的能獨立於 Vault 被解開（見
+            // FlockedFileFormat.AppendMetadataTrailer）。時機必須在這裡而不是 EncryptToVault：
+            // Passkey／恢復金鑰的包裝金鑰是加密完成之後才產生的，寫 header 的當下還沒有。
+            // 排在上面兩行之後，是為了讓嵌進去的那份帶著最終狀態（Committed），不是 Pending。
+            // 用 append 而不是重寫整個檔案，所以下面仍然是一次便宜的 File.Move，不會因為多了
+            // 這段就要把整份密文重讀重寫一次。
+            using (var appendStream = new FileStream(_vault.GetEncContentPath(uuid), FileMode.Append, FileAccess.Write))
+            {
+                FlockedFileFormat.AppendMetadataTrailer(appendStream, metadata);
+            }
+
+            File.Move(_vault.GetEncContentPath(uuid), finalFlockedPath);
             _vault.SaveMetadata(metadata);
 
             // 到這裡，.flocked 已經落地、metadata 已經標記完成——資料本身已經安全了。
@@ -718,6 +736,41 @@ public class LockService
     public Task<UnlockResult> DecryptFlockedFileAsync(string flockedFilePath, string password)
         => Task.Run(() => DecryptFlockedFileCore(flockedFilePath, password));
 
+    /// <summary>
+    /// 恢復金鑰的路徑式入口，對應雙擊 `.flocked` 檔案後在密碼小視窗改用恢復金鑰解鎖。
+    ///
+    /// 需要一個以「檔案路徑」為起點的入口，而不是沿用 uuid 版本：恢復金鑰是純資料、不綁裝置，
+    /// 定位就是「密碼忘了」時的救命繩，換一台裝置或 Vault 遺失之後更是唯一還可能有用的手段——
+    /// 這種時候呼叫端手上只有這顆檔案，沒有任何 Vault 紀錄可以先查出 uuid。
+    /// </summary>
+    public Task<UnlockResult> DecryptFlockedFileByRecoveryKeyAsync(string flockedFilePath, string recoveryKeyInput)
+        => Task.Run(() =>
+        {
+            if (!FlockedFileFormat.TryReadUuid(flockedFilePath, out var uuid) || uuid is null)
+            {
+                return new UnlockResult(false, "", "找不到或無法解析這個 .flocked 檔案", ErrorCode: ErrorCodes.FlockedParseFailed);
+            }
+
+            return DecryptByRecoveryKeyCore(uuid, recoveryKeyInput, destinationDir: null, flockedPath: flockedFilePath);
+        });
+
+    /// <summary>
+    /// Passkey 的路徑式入口，形狀比照 <see cref="DecryptFlockedFileByRecoveryKeyAsync"/>。
+    ///
+    /// Passkey 綁裝置，換一台電腦本來就用不了；這個入口服務的是「同一台裝置、但 Vault 遺失或
+    /// 被重建」——憑證還在這台機器的 TPM 裡，包裝過的內容金鑰則在 `.flocked` 的檔尾，兩者湊齊
+    /// 就解得開，沒有理由因為 Vault 不見了就讓這條路一起失效。
+    /// </summary>
+    public Task<UnlockResult> DecryptFlockedFileByPasskeyAsync(string flockedFilePath, IntPtr ownerWindowHandle)
+    {
+        if (!FlockedFileFormat.TryReadUuid(flockedFilePath, out var uuid) || uuid is null)
+        {
+            return Task.FromResult(new UnlockResult(false, "", "找不到或無法解析這個 .flocked 檔案", ErrorCode: ErrorCodes.FlockedParseFailed));
+        }
+
+        return DecryptByPasskeyAsync(uuid, ownerWindowHandle, destinationDir: null, flockedPath: flockedFilePath);
+    }
+
     private UnlockResult DecryptFlockedFileCore(string flockedFilePath, string password)
     {
         if (!FlockedFileFormat.TryReadUuid(flockedFilePath, out var uuid) || uuid is null)
@@ -725,7 +778,9 @@ public class LockService
             return new UnlockResult(false, "", "找不到或無法解析這個 .flocked 檔案", ErrorCode: ErrorCodes.FlockedParseFailed);
         }
 
-        var metadata = _vault.LoadMetadata(uuid);
+        // v2 起 metadata 也嵌在 .flocked 檔尾，Vault 不在了（換裝置、Vault 重建）仍然解得開；
+        // v1 檔案沒有檔尾，就跟改版前一樣只能靠 Vault（見 ResolveMetadataForDecrypt）。
+        var metadata = ResolveMetadataForDecrypt(uuid, flockedFilePath);
         if (metadata is null)
         {
             return new UnlockResult(false, "", "在集中管理區找不到對應的加密紀錄", ErrorCode: ErrorCodes.VaultContentMissing);
@@ -758,27 +813,27 @@ public class LockService
     /// 這個檢查永遠是根據「原始位置」判斷，跟這次實際存去哪裡無關，因為 .locked 指標檔本來就只可能出現在
     /// 原始位置，不會出現在使用者這次選的新位置。
     /// </summary>
-    public Task<UnlockResult> DecryptByUuidAsync(string uuid, string password, string? destinationDir = null)
-        => Task.Run(() => DecryptByUuidCore(uuid, password, destinationDir));
+    public Task<UnlockResult> DecryptByUuidAsync(string uuid, string password, string? destinationDir = null, string? flockedPath = null)
+        => Task.Run(() => DecryptByUuidCore(uuid, password, destinationDir, flockedPath));
 
-    private UnlockResult DecryptByUuidCore(string uuid, string password, string? destinationDir)
+    private UnlockResult DecryptByUuidCore(string uuid, string password, string? destinationDir, string? flockedPath = null)
     {
-        if (!TryLoadMetadata(uuid, out var metadata, out var notFoundResult))
+        if (!TryLoadMetadata(uuid, flockedPath, out var metadata, out var notFoundResult))
         {
             return notFoundResult!;
         }
 
-        var destinationParentDir = ResolveDestinationParentDir(metadata, destinationDir, out var resolveError);
+        var destinationParentDir = ResolveDestinationParentDir(metadata, destinationDir, flockedPath, out var resolveError);
         if (destinationParentDir is null)
         {
             return new UnlockResult(false, "", resolveError!, ErrorCode: ErrorCodes.ResolveDestinationError, ErrorDetail: resolveError);
         }
 
-        var result = DecryptAndRestore(metadata, password, destinationParentDir);
+        var result = DecryptAndRestore(metadata, password, destinationParentDir, flockedPath);
 
         if (result.Success)
         {
-            CleanupOriginalArtifactIfMatches(metadata, uuid);
+            CleanupOriginalArtifactIfMatches(metadata, uuid, flockedPath);
         }
 
         return result;
@@ -788,9 +843,10 @@ public class LockService
     /// 對應規格文件 8.1 節「Passkey 快速解鎖」：不需要密碼，改用 Windows Hello 簽章衍生出的
     /// 包裝金鑰解開內容金鑰。ownerWindowHandle 用來套用視窗焦點緩解（見 PasskeyProtector.SignChallengeAsync）。
     /// </summary>
-    public async Task<UnlockResult> DecryptByPasskeyAsync(string uuid, IntPtr ownerWindowHandle, string? destinationDir = null)
+    public async Task<UnlockResult> DecryptByPasskeyAsync(
+        string uuid, IntPtr ownerWindowHandle, string? destinationDir = null, string? flockedPath = null)
     {
-        if (!TryLoadMetadata(uuid, out var metadata, out var notFoundResult))
+        if (!TryLoadMetadata(uuid, flockedPath, out var metadata, out var notFoundResult))
         {
             return notFoundResult!;
         }
@@ -833,16 +889,16 @@ public class LockService
         // 這裡連同 ResolveDestinationParentDir（含 Directory.CreateDirectory）一起丟進背景執行緒，
         // 不只是原本的 RestoreFromKey——跟這個方法一開始特意把 Passkey 簽章步驟留在呼叫端執行緒
         // 的理由相反，這一段純粹是檔案 I/O，沒有 WinRT 呼叫，搬進背景執行緒沒有風險。
-        return await Task.Run(() => FinishAfterKeyResolved(metadata, uuid, contentKey, destinationDir, "passkey"));
+        return await Task.Run(() => FinishAfterKeyResolved(metadata, uuid, contentKey, destinationDir, "passkey", flockedPath));
     }
 
     /// <summary>對應「恢復金鑰」備援路徑：不需要密碼、不需要 Windows Hello，用使用者自己抄下來的恢復金鑰解鎖。</summary>
-    public Task<UnlockResult> DecryptByRecoveryKeyAsync(string uuid, string recoveryKeyInput, string? destinationDir = null)
-        => Task.Run(() => DecryptByRecoveryKeyCore(uuid, recoveryKeyInput, destinationDir));
+    public Task<UnlockResult> DecryptByRecoveryKeyAsync(string uuid, string recoveryKeyInput, string? destinationDir = null, string? flockedPath = null)
+        => Task.Run(() => DecryptByRecoveryKeyCore(uuid, recoveryKeyInput, destinationDir, flockedPath));
 
-    private UnlockResult DecryptByRecoveryKeyCore(string uuid, string recoveryKeyInput, string? destinationDir)
+    private UnlockResult DecryptByRecoveryKeyCore(string uuid, string recoveryKeyInput, string? destinationDir, string? flockedPath = null)
     {
-        if (!TryLoadMetadata(uuid, out var metadata, out var notFoundResult))
+        if (!TryLoadMetadata(uuid, flockedPath, out var metadata, out var notFoundResult))
         {
             return notFoundResult!;
         }
@@ -880,7 +936,7 @@ public class LockService
             CryptographicOperations.ZeroMemory(recoveryKeyBytes);
         }
 
-        return FinishAfterKeyResolved(metadata, uuid, contentKey, destinationDir, "recoveryKey");
+        return FinishAfterKeyResolved(metadata, uuid, contentKey, destinationDir, "recoveryKey", flockedPath);
     }
 
     /// <summary>
@@ -891,10 +947,10 @@ public class LockService
     /// （密碼路徑沒有一個中間態的 contentKey 可以先解出來保存，DecryptAndRestore 本身就是
     /// 「驗證＋衍生金鑰＋還原」一次做完，所以只能把密碼原樣留著等 commit 時重新驗證一次）。
     /// </summary>
-    public Task<VerifyPasswordResult> VerifyDecryptPasswordAsync(string uuid, string password)
+    public Task<VerifyPasswordResult> VerifyDecryptPasswordAsync(string uuid, string password, string? flockedPath = null)
         => Task.Run(() =>
         {
-            var metadata = _vault.LoadMetadata(uuid);
+            var metadata = ResolveMetadataForDecrypt(uuid, flockedPath);
             if (metadata is null)
             {
                 return new VerifyPasswordResult(false, "找不到對應的加密紀錄", ErrorCode: ErrorCodes.RecordNotFound);
@@ -912,7 +968,7 @@ public class LockService
                 return new VerifyPasswordResult(false, verification.ErrorMessage, ErrorCode: verification.ErrorCode, ErrorDetail: verification.ErrorDetail);
             }
 
-            _pendingDecrypts[uuid] = new PendingDecrypt(metadata, ContentKey: null, Password: password, UnlockMethod: "password");
+            _pendingDecrypts[uuid] = new PendingDecrypt(metadata, ContentKey: null, Password: password, UnlockMethod: "password", FlockedPath: flockedPath);
             return new VerifyPasswordResult(true);
         });
 
@@ -923,9 +979,10 @@ public class LockService
     /// 成功打勾」跟「選存檔位置」是使用者可以分開、中途取消的兩個步驟，同時只跳一次 Windows
     /// Hello（不用像密碼路徑那樣在 commit 階段重新驗證一次）。
     /// </summary>
-    public async Task<VerifyPasswordResult> VerifyDecryptByPasskeyAsync(string uuid, IntPtr ownerWindowHandle)
+    public async Task<VerifyPasswordResult> VerifyDecryptByPasskeyAsync(
+        string uuid, IntPtr ownerWindowHandle, string? flockedPath = null)
     {
-        var metadata = _vault.LoadMetadata(uuid);
+        var metadata = ResolveMetadataForDecrypt(uuid, flockedPath);
         if (metadata is null)
         {
             return new VerifyPasswordResult(false, "找不到對應的加密紀錄", ErrorCode: ErrorCodes.RecordNotFound);
@@ -966,15 +1023,16 @@ public class LockService
             CryptographicOperations.ZeroMemory(signature);
         }
 
-        _pendingDecrypts[uuid] = new PendingDecrypt(metadata, ContentKey: contentKey, Password: null, UnlockMethod: "passkey");
+        _pendingDecrypts[uuid] = new PendingDecrypt(metadata, ContentKey: contentKey, Password: null, UnlockMethod: "passkey", FlockedPath: flockedPath);
         return new VerifyPasswordResult(true);
     }
 
     /// <summary>獨立解密流程 Verify 階段（恢復金鑰路徑）：跟 Passkey 路徑同樣的做法，複製自 DecryptByRecoveryKeyCore。</summary>
-    public Task<VerifyPasswordResult> VerifyDecryptByRecoveryKeyAsync(string uuid, string recoveryKeyInput)
+    public Task<VerifyPasswordResult> VerifyDecryptByRecoveryKeyAsync(
+        string uuid, string recoveryKeyInput, string? flockedPath = null)
         => Task.Run(() =>
         {
-            var metadata = _vault.LoadMetadata(uuid);
+            var metadata = ResolveMetadataForDecrypt(uuid, flockedPath);
             if (metadata is null)
             {
                 return new VerifyPasswordResult(false, "找不到對應的加密紀錄", ErrorCode: ErrorCodes.RecordNotFound);
@@ -1013,7 +1071,7 @@ public class LockService
                 CryptographicOperations.ZeroMemory(recoveryKeyBytes);
             }
 
-            _pendingDecrypts[uuid] = new PendingDecrypt(metadata, ContentKey: contentKey, Password: null, UnlockMethod: "recoveryKey");
+            _pendingDecrypts[uuid] = new PendingDecrypt(metadata, ContentKey: contentKey, Password: null, UnlockMethod: "recoveryKey", FlockedPath: flockedPath);
             return new VerifyPasswordResult(true);
         });
 
@@ -1035,21 +1093,23 @@ public class LockService
 
             if (pending.Password is not null)
             {
-                var destinationParentDir = ResolveDestinationParentDir(pending.Metadata, destinationDir, out var resolveError);
+                var destinationParentDir = ResolveDestinationParentDir(
+                    pending.Metadata, destinationDir, pending.FlockedPath, out var resolveError);
                 if (destinationParentDir is null)
                 {
                     return new UnlockResult(false, "", resolveError!, ErrorCode: ErrorCodes.ResolveDestinationError, ErrorDetail: resolveError);
                 }
 
-                var result = DecryptAndRestore(pending.Metadata, pending.Password, destinationParentDir);
+                var result = DecryptAndRestore(pending.Metadata, pending.Password, destinationParentDir, pending.FlockedPath);
                 if (result.Success)
                 {
-                    CleanupOriginalArtifactIfMatches(pending.Metadata, uuid);
+                    CleanupOriginalArtifactIfMatches(pending.Metadata, uuid, pending.FlockedPath);
                 }
                 return result;
             }
 
-            return FinishAfterKeyResolved(pending.Metadata, uuid, pending.ContentKey!, destinationDir, pending.UnlockMethod);
+            return FinishAfterKeyResolved(
+                pending.Metadata, uuid, pending.ContentKey!, destinationDir, pending.UnlockMethod, pending.FlockedPath);
         });
 
     /// <summary>
@@ -1077,29 +1137,35 @@ public class LockService
     /// 解開的 contentKey 可以傳進來，硬套會讓這個方法多長出一個處理「沒有 key」的分支，
     /// 介面被迫變複雜，不划算——維持 DecryptByUuidCore 自己的序列不變。
     /// </summary>
-    private UnlockResult FinishAfterKeyResolved(LockedItemMetadata metadata, string uuid, byte[] contentKey, string? destinationDir, string unlockMethod)
+    private UnlockResult FinishAfterKeyResolved(
+        LockedItemMetadata metadata, string uuid, byte[] contentKey, string? destinationDir, string unlockMethod,
+        string? flockedPath = null)
     {
-        var destinationParentDir = ResolveDestinationParentDir(metadata, destinationDir, out var resolveError);
+        var destinationParentDir = ResolveDestinationParentDir(metadata, destinationDir, flockedPath, out var resolveError);
         if (destinationParentDir is null)
         {
             CryptographicOperations.ZeroMemory(contentKey);
             return new UnlockResult(false, "", resolveError!, ErrorCode: ErrorCodes.ResolveDestinationError, ErrorDetail: resolveError);
         }
 
-        var result = RestoreFromKey(metadata, contentKey, destinationParentDir, unlockMethod);
+        var result = RestoreFromKey(metadata, contentKey, destinationParentDir, unlockMethod, flockedPath);
 
         if (result.Success)
         {
-            CleanupOriginalArtifactIfMatches(metadata, uuid);
+            CleanupOriginalArtifactIfMatches(metadata, uuid, flockedPath);
         }
 
         return result;
     }
 
-    /// <summary>找不到 metadata 時，三個 Decrypt*Core／Async 入口共用的「找不到對應加密紀錄」結果。</summary>
-    private bool TryLoadMetadata(string uuid, out LockedItemMetadata metadata, out UnlockResult? notFoundResult)
+    /// <summary>
+    /// 找不到 metadata 時，三個 Decrypt*Core／Async 入口共用的「找不到對應加密紀錄」結果。
+    /// flockedPath 有給的話，Vault 查不到會退回讀 `.flocked` 檔尾嵌入的那份
+    /// （見 <see cref="ResolveMetadataForDecrypt"/>）。
+    /// </summary>
+    private bool TryLoadMetadata(string uuid, string? flockedPath, out LockedItemMetadata metadata, out UnlockResult? notFoundResult)
     {
-        var loaded = _vault.LoadMetadata(uuid);
+        var loaded = ResolveMetadataForDecrypt(uuid, flockedPath);
         if (loaded is null)
         {
             metadata = null!;
@@ -1112,8 +1178,16 @@ public class LockService
         return true;
     }
 
-    /// <summary>DecryptByUuidCore／DecryptByPasskeyAsync 共用：算出解密後要還原到哪個資料夾。</summary>
-    private static string? ResolveDestinationParentDir(LockedItemMetadata metadata, string? destinationDir, out string? errorMessage)
+    /// <summary>
+    /// DecryptByUuidCore／DecryptByPasskeyAsync 共用：算出解密後要還原到哪個資料夾。
+    ///
+    /// 使用者沒有指定位置時，一般是回頭用 metadata 記錄的原始路徑。但 `.flocked` 檔尾嵌入的
+    /// 那份 metadata 不帶原始路徑（見 FlockedFileFormat.AppendMetadataTrailer——那個欄位對解密
+    /// 沒有作用，留著只會讓一顆本來就要被帶走的檔案順便洩漏使用者的資料夾結構），這種情況改用
+    /// `.flocked` 檔案現在所在的資料夾，也才符合「搬到哪就在哪還原」的可攜語意。
+    /// </summary>
+    private static string? ResolveDestinationParentDir(
+        LockedItemMetadata metadata, string? destinationDir, string? flockedPath, out string? errorMessage)
     {
         errorMessage = null;
 
@@ -1121,6 +1195,18 @@ public class LockService
         {
             Directory.CreateDirectory(destinationDir);
             return destinationDir;
+        }
+
+        if (string.IsNullOrWhiteSpace(metadata.OriginalPath) && !string.IsNullOrWhiteSpace(flockedPath))
+        {
+            var flockedParentDir = Path.GetDirectoryName(Path.GetFullPath(flockedPath));
+            if (flockedParentDir is null)
+            {
+                errorMessage = "無法判斷 .flocked 檔案所在的資料夾";
+                return null;
+            }
+
+            return flockedParentDir;
         }
 
         var originalParentDir = Path.GetDirectoryName(Path.GetFullPath(metadata.OriginalPath));
@@ -1141,11 +1227,11 @@ public class LockService
     /// 格式、驗證方式都不一樣（見各自類別上的說明），依 StorageMode 分派給對應的實作，
     /// 呼叫端不用自己判斷該用哪一套。
     /// </summary>
-    private void CleanupOriginalArtifactIfMatches(LockedItemMetadata metadata, string uuid)
+    private void CleanupOriginalArtifactIfMatches(LockedItemMetadata metadata, string uuid, string? flockedPath = null)
     {
         if (metadata.StorageMode == StorageMode.Standalone)
         {
-            CleanupFlockedIfMatches(metadata, uuid);
+            CleanupFlockedIfMatches(metadata, uuid, flockedPath);
             return;
         }
 
@@ -1189,9 +1275,13 @@ public class LockService
     /// .flocked 沒有像 .locked 那樣的獨立簽章可以驗證（見 FlockedFileFormat 上的說明——完整性
     /// 由密文串流自己的 AES-GCM Auth Tag 保護），這裡的 UUID 比對已經是能做的最後一道防線。
     /// </summary>
-    private void CleanupFlockedIfMatches(LockedItemMetadata metadata, string uuid)
+    private void CleanupFlockedIfMatches(LockedItemMetadata metadata, string uuid, string? flockedPath = null)
     {
-        var expectedFlockedPath = FlockedStatusChecker.ComputeFlockedPath(metadata.OriginalPath, metadata.Type == ItemType.Folder);
+        // 呼叫端手上已經有使用者實際點開的那顆 .flocked 就直接用它——metadata.OriginalPath 反推
+        // 只在「檔案還在當初加密的位置、而且 metadata 來自 Vault」時才算得對；檔案被搬走過，
+        // 或 metadata 是從檔尾讀出來的（那份不帶原始路徑），反推的結果都不會是正確的位置。
+        var expectedFlockedPath = flockedPath
+            ?? FlockedStatusChecker.ComputeFlockedPath(metadata.OriginalPath, metadata.Type == ItemType.Folder);
         if (!File.Exists(expectedFlockedPath))
         {
             return;
@@ -1341,13 +1431,59 @@ public class LockService
         var flockedPath = explicitFlockedPath
             ?? FlockedStatusChecker.ComputeFlockedPath(metadata.OriginalPath, metadata.Type == ItemType.Folder);
         var stream = File.OpenRead(flockedPath);
-        if (!FlockedFileFormat.TryReadHeader(stream, out var headerUuid) || headerUuid != metadata.Uuid)
+        if (!FlockedFileFormat.TryReadLayout(stream, out var layout) || layout!.Uuid != metadata.Uuid)
         {
             stream.Dispose();
             throw new InvalidDataException(".flocked 檔案的 header 無法解析，或裡面的 UUID 跟這筆紀錄不符");
         }
 
-        return stream;
+        // v2 的檔尾放了嵌入式 metadata，密文不再是「header 之後一路到檔案結束」——要把範圍框住，
+        // 否則 ChunkedCipher.DecryptStream 會把檔尾的開頭當成下一個區塊的長度前綴去解析
+        // （見 BoundedReadStream 的說明）。v1 檔案沒有檔尾，CiphertextLength 就是剩下的全部，
+        // 包一層的行為跟直接給整個串流完全一樣。
+        return new BoundedReadStream(stream, layout.CiphertextLength);
+    }
+
+    /// <summary>
+    /// 解密時決定 metadata 從哪裡來：Vault 查得到就以 Vault 那份為準，查不到才退回 `.flocked`
+    /// 檔尾嵌入的那份（v2 格式，見 <see cref="FlockedFileFormat.AppendMetadataTrailer"/>）。
+    ///
+    /// 順序是刻意的。同一台裝置上使用者可能事後重新設定過這個項目的 Passkey，那種變更只反映在
+    /// Vault 的 .meta.json 上；檔尾那份是加密當下就固定寫死的，拿它覆蓋掉會讓事後的設定變更
+    /// 失效。檔尾那份的定位是「Vault 不在了」時的後備——換一台裝置、或 Vault 遺失／重建之後
+    /// 仍然解得開，這正是 `.flocked` 宣稱的「獨立可攜」。
+    ///
+    /// 檔尾 metadata 裡的 UUID 必須跟 header 對得上（<see cref="FlockedFileFormat.TryReadLayout"/>
+    /// 只保證 header 讀得出來），這裡再比對一次呼叫端要的 uuid，避免拿到不相干檔案裡的 metadata。
+    /// </summary>
+    private LockedItemMetadata? ResolveMetadataForDecrypt(string uuid, string? flockedPath)
+    {
+        var fromVault = _vault.LoadMetadata(uuid);
+        if (fromVault is not null || flockedPath is null || !File.Exists(flockedPath))
+        {
+            return fromVault;
+        }
+
+        try
+        {
+            using var stream = File.OpenRead(flockedPath);
+            if (!FlockedFileFormat.TryReadLayout(stream, out var layout) || layout!.Uuid != uuid)
+            {
+                return null;
+            }
+
+            var embedded = layout.EmbeddedMetadata;
+            if (embedded is null || embedded.Uuid != uuid)
+            {
+                return null;
+            }
+
+            return embedded;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

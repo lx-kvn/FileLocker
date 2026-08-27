@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -7,6 +7,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using FileLocker.Core;
+using FileLocker.Core.Models;
 using FileLocker.Core.Vault;
 
 namespace FileLocker.App;
@@ -71,7 +72,14 @@ public partial class PasswordPromptWindow : Window
         {
             uuidFromFile = LockedMarkerFile.ReadFrom(lockedMarkerPath)?.Uuid;
         }
+        // Vault 查不到就退回讀 .flocked 檔尾嵌入的 metadata（v2 格式）——檔案被帶到別台裝置、
+        // 或 Vault 遺失／重建時，畫面上仍然要顯示得出原始檔名跟提示，也才知道要不要秀出
+        // 「使用恢復金鑰解鎖」按鈕。判斷順序跟 LockService.ResolveMetadataForDecrypt 一致。
         var metadata = uuidFromFile is not null ? vaultManager.LoadMetadata(uuidFromFile) : null;
+        if (metadata is null && _isFlockedFile && uuidFromFile is not null)
+        {
+            metadata = ReadEmbeddedMetadata(lockedMarkerPath, uuidFromFile);
+        }
 
         _uuid = uuidFromFile ?? "";
         _passkeyEnabled = metadata?.PasskeyEnabled ?? false;
@@ -143,7 +151,11 @@ public partial class PasswordPromptWindow : Window
 
         var hwnd = new WindowInteropHelper(this).Handle;
 
-        var result = await _lockService.DecryptByPasskeyAsync(_uuid, hwnd, GetMarkerParentDir());
+        // .flocked 走路徑式入口：Vault 可能已經不在了（換裝置／Vault 重建），但 Passkey 憑證
+        // 還在這台機器的 TPM 裡、包裝過的內容金鑰在檔尾，湊齊就解得開。
+        var result = _isFlockedFile
+            ? await _lockService.DecryptFlockedFileByPasskeyAsync(_lockedMarkerPath, hwnd)
+            : await _lockService.DecryptByPasskeyAsync(_uuid, hwnd, GetMarkerParentDir());
 
         if (result.Success)
         {
@@ -251,6 +263,29 @@ public partial class PasswordPromptWindow : Window
         _isBusy = false;
     }
 
+    /// <summary>
+    /// 讀出 .flocked 檔尾嵌入的 metadata（v2 格式），只給建構子顯示用途。讀不到、格式不合、
+    /// UUID 對不上一律回 null——這裡是「顯示資訊」不是「解密」，拿不到就照既有行為顯示成
+    /// 檔名推測值，不需要區分失敗原因。
+    /// </summary>
+    private static LockedItemMetadata? ReadEmbeddedMetadata(string flockedPath, string uuid)
+    {
+        try
+        {
+            using var stream = File.OpenRead(flockedPath);
+            if (!FlockedFileFormat.TryReadLayout(stream, out var layout) || layout!.Uuid != uuid)
+            {
+                return null;
+            }
+
+            return layout.EmbeddedMetadata?.Uuid == uuid ? layout.EmbeddedMetadata : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
     private async Task TryRecoveryKeyUnlockAsync()
     {
         if (_isBusy)
@@ -262,7 +297,11 @@ public partial class PasswordPromptWindow : Window
         SetBusyState(true);
         ErrorText.Visibility = Visibility.Collapsed;
 
-        var result = await _lockService.DecryptByRecoveryKeyAsync(_uuid, RecoveryKeyInput.Text, GetMarkerParentDir());
+        // .flocked 走路徑式入口，理由同 Passkey——恢復金鑰更是「密碼忘了」時的救命繩，
+        // 不該因為 Vault 不在了就一起失效。
+        var result = _isFlockedFile
+            ? await _lockService.DecryptFlockedFileByRecoveryKeyAsync(_lockedMarkerPath, RecoveryKeyInput.Text)
+            : await _lockService.DecryptByRecoveryKeyAsync(_uuid, RecoveryKeyInput.Text, GetMarkerParentDir());
 
         if (result.Success)
         {

@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 
 namespace FileLocker.Cli;
 
@@ -154,7 +154,7 @@ public static class CliLocalization
         ["usageHeader"] = "用法：",
         ["usageEncrypt"] = "  FileLocker.Cli encrypt <檔案或資料夾路徑> [路徑2 ...]",
         ["usageUnlock"] = "  FileLocker.Cli unlock <.locked 或 .flocked 檔案路徑> [路徑2 ...]",
-        ["usageUnlockRecovery"] = "  FileLocker.Cli unlock-recovery <uuid> <恢復金鑰> [還原目的地資料夾]",
+        ["usageUnlockRecovery"] = "  FileLocker.Cli unlock-recovery <uuid 或 .flocked 路徑> <恢復金鑰> [還原目的地資料夾]",
         ["usageList"] = "  FileLocker.Cli list",
         ["usageDelete"] = "  FileLocker.Cli delete <uuid> [uuid2 ...]",
         ["usageCompletion"] = "  FileLocker.Cli completion <bash|zsh|pwsh>   印出對應 shell 的自動完成腳本",
@@ -226,7 +226,7 @@ public static class CliLocalization
         ["usageHeader"] = "Usage:",
         ["usageEncrypt"] = "  FileLocker.Cli encrypt <file or folder path> [path2 ...]",
         ["usageUnlock"] = "  FileLocker.Cli unlock <.locked or .flocked file path> [path2 ...]",
-        ["usageUnlockRecovery"] = "  FileLocker.Cli unlock-recovery <uuid> <recovery key> [restore destination folder]",
+        ["usageUnlockRecovery"] = "  FileLocker.Cli unlock-recovery <uuid or .flocked path> <recovery key> [restore destination folder]",
         ["usageList"] = "  FileLocker.Cli list",
         ["usageDelete"] = "  FileLocker.Cli delete <uuid> [uuid2 ...]",
         ["usageCompletion"] = "  FileLocker.Cli completion <bash|zsh|pwsh>   Print a shell completion script",

@@ -710,6 +710,16 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// 獨立解密流程三個 Verify 請求共用：取出前端帶上來的 `.flocked` 檔案路徑。使用者挑的是
+    /// `.locked` 時前端不會帶這個欄位，回傳 null——Vault 查得到就用 Vault 那份 metadata，
+    /// 只有查不到（別人給的檔案、Vault 遺失或重建）才會用得到這個路徑去讀檔尾嵌入的那份。
+    /// </summary>
+    private static string? ReadFlockedPath(JsonElement request)
+        => request.TryGetProperty("flockedPath", out var prop) && prop.ValueKind == JsonValueKind.String
+            ? prop.GetString()
+            : null;
+
+    /// <summary>
     /// 獨立解密流程（信封＋Sheet，定案文件 §1.11）Verify 階段——密碼路徑：只驗證密碼對不對，
     /// 不還原任何檔案，成功後 LockService 會把結果暫存起來，等使用者選定存檔位置後
     /// 呼叫 commitPendingDecrypt 才真正寫入。
@@ -719,7 +729,7 @@ public partial class MainWindow : Window
         var uuid = request.GetProperty("uuid").GetString() ?? "";
         var password = request.GetProperty("password").GetString() ?? "";
 
-        var result = await _protocolHandlers.VerifyDecryptPasswordAsync(uuid, password);
+        var result = await _protocolHandlers.VerifyDecryptPasswordAsync(uuid, password, ReadFlockedPath(request));
 
         SendToFrontend(new
         {
@@ -738,7 +748,7 @@ public partial class MainWindow : Window
         var uuid = request.GetProperty("uuid").GetString() ?? "";
         var hwnd = new WindowInteropHelper(this).Handle;
 
-        var result = await _protocolHandlers.VerifyDecryptByPasskeyAsync(uuid, hwnd);
+        var result = await _protocolHandlers.VerifyDecryptByPasskeyAsync(uuid, hwnd, ReadFlockedPath(request));
 
         SendToFrontend(new
         {
@@ -757,7 +767,7 @@ public partial class MainWindow : Window
         var uuid = request.GetProperty("uuid").GetString() ?? "";
         var recoveryKeyInput = request.GetProperty("recoveryKey").GetString() ?? "";
 
-        var result = await _protocolHandlers.VerifyDecryptByRecoveryKeyAsync(uuid, recoveryKeyInput);
+        var result = await _protocolHandlers.VerifyDecryptByRecoveryKeyAsync(uuid, recoveryKeyInput, ReadFlockedPath(request));
 
         SendToFrontend(new
         {

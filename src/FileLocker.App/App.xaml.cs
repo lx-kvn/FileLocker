@@ -569,13 +569,26 @@ public partial class App : Application
     /// （見 FolderGuardUnlockPromptWindow 建構子上的說明），跟右鍵選單「解鎖」不同。</summary>
     private void HandleFolderGuardUnlockMarkerLaunch(List<string> markerPaths)
     {
-        var folderPaths = markerPaths
-            .Select(FolderGuardUnlockMarkerFile.ReadTargetFolderPath)
-            .Where(path => path is not null)
-            .Select(path => path!)
-            .ToList();
+        // 不直接把標記檔裡寫的路徑拿去用——那是沒有任何自我保護的純文字，內容被改掉的話這裡
+        // 就會照著走（`.locked` 指標檔相對之下有 HMAC 簽章）。改由 FolderGuardService 拿防護
+        // 索引比對過，只有「確實在索引裡、而且目前狀態是 Locked」的資料夾才會被解析出來，
+        // 讀不到／驗不過的項目各自跳過，不影響同一批裡其他還讀得到的（既有行為）。
+        _ = Task.Run(async () =>
+        {
+            var folderPaths = await _folderGuardService!.ResolveUnlockMarkerTargetsAsync(markerPaths);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (folderPaths.Count == 0)
+                {
+                    // 一筆都驗不過就沒有視窗會開——這個行程是被雙擊觸發起來的，沒有東西留著就
+                    // 直接結束，不要變成看不見又殺不掉的殭屍行程（比照 --startup 那條分支）。
+                    ShutdownIfNoWindowsRemain();
+                    return;
+                }
 
-        HandleFolderGuardUnlockLaunch(folderPaths, openFoldersAfterUnlock: true);
+                HandleFolderGuardUnlockLaunch([.. folderPaths], openFoldersAfterUnlock: true);
+            });
+        });
     }
 
     /// <summary>HandleLaunchArgs 裡兩個「需要開一個全新 MainWindow」的分支共用：一般加密路徑、

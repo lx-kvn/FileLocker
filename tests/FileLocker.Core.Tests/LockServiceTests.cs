@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using FileLocker.Core.History;
 using FileLocker.Core.Models;
 using FileLocker.Core.Security;
@@ -1273,5 +1273,148 @@ public class LockServiceTests : IDisposable
 
         Assert.False(commitResult.Success);
         Assert.Equal(ErrorCodes.PendingItemNotFound, commitResult.ErrorCode);
+    }
+
+    // ---- 通盤檢討改善計畫第 2 輪：.flocked 真的獨立可攜 ----
+    //
+    // 改版前 UI 上寫著「獨立可攜的 .flocked 密文檔」，但解密時鹽值／Argon2 參數／密碼驗證雜湊
+    // 全部要回 Vault 查 {uuid}.meta.json——換一台裝置打不開，Vault 遺失或重建之後所有既存的
+    // .flocked 也一起打不開，而且風險提示只警告了相反的方向（檔案遺失）。
+    // 下面這幾個測試把「沒有 Vault 也能解開」這件事固定住。
+
+    /// <summary>模擬換一台裝置／Vault 重建：把這筆紀錄在 Vault 裡的痕跡整個清掉，只留 .flocked 本體。</summary>
+    private void RemoveVaultTraceOf(string uuid)
+    {
+        var metaPath = Path.Combine(_vaultDir.FullName, $"{uuid}.meta.json");
+        if (File.Exists(metaPath)) File.Delete(metaPath);
+        var encPath = Path.Combine(_vaultDir.FullName, $"{uuid}.enc");
+        if (File.Exists(encPath)) File.Delete(encPath);
+    }
+
+    [Fact]
+    public async Task DecryptFlockedFileAsync_WithNoVaultRecordAtAll_StillDecrypts()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "帶去別台裝置的檔案.txt");
+        const string originalContent = "換一台電腦也要打得開";
+        File.WriteAllText(filePath, originalContent);
+        var lockResult = await _service.EncryptAsync(filePath, "portable-password", null, storageMode: StorageMode.Standalone);
+        Assert.True(lockResult.Success);
+        var flockedPath = Path.Combine(_workDir.FullName, "帶去別台裝置的檔案.flocked");
+
+        RemoveVaultTraceOf(lockResult.Uuid);
+
+        var unlockResult = await _service.DecryptFlockedFileAsync(flockedPath, "portable-password");
+
+        Assert.True(unlockResult.Success);
+        Assert.True(File.Exists(filePath));
+        Assert.Equal(originalContent, File.ReadAllText(filePath));
+        Assert.False(File.Exists(flockedPath));
+    }
+
+    [Fact]
+    public async Task DecryptFlockedFileAsync_WithNoVaultRecord_WrongPassword_StillRejects()
+    {
+        // 沒有 Vault 可查的情況下，密碼驗證得靠檔尾嵌入的驗證雜湊——不能因為查不到紀錄
+        // 就變成「什麼密碼都放行」或「什麼密碼都失敗但錯誤訊息說查無紀錄」。
+        var filePath = Path.Combine(_workDir.FullName, "密碼要照驗的檔案.txt");
+        File.WriteAllText(filePath, "內容");
+        var lockResult = await _service.EncryptAsync(filePath, "correct-password", null, storageMode: StorageMode.Standalone);
+        var flockedPath = Path.Combine(_workDir.FullName, "密碼要照驗的檔案.flocked");
+        RemoveVaultTraceOf(lockResult.Uuid);
+
+        var unlockResult = await _service.DecryptFlockedFileAsync(flockedPath, "wrong-password");
+
+        Assert.False(unlockResult.Success);
+        Assert.Equal(ErrorCodes.PasswordIncorrect, unlockResult.ErrorCode);
+        Assert.True(File.Exists(flockedPath));
+    }
+
+    [Fact]
+    public async Task DecryptFlockedFileAsync_FolderWithNoVaultRecord_StillDecrypts()
+    {
+        // 資料夾走的是「先解密成暫存 zip 再解壓縮」這條分支，型別資訊（Type=Folder）同樣
+        // 只存在 metadata 裡——檔尾那份沒帶到的話，資料夾會被當成一般檔案還原成一顆 zip。
+        var folderPath = Path.Combine(_workDir.FullName, "帶去別台裝置的資料夾");
+        Directory.CreateDirectory(folderPath);
+        File.WriteAllText(Path.Combine(folderPath, "裡面的檔案.txt"), "資料夾內容");
+        var lockResult = await _service.EncryptAsync(folderPath, "folder-password", null, storageMode: StorageMode.Standalone);
+        Assert.True(lockResult.Success);
+        var flockedPath = Path.Combine(_workDir.FullName, "帶去別台裝置的資料夾.flocked");
+        RemoveVaultTraceOf(lockResult.Uuid);
+
+        var unlockResult = await _service.DecryptFlockedFileAsync(flockedPath, "folder-password");
+
+        Assert.True(unlockResult.Success);
+        Assert.True(Directory.Exists(folderPath));
+        Assert.Equal("資料夾內容", File.ReadAllText(Path.Combine(folderPath, "裡面的檔案.txt")));
+    }
+
+    [Fact]
+    public async Task DecryptFlockedFileAsync_RecoveryKeyWithNoVaultRecord_StillWorks()
+    {
+        // 恢復金鑰是純資料、不綁裝置，是密碼忘記時唯一的救命繩——它必須跟著檔案走，
+        // 否則帶去另一台裝置就只剩密碼一條路，等於少了一個宣稱有提供的解鎖方式。
+        var filePath = Path.Combine(_workDir.FullName, "有恢復金鑰的檔案.txt");
+        const string originalContent = "用恢復金鑰救回來";
+        File.WriteAllText(filePath, originalContent);
+        var lockResult = await _service.EncryptAsync(
+            filePath, "forgotten-password", null, enableRecoveryKey: true, storageMode: StorageMode.Standalone);
+        Assert.True(lockResult.Success);
+        Assert.NotNull(lockResult.RecoveryKey);
+        var flockedPath = Path.Combine(_workDir.FullName, "有恢復金鑰的檔案.flocked");
+        RemoveVaultTraceOf(lockResult.Uuid);
+
+        var unlockResult = await _service.DecryptFlockedFileByRecoveryKeyAsync(flockedPath, lockResult.RecoveryKey!);
+
+        Assert.True(unlockResult.Success);
+        Assert.Equal(originalContent, File.ReadAllText(filePath));
+    }
+
+    [Fact]
+    public async Task DecryptFlockedFileAsync_MovedToAnotherFolderWithNoVaultRecord_RestoresBesideTheFlockedFile()
+    {
+        // 「獨立可攜」的完整情境：檔案被搬到別的地方、Vault 也不存在，還原位置要跟著
+        // .flocked 現在所在的資料夾走，不是回頭找當初加密時記錄的原始路徑（那份已經不存在了，
+        // 而且 v2 檔尾也刻意不帶原始路徑）。
+        var filePath = Path.Combine(_workDir.FullName, "會被搬走的檔案.txt");
+        const string originalContent = "搬到哪就在哪還原";
+        File.WriteAllText(filePath, originalContent);
+        var lockResult = await _service.EncryptAsync(filePath, "moved-password", null, storageMode: StorageMode.Standalone);
+        var flockedPath = Path.Combine(_workDir.FullName, "會被搬走的檔案.flocked");
+
+        var elsewhere = Directory.CreateDirectory(Path.Combine(_workDir.FullName, "別的資料夾"));
+        var movedFlockedPath = Path.Combine(elsewhere.FullName, "會被搬走的檔案.flocked");
+        File.Move(flockedPath, movedFlockedPath);
+        RemoveVaultTraceOf(lockResult.Uuid);
+
+        var unlockResult = await _service.DecryptFlockedFileAsync(movedFlockedPath, "moved-password");
+
+        Assert.True(unlockResult.Success);
+        var restoredPath = Path.Combine(elsewhere.FullName, "會被搬走的檔案.txt");
+        Assert.True(File.Exists(restoredPath));
+        Assert.Equal(originalContent, File.ReadAllText(restoredPath));
+    }
+
+    [Fact]
+    public async Task DecryptFlockedFileAsync_WithVaultRecordPresent_PrefersVaultMetadata()
+    {
+        // Vault 查得到就以 Vault 那份為準，檔尾那份只是後備：同一台裝置上使用者可能事後
+        // 重新設定過這個項目的 Passkey，那種變更只會反映在 Vault 的 .meta.json 上，
+        // 檔尾是加密當下就固定寫死的，拿它覆蓋掉會讓事後的設定變更失效。
+        var filePath = Path.Combine(_workDir.FullName, "以集中管理區為準的檔案.txt");
+        File.WriteAllText(filePath, "內容");
+        var lockResult = await _service.EncryptAsync(filePath, "vault-wins-password", null, storageMode: StorageMode.Standalone);
+        var flockedPath = Path.Combine(_workDir.FullName, "以集中管理區為準的檔案.flocked");
+
+        var vault = new VaultManager(_vaultDir.FullName);
+        var metadata = vault.LoadMetadata(lockResult.Uuid)!;
+        metadata.Hint = "事後改過的提示";
+        vault.SaveMetadata(metadata);
+
+        var unlockResult = await _service.DecryptFlockedFileAsync(flockedPath, "vault-wins-password");
+
+        Assert.True(unlockResult.Success);
+        var entry = Assert.Single(_history.ReadAll(), e => e.Action == HistoryAction.Decrypted);
+        Assert.Equal("以集中管理區為準的檔案.txt", entry.OriginalName);
     }
 }

@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text.Json;
 using FileLocker.Core.Crypto;
 using FileLocker.Core.FolderPackaging;
@@ -135,15 +135,21 @@ public sealed class VaultProtocolHandlers
     public Task<UnlockResult> DecryptByRecoveryKeyAsync(string uuid, string recoveryKeyInput, string? destinationDir)
         => _lockService.DecryptByRecoveryKeyAsync(uuid, recoveryKeyInput, destinationDir);
 
-    /// <summary>獨立解密流程（信封＋Sheet）Verify/Commit/Cancel 三兄弟：薄包裝，直接委派給 LockService（見 §1.11）。</summary>
-    public Task<VerifyPasswordResult> VerifyDecryptPasswordAsync(string uuid, string password)
-        => _lockService.VerifyDecryptPasswordAsync(uuid, password);
+    /// <summary>
+    /// 獨立解密流程（信封＋Sheet）Verify/Commit/Cancel 三兄弟：薄包裝，直接委派給 LockService（見 §1.11）。
+    ///
+    /// flockedPath 是使用者這次實際挑中的 `.flocked` 檔案路徑（挑的是 `.locked` 就傳 null）：
+    /// Vault 查不到這筆 uuid 時，LockService 會改讀這顆檔案檔尾嵌入的 metadata（v2 格式），
+    /// 讓「別人給的 .flocked」或「Vault 遺失後的 .flocked」在這個流程裡也解得開。
+    /// </summary>
+    public Task<VerifyPasswordResult> VerifyDecryptPasswordAsync(string uuid, string password, string? flockedPath = null)
+        => _lockService.VerifyDecryptPasswordAsync(uuid, password, flockedPath);
 
-    public Task<VerifyPasswordResult> VerifyDecryptByPasskeyAsync(string uuid, IntPtr ownerWindowHandle)
-        => _lockService.VerifyDecryptByPasskeyAsync(uuid, ownerWindowHandle);
+    public Task<VerifyPasswordResult> VerifyDecryptByPasskeyAsync(string uuid, IntPtr ownerWindowHandle, string? flockedPath = null)
+        => _lockService.VerifyDecryptByPasskeyAsync(uuid, ownerWindowHandle, flockedPath);
 
-    public Task<VerifyPasswordResult> VerifyDecryptByRecoveryKeyAsync(string uuid, string recoveryKeyInput)
-        => _lockService.VerifyDecryptByRecoveryKeyAsync(uuid, recoveryKeyInput);
+    public Task<VerifyPasswordResult> VerifyDecryptByRecoveryKeyAsync(string uuid, string recoveryKeyInput, string? flockedPath = null)
+        => _lockService.VerifyDecryptByRecoveryKeyAsync(uuid, recoveryKeyInput, flockedPath);
 
     public Task<UnlockResult> CommitPendingDecryptAsync(string uuid, string? destinationDir)
         => _lockService.CommitPendingDecryptAsync(uuid, destinationDir);
@@ -208,7 +214,11 @@ public sealed class VaultProtocolHandlers
             return new InspectLockedFileResponse(false, null, null, null, false, false);
         }
 
-        var metadata = _vaultManager.LoadMetadata(uuid);
+        // Vault 查不到就退回讀 `.flocked` 檔尾嵌入的那份（v2 格式）——這正是「檔案被帶到別台
+        // 裝置」或「Vault 遺失／重建」的情境，畫面上要照樣顯示得出檔名、提示、有沒有開恢復金鑰，
+        // 否則使用者連信封都看不到，更別說輸入密碼。判斷順序跟 LockService.ResolveMetadataForDecrypt
+        // 一致：Vault 優先，檔尾那份只是後備。
+        var metadata = _vaultManager.LoadMetadata(uuid) ?? (isFlocked ? ReadEmbeddedMetadata(path, uuid) : null);
         return new InspectLockedFileResponse(
             metadata is not null, uuid, metadata?.OriginalName, metadata?.Hint,
             metadata?.PasskeyEnabled ?? false, metadata?.RecoveryKeyEnabled ?? false,
@@ -220,6 +230,29 @@ public sealed class VaultProtocolHandlers
     /// 大小跟型別。抓不到大小（例如檔案剛好被移走、資料夾存取被拒）就當作 0，這只是體驗用的
     /// 估算功能，不該讓錯誤影響到後面真正的加密流程能不能跑。
     /// </summary>
+    /// <summary>
+    /// 讀出 `.flocked` 檔尾嵌入的 metadata（v2 格式），只給 InspectLockedFile 顯示用途。
+    /// 讀不到、格式不合、UUID 對不上一律回 null——這裡是「顯示資訊」不是「解密」，
+    /// 拿不到就照既有行為顯示成找不到紀錄，不需要區分失敗原因。
+    /// </summary>
+    private static LockedItemMetadata? ReadEmbeddedMetadata(string flockedPath, string uuid)
+    {
+        try
+        {
+            using var stream = File.OpenRead(flockedPath);
+            if (!FlockedFileFormat.TryReadLayout(stream, out var layout) || layout!.Uuid != uuid)
+            {
+                return null;
+            }
+
+            return layout.EmbeddedMetadata?.Uuid == uuid ? layout.EmbeddedMetadata : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
     public async Task<IReadOnlyList<PathSizeInfo>> GetPathSizesAsync(IReadOnlyList<string> paths)
         => await Task.Run(() => paths.Select(GetPathSizeInfoSafe).ToList());
 

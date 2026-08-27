@@ -488,9 +488,33 @@ async Task UnlockCommandAsync(string[] markerPaths, CliOptions options)
         });
 }
 
-async Task UnlockByRecoveryKeyCommandAsync(string uuid, string recoveryKey, string? destinationDir)
+/// <summary>
+/// 第一個參數可以是 uuid，也可以是一顆 `.flocked` 檔案的路徑。
+///
+/// 接受路徑是「獨立可攜」這件事在 CLI 這邊的對應（見通盤檢討改善計畫第 2 輪）：`.flocked` v2
+/// 把解密所需的驗證材料嵌在檔案本身，別人給你一顆檔案、或這台機器的集中管理區不在了，手上就
+/// 只有這顆檔案，沒有任何紀錄可以先查出 uuid。GUI 端雙擊 `.flocked` 改用恢復金鑰解鎖走的是同
+/// 一條路（PasswordPromptWindow），兩邊維持一致。
+/// </summary>
+async Task UnlockByRecoveryKeyCommandAsync(string uuidOrFlockedPath, string recoveryKey, string? destinationDir)
 {
     chatOut.WriteLine(CliLocalization.T("decrypting"));
+
+    // 傳進來的是 `.flocked` 路徑時，uuid 直接從檔頭讀（JSON 輸出的 uuid 欄位仍然是真正的 uuid，
+    // 不會變成一個路徑字串），解密改走路徑式入口——那條路在集中管理區查不到紀錄時會改讀檔尾
+    // 嵌入的驗證材料。傳 uuid 的既有用法完全不變。
+    var isFlockedPath = string.Equals(Path.GetExtension(uuidOrFlockedPath), ".flocked", StringComparison.OrdinalIgnoreCase);
+    var uuid = uuidOrFlockedPath;
+    if (isFlockedPath)
+    {
+        if (!FlockedFileFormat.TryReadUuid(uuidOrFlockedPath, out var flockedUuid) || flockedUuid is null)
+        {
+            Console.Error.WriteLine(Red(CliLocalization.T("flockedFileNotFound", uuidOrFlockedPath)));
+            Environment.ExitCode = (int)CliExitCode.PartialOrTotalFailure;
+            return;
+        }
+        uuid = flockedUuid;
+    }
 
     // 單一項目、不是清單——一樣走 RunBatchCommandAsync：items 只有一個元素時，批次摘要行
     // 本來就不會印（items.Count > 1 才印），CliExitCode.ForBatch(1,1)/(0,1) 換算出來
@@ -499,7 +523,9 @@ async Task UnlockByRecoveryKeyCommandAsync(string uuid, string recoveryKey, stri
     await RunBatchCommandAsync(
         [uuid],
         runItem: _ => WithSpinnerAsync(
-            () => service.DecryptByRecoveryKeyAsync(uuid, recoveryKey, destinationDir),
+            () => isFlockedPath
+                ? service.DecryptFlockedFileByRecoveryKeyAsync(uuidOrFlockedPath, recoveryKey)
+                : service.DecryptByRecoveryKeyAsync(uuid, recoveryKey, destinationDir),
             CliLocalization.T("decrypting")),
         isSuccess: result => result.Success,
         toJson: (u, result) => new

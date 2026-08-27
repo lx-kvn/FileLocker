@@ -260,6 +260,66 @@ public sealed class VaultProtocolHandlers
     public async Task<IReadOnlyList<PathSizeInfo>> GetPathSizesAsync(IReadOnlyList<string> paths)
         => await Task.Run(() => paths.Select(GetPathSizeInfoSafe).ToList());
 
+    /// <summary>
+    /// 對應技術規格文件第 5 節的「加密前顯示預估所需空間」：量好選取項目的大小、問出兩個目的地
+    /// 磁碟區的可用空間，交給 <see cref="EncryptSpaceEstimator"/> 算出結果。
+    ///
+    /// destinationDir 是獨立加密（`.flocked`）時使用者指定的落腳資料夾；沒指定就是原地取代，
+    /// 密文會落在原始檔案所在的磁碟區。這裡用第一個選取項目所在的磁碟區代表——同一批選取項目
+    /// 落在不同磁碟區是可能的，但那已經超出「給一個大致的心理準備」這個用途需要的精確度。
+    /// </summary>
+    public async Task<EncryptSpaceEstimate> EstimateEncryptSpaceAsync(
+        IReadOnlyList<string> paths, string? destinationDir = null)
+        => await Task.Run(() =>
+        {
+            var sizes = paths.Select(GetPathSizeInfoSafe).ToList();
+
+            var vaultTarget = destinationDir
+                ?? (paths.Count > 0 ? Path.GetDirectoryName(Path.GetFullPath(paths[0])) : null)
+                ?? _vaultManager.VaultPath;
+            var tempTarget = FolderArchiver.TempDirectory;
+
+            return EncryptSpaceEstimator.Estimate(
+                sizes,
+                GetFreeBytesSafe(vaultTarget),
+                GetFreeBytesSafe(tempTarget),
+                ShareVolume(vaultTarget, tempTarget));
+        });
+
+    /// <summary>
+    /// 查不到就回 null（磁碟區不存在、網路磁碟機斷線、權限不足之類）——估算端會把 null 當成
+    /// 「不知道，別跳警告」處理，見 EncryptSpaceEstimator 的說明。
+    /// </summary>
+    private static long? GetFreeBytesSafe(string path)
+    {
+        try
+        {
+            var root = Path.GetPathRoot(Path.GetFullPath(path));
+            return string.IsNullOrEmpty(root) ? null : new DriveInfo(root).AvailableFreeSpace;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static bool ShareVolume(string a, string b)
+    {
+        try
+        {
+            return string.Equals(
+                Path.GetPathRoot(Path.GetFullPath(a)),
+                Path.GetPathRoot(Path.GetFullPath(b)),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception)
+        {
+            // 判斷不出來就當作同一顆碟——這是比較保守的一邊（會用合計去比對可用空間），
+            // 寧可偶爾多提醒一次，也不要漏掉真的放不下的情況。
+            return true;
+        }
+    }
+
     private static PathSizeInfo GetPathSizeInfoSafe(string path)
     {
         try

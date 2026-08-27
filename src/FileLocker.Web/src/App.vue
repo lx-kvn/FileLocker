@@ -34,6 +34,7 @@ import {
   shouldOfferNestedGuardedRetry,
 } from './nestedGuardedRetry.js'
 import { gatesFor } from './protectionTiers.js'
+import { encryptSpaceHintFor } from './encryptSpaceHint.js'
 import {
   groupVaultItems,
   batchPreviewText as batchPreviewTextPure,
@@ -386,6 +387,10 @@ const encryptRealProgressPercent = ref(0)
 // 後端正在等 Windows Hello 驗證——這段期間真實進度本來就會停在原地，用這個旗標把進度文字
 // 換成「等待驗證」，讓使用者知道畫面不動是在等人，不是當掉了。
 const encryptWaitingPasskey = ref(false)
+// 加密過程中額外需要多少磁碟空間（見技術規格文件第 5 節）。後端量完檔案大小、問完目的地磁碟區
+// 的可用空間後推回來；null 代表還沒問到。要不要顯示、怎麼顯示由 encryptSpaceHint.js 判斷。
+const encryptSpaceEstimate = ref(null)
+const encryptSpaceHint = computed(() => encryptSpaceHintFor(encryptSpaceEstimate.value))
 const encryptPendingItems = ref([]) // 這一輪 pending 完成的逐項結果 { path, uuid, success, errorMessage, note, recoveryKey }
 let encryptCommitsExpected = 0
 let encryptCommitsDone = 0
@@ -833,6 +838,10 @@ const messageHandlers = {
     if (data.successCount < data.totalCount) {
       showToast(t('alert.batchUnlockPartial', { success: data.successCount, total: data.totalCount }))
     }
+  },
+
+  encryptSpaceEstimateResult(data) {
+    resolvePending('encryptSpaceEstimateResult', data)
   },
 
   nestedLockCheckResult(data) {
@@ -1691,6 +1700,30 @@ function pickFile() {
 function pickFolder() {
   sendMessage('pickFolder')
 }
+
+// 選取項目或獨立加密的目的地一變就重新估算所需空間。用 watch 集中處理，不在每個異動點各自
+// 補一次呼叫——選取項目的異動點有選檔、選資料夾、拖放、移除、清空好幾個，逐一補遲早會漏掉。
+watch([encryptPaths, standaloneDestinationDir], async ([paths, destinationDir]) => {
+  if (!paths.length) {
+    encryptSpaceEstimate.value = null
+    return
+  }
+
+  const requestedPaths = [...paths]
+  const result = await requestMessage('estimateEncryptSpace', 'encryptSpaceEstimateResult', {
+    paths: requestedPaths,
+    destinationDir: destinationDir ?? null,
+  })
+
+  // 估算跑在背景，回來時使用者可能已經又改過選取項目了——這時候這份結果講的是舊的那批，
+  // 直接丟掉，不要拿去覆蓋新的狀態（掃描大資料夾要花時間，這個時間差是真的會發生的）。
+  if (requestedPaths.length !== encryptPaths.value.length
+      || requestedPaths.some((p, i) => p !== encryptPaths.value[i])) {
+    return
+  }
+
+  encryptSpaceEstimate.value = result
+}, { deep: true })
 
 function removeEncryptPath(index) {
   encryptPaths.value.splice(index, 1)
@@ -2987,6 +3020,7 @@ const isAnyBlockingModalOpen = computed(() =>
           :phase="encryptPhase"
           :progress-percent="encryptRealProgressPercent"
           :waiting-passkey="encryptWaitingPasskey"
+          :space-hint="encryptSpaceHint"
           :pending-summary="encryptPendingSummary"
           :recovery-key-modal-open="!!recoveryKeyDisplay"
           @pick-file="pickFile"

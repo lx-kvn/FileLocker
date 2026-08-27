@@ -19,6 +19,8 @@
   "encrypt.passwordLabel": "Item password",
   "encrypt.passwordConfirmLabel": "Confirm item password",
   "encrypt.passwordLossNote": "Forget it without a Passkey or recovery key and the content is gone for good — there is no backdoor.",
+  "encrypt.spaceNeeded": "Encrypting these items needs about {amount} of extra free space (folders are archived before encryption, so the original, the archive and the ciphertext all exist at once).",
+  "encrypt.spaceInsufficient": "Not enough free space: encrypting these items needs about {amount} extra. Free up some space first.",
   "help.credentialsTitle": "The four passwords, and how they differ",
   "help.credentialsBody": "FileLocker has four independent ways to verify who you are. What matters most is what happens when you forget one:\n\nItem password (encryption): one per encrypted file or folder, set at encryption time. Forget it without a Passkey or recovery key and the content is gone for good — there is no backdoor.\n\nGuard password (Folder Guard): one shared password for the whole feature. Forgetting it loses no data — this feature does not encrypt anything, and you can take access back yourself from the folder’s Properties → Security → Advanced in File Explorer.\n\nCritical-action verification: not a password but a Windows Hello credential, required before permanently deleting an encrypted item, clearing the activity log, or moving the Vault. If you lose it or change devices, just set it up again in Settings.\n\nPassword Locker master password: Password Locker is a separate optional module for storing website logins, unrelated to the three above. What happens if you forget it depends on that module; see its own documentation.",
   "common.showPassword": "Show password",

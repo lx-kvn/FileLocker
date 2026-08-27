@@ -67,6 +67,9 @@ const props = defineProps({
   // 「等待驗證」。驗證結束後後端會再送一次 verifying=false，百分比接著跑。
   waitingPasskey: { type: Boolean, default: false },
   pendingSummary: { type: String, default: null },
+  // 加密過程中額外需要的磁碟空間提示（見技術規格文件第 5 節與 encryptSpaceHint.js）。
+  // null 代表不需要提醒——量不大而且空間足夠時整行不出現，不留一個空位。
+  spaceHint: { type: Object, default: null },
   // 回饋：勾了恢復金鑰的話，App.vue 的恢復金鑰彈窗（全域 modal-overlay，不是這個元件內部
   // 的 sheet）會在 confirming 階段自動跳出來——要等使用者關掉那個彈窗，確認 sheet 的抽出
   // 動畫才能開始播，不能兩邊同時搶著出現。這個 prop 是 App.vue 那邊 recoveryKeyDisplay
@@ -625,6 +628,13 @@ const submitButtonLabel = computed(() => {
              永久無法復原，防護密碼忘了點幾下就救得回來）。這個差別是它們之間最有實質意義的
              區別，卻是原本唯一沒講的，所以固定放在設定密碼的當下講一次。 -->
         <p data-hint="password-loss" class="field-note-hint">{{ t('encrypt.passwordLossNote') }}</p>
+        <!-- 資料夾加密要先打包成暫存 zip 再加密，過程中同時存在原始資料、暫存 zip、密文三份，
+             峰值用量遠高於直覺。空間不足時一律提醒，夠用但量大時給一則資訊性提示。 -->
+        <p
+          v-if="spaceHint"
+          data-hint="space"
+          :class="spaceHint.level === 'warning' ? 'field-warning-hint' : 'field-note-hint'"
+        >{{ t(spaceHint.level === 'warning' ? 'encrypt.spaceInsufficient' : 'encrypt.spaceNeeded', { amount: spaceHint.amount }) }}</p>
         <input
           data-field="hint"
           type="text"
@@ -1102,6 +1112,14 @@ const submitButtonLabel = computed(() => {
   font-size: 12px;
   color: var(--color-danger);
   line-height: 1.4;
+}
+
+/* 空間不足的提醒：用危險色，跟上面那種「一直都在」的常駐說明分得出輕重。 */
+.field-warning-hint {
+  margin: -2px 0 0;
+  font-size: 12px;
+  color: var(--color-danger);
+  line-height: 1.5;
 }
 
 /* 「忘記密碼會怎樣」的常駐說明。不用 --color-danger：它一直都在、不是輸入錯誤造成的，

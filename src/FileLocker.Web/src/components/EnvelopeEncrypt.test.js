@@ -511,4 +511,46 @@ describe('EnvelopeEncrypt', () => {
     await expect(advance()).resolves.not.toThrow()
   })
 
+  // ---- 加密前的所需空間提示（技術規格文件第 5 節）----
+
+  it('有空間提示時顯示在密碼頁，帶出預估的量', async () => {
+    const wrapper = mountEnvelope({
+      paths: ['C:\a.txt'],
+      spaceHint: { level: 'info', amount: '4.0 GB' },
+    })
+    await vi.advanceTimersByTimeAsync(2000)
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-action="next"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(500)
+    await wrapper.vm.$nextTick()
+
+    const hint = wrapper.find('[data-hint="space"]')
+    expect(hint.exists()).toBe(true)
+    expect(hint.text()).toContain('4.0 GB')
+  })
+
+  it('空間不足時提示帶警示樣式，跟一般資訊性提示分得出來', async () => {
+    const wrapper = mountEnvelope({
+      paths: ['C:\a.txt'],
+      spaceHint: { level: 'warning', amount: '50.0 MB' },
+    })
+    await vi.advanceTimersByTimeAsync(2000)
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-action="next"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(500)
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-hint="space"]').classes()).toContain('field-warning-hint')
+  })
+
+  it('沒有空間提示時整行不出現，不留一個空位', async () => {
+    const wrapper = mountEnvelope({ paths: ['C:\a.txt'], spaceHint: null })
+    await vi.advanceTimersByTimeAsync(2000)
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-action="next"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(500)
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-hint="space"]').exists()).toBe(false)
+  })
 })

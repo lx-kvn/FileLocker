@@ -411,6 +411,10 @@ public partial class MainWindow : Window
                     HandleFilesDroppedFromWebView(e);
                     break;
 
+                case "estimateEncryptSpace":
+                    await HandleEstimateEncryptSpaceRequestAsync(root);
+                    break;
+
                 case "checkNestedLocks":
                     await HandleCheckNestedLocksRequestAsync(root);
                     break;
@@ -952,6 +956,32 @@ public partial class MainWindow : Window
             result.PasskeyEnabled,
             result.RecoveryKeyEnabled,
             result.CreatedAtUtc
+        });
+    }
+
+    /// <summary>
+    /// 加密前的所需空間估算（見技術規格文件第 5 節）——資料夾加密要先打包成暫存 zip 再加密，
+    /// 過程中同時存在三份資料，峰值用量遠高於使用者直覺以為的「跟原始檔差不多」。
+    /// </summary>
+    private async Task HandleEstimateEncryptSpaceRequestAsync(JsonElement request)
+    {
+        var paths = request.GetProperty("paths").EnumerateArray()
+            .Select(p => p.GetString() ?? "")
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .ToList();
+        var destinationDir = request.TryGetProperty("destinationDir", out var destProp) && destProp.ValueKind == JsonValueKind.String
+            ? destProp.GetString()
+            : null;
+
+        var estimate = await _protocolHandlers.EstimateEncryptSpaceAsync(paths, destinationDir);
+
+        SendToFrontend(new
+        {
+            type = "encryptSpaceEstimateResult",
+            estimate.VaultRequiredBytes,
+            estimate.TempRequiredBytes,
+            estimate.TotalRequiredBytes,
+            estimate.Sufficient,
         });
     }
 

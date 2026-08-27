@@ -31,12 +31,17 @@ description: 依照這個專案實際的流程準備一次新版本發布——�
    `installer/filelocker_installer.json` 裡的 `app_dir`／`png_icon`／`ico_icon` 目前是這台機器上的絕對路徑（`mswi-cli` 會把相對路徑誤判成相對於它自己的安裝目錄，不是相對於執行指令當下的工作目錄，只能用絕對路徑繞過），**在不同機器上執行前要先確認這幾個路徑仍然正確**。
    `mswi-cli` 現在裝在使用者可寫的路徑（`%LOCALAPPDATA%\Programs\mac-style-windows-installer`，不再是 `C:\Program Files`），不需要系統管理員權限就能跑。`mswi-cli` 找不到就用完整路徑 `%LOCALAPPDATA%\Programs\mac-style-windows-installer\mswi-cli.exe`（PATH 沒吃到新安裝時的備援）。這段狀況以 `CLI_USAGE.md` 當下內容為準，工具安裝位置以後還可能再變。
    編譯完成後，輸出在 `mswi-cli` 自己的 `dist\` 資料夾（例如 `%LOCALAPPDATA%\Programs\mac-style-windows-installer\dist\FileLocker_vX.Y.Z_setup.exe`），複製一份到 `d:\Github\FileLocker_專案\vX.Y.Z\`（比照既有 v1.0.0／v1.1.0／v1.1.1／v1.1.2 的擺放慣例）。
-9. **建立 GitHub Release**：先 `gh release list --repo lx-kvn/FileLocker` 確認這個版本還沒發布過。沒發布過的話，把要跑的指令（大致是 `gh release create vX.Y.Z <安裝檔路徑> --title "FileLocker vX.Y.Z" --notes-file docs/releases/vX.Y.Z.md`）列出來給使用者看過、明確同意後才執行——不能自己直接發布。使用者也可能自己先在網頁上手動建立了，跑之前的確認步驟就會發現，發現的話就不用再跑 `gh release create`，直接跟使用者核對內容（Release Notes、附件檔名/大小）對不對即可。
+
+   **另外還有兩個 CLI 獨立發布產物（CLI_setup／CLI_zip），跟 GUI 安裝檔同一次發布一起打包，不要漏掉**（見 `CONTEXT.md`「CLI 獨立發布產物」詞條——v2.1.0 這輪第一次手動打包驗證過沒有意外的坑，從這輪起收進自動化流程）：
+   - `FileLocker_CLI_vX.Y.Z_setup.exe`：`mswi-cli pack --config installer/filelocker_cli_installer.json --version X.Y.Z --exe-name FileLocker_CLI_vX.Y.Z_setup`（跟 GUI 那份一樣，`--version`／`--exe-name` 覆蓋 JSON 預設值，`installer/filelocker_cli_installer.json` 裡的版本號／`exe_name` 欄位維持舊值不用改，理由跟 `filelocker_installer.json` 一致）。
+   - `FileLocker_CLI_vX.Y.Z_portable.zip`：把 `publish/cli/` 資料夾內容原封不動打包，額外加一份中英雙語 `README.md`（說明手動加入 PATH 的步驟，內容可比照上一輪的版本微調版本號），不需要另開 build 流程。`Compress-Archive -Path '<暫存資料夾>/*' -DestinationPath 'FileLocker_CLI_vX.Y.Z_portable.zip' -Force`。
+   - 兩者都複製到同一個 `d:\Github\FileLocker_專案\vX.Y.Z\` 資料夾，跟 GUI 安裝檔放在一起。
+9. **建立 GitHub Release**：先 `gh release list --repo lx-kvn/FileLocker` 確認這個版本還沒發布過。沒發布過的話，把要跑的指令（大致是 `gh release create vX.Y.Z <GUI安裝檔路徑> --title "FileLocker vX.Y.Z" --notes-file docs/releases/vX.Y.Z.md`，再用 `gh release upload vX.Y.Z <CLI_setup路徑> <CLI_zip路徑> --repo lx-kvn/FileLocker` 補上另外兩個 CLI 產物，三個檔案一起列出來給使用者確認也可以，不一定要分兩次指令）列出來給使用者看過、明確同意後才執行——不能自己直接發布。使用者也可能自己先在網頁上手動建立了，跑之前的確認步驟就會發現，發現的話就不用再跑 `gh release create`，直接跟使用者核對內容（Release Notes、附件檔名/大小，這次應該有三個檔案）對不對即可。
 
 ## 不做的事
 
 - 不自動打 tag、不自動 push——一律先問。
-- 不用 `gh release create` 未經確認就直接發布——一律先列出指令給使用者看過同意。
+- 不用 `gh release create`／`gh release upload` 未經確認就直接發布——一律先列出指令給使用者看過同意。
 - 不把 Release Notes 拆成分開的中英文檔案——這個 repo 的慣例是單一檔案。
 
-需要確認的只有這三件事：打 tag、push、建立 GitHub Release。打包安裝程式（步驟 8）不用問，直接執行。
+需要確認的只有這三件事：打 tag、push、建立 GitHub Release（含上傳附件）。打包安裝程式（步驟 8，含 GUI 與兩個 CLI 產物）不用問，直接執行。

@@ -14,21 +14,41 @@ public record LockoutStatus(bool IsLockedOut, TimeSpan? RemainingLockout);
 ///
 /// 狀態存在本機一個獨立檔案（不在 Vault 裡，不隨雲端同步）——這是「這台裝置現在鎖住了沒」的
 /// 安全狀態，重開 App 不會清空重來，換一台裝置也不會繼承（跟 History 的設計理念一致）。
-/// 達到門檻次數後鎖定，鎖定時間隨累積失敗次數遞增（30 秒、60 秒、120 秒...，上限 1 小時），
-/// 拖慢持續嘗試的攻擊者；成功解鎖一次會清掉這個項目的失敗紀錄，重新歸零。
+/// 達到門檻次數後鎖定，鎖定時間隨累積失敗次數指數遞增到封頂為止；成功解鎖一次會清掉這個項目
+/// 的失敗紀錄，重新歸零。起跳秒數與上限由建構子決定，不同用途套用不同的政策（見建構子說明）。
 /// </summary>
 public class LockoutTracker
 {
     private const int ThresholdAttempts = 5;
-    private const int BaseLockoutSeconds = 30;
-    private const int MaxLockoutSeconds = 3600;
+
+    /// <summary>加密路徑沿用的參數：30 秒起跳、最長 1 小時。</summary>
+    public const int DefaultBaseLockoutSeconds = 30;
+    public const int DefaultMaxLockoutSeconds = 3600;
 
     private static readonly object WriteLock = new();
     private readonly string _filePath;
+    private readonly int _baseLockoutSeconds;
+    private readonly int _maxLockoutSeconds;
 
-    public LockoutTracker(string filePath)
+    /// <summary>
+    /// 退避參數可以依用途調整——不同的保護機制，威脅模型跟「被鎖住的代價」差很多。
+    ///
+    /// 加密用預設值（30 秒起跳、最長 1 小時）：密碼是唯一的門，忘記就是永久無法復原，
+    /// 把持續嘗試的人拖到不划算是合理的。
+    ///
+    /// 資料夾防護傳的是低很多的參數（見 App.xaml.cs）：那個功能防的是「同一台裝置上的其他人
+    /// 隨手嘗試」，而且忘記密碼時本來就可以透過檔案總管的安全性設定自行取回存取權（見
+    /// ADR-0001，設定頁也會主動告知）——鎖一小時擋不住知道這條路的人，實際上只會把打錯字的
+    /// 擁有者關在門外。上限壓低之後，機制的強度才跟它實際能達成的目的對得上。
+    /// </summary>
+    public LockoutTracker(
+        string filePath,
+        int baseLockoutSeconds = DefaultBaseLockoutSeconds,
+        int maxLockoutSeconds = DefaultMaxLockoutSeconds)
     {
         _filePath = filePath;
+        _baseLockoutSeconds = baseLockoutSeconds;
+        _maxLockoutSeconds = maxLockoutSeconds;
     }
 
     public LockoutStatus CheckStatus(string uuid)
@@ -56,7 +76,7 @@ public class LockoutTracker
             if (newAttempts >= ThresholdAttempts)
             {
                 var exponent = Math.Min(newAttempts - ThresholdAttempts, 10);
-                var lockoutSeconds = Math.Min(BaseLockoutSeconds * (1 << exponent), MaxLockoutSeconds);
+                var lockoutSeconds = Math.Min(_baseLockoutSeconds * (1 << exponent), _maxLockoutSeconds);
                 lockedUntil = DateTimeOffset.UtcNow.AddSeconds(lockoutSeconds);
             }
 

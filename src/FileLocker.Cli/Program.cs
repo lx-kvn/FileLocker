@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -458,6 +458,16 @@ async Task UnlockCommandAsync(string[] markerPaths, CliOptions options)
         chatOut.WriteLine();
     }
 
+    // 沒輸入任何東西（互動時直接按 Enter、腳本情境 stdin 是空的）就明確講出來——底層驗證
+    // 現在會安全地回報「密碼不正確」而不是崩潰（見 Argon2KeyDerivation.VerifyPassword），
+    // 但那句話會讓使用者以為自己打錯字，而不是根本沒輸入到。比照 encrypt 的既有處理。
+    if (string.IsNullOrEmpty(password))
+    {
+        chatOut.WriteLine(CliLocalization.T("passwordEmpty"));
+        Environment.Exit(CliExitCode.PartialOrTotalFailure);
+        return;
+    }
+
     chatOut.WriteLine(CliLocalization.T("decrypting"));
 
     await RunBatchCommandAsync(
@@ -650,6 +660,11 @@ async Task DeleteCommandAsync(string[] uuids, CliOptions options)
         return;
     }
 
+    // 永久刪除在 GUI 端是 T3（要密碼、要關鍵操作驗證，見前端 protectionTiers.js 與通盤檢討
+    // 改善計畫第 3 輪），CLI 這邊不設密碼那道門，只要一個 y／n 確認——不是漏做，是那道門在
+    // 這個介面上擋不到任何人：能執行 CLI 的人本來就能直接開 Vault 資料夾把 {uuid}.enc 跟
+    // {uuid}.meta.json 刪掉，效果完全一樣。要求輸入密碼只會擋到照規矩用的自己人，順便讓
+    // 排程工作、遠端伺服器這些「無 GUI 環境可操作」的存在目的（見技術規格文件第 15 節）失效。
     if (!options.SkipConfirmation)
     {
         if (uuids.Length > 1)

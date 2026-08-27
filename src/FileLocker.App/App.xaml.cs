@@ -103,7 +103,14 @@ public partial class App : Application
         var folderGuardDir = Path.Combine(appDataDir, "FolderGuard");
         Directory.CreateDirectory(folderGuardDir);
         var folderGuardStore = new FolderGuardStore(Path.Combine(folderGuardDir, "guarded-folders.json"));
-        var folderGuardLockout = new LockoutTracker(Path.Combine(folderGuardDir, "lockout.json"));
+        // 退避參數比加密低很多（5 秒起跳、最長 60 秒，加密是 30 秒起跳、最長 1 小時）：資料夾
+        // 防護的威脅模型是「同一台裝置上的其他人隨手嘗試」，而且忘記密碼時本來就可以透過檔案
+        // 總管的安全性設定自行取回存取權（見 ADR-0001，設定頁也會主動告知這件事）——鎖一小時
+        // 擋不住知道這條路的人，實際上只會把打錯字的擁有者關在門外一小時。60 秒足以讓隨手嘗試
+        // 的人放棄、也足以讓擁有者察覺，機制的強度跟它實際能達成的目的才對得上。
+        var folderGuardLockout = new LockoutTracker(
+            Path.Combine(folderGuardDir, "lockout.json"),
+            baseLockoutSeconds: 5, maxLockoutSeconds: 60);
         _folderGuardService = new FolderGuardService(folderGuardStore, folderGuardLockout);
 
         // LockService 透過這個委派得知目前有哪些資料夾正在防護中，用來在加密流程一開始就擋下

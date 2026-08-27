@@ -620,6 +620,10 @@ const submitButtonLabel = computed(() => {
           </button>
         </div>
         <p v-if="passwordMismatch" data-hint="password-mismatch" class="field-error-hint">{{ t('encrypt.passwordMismatch') }}</p>
+        <!-- 四套憑證外觀都差不多、都叫「密碼」，但忘記之後的下場天差地遠（項目密碼忘了就是
+             永久無法復原，防護密碼忘了點幾下就救得回來）。這個差別是它們之間最有實質意義的
+             區別，卻是原本唯一沒講的，所以固定放在設定密碼的當下講一次。 -->
+        <p data-hint="password-loss" class="field-note-hint">{{ t('encrypt.passwordLossNote') }}</p>
         <input
           data-field="hint"
           type="text"
@@ -1075,6 +1079,15 @@ const submitButtonLabel = computed(() => {
   font-size: 12px;
   color: var(--color-danger);
   line-height: 1.4;
+}
+
+/* 「忘記密碼會怎樣」的常駐說明。不用 --color-danger：它一直都在、不是輸入錯誤造成的，
+   用危險色會讓表單看起來永遠處於錯誤狀態，也會稀釋掉真正的錯誤提示。 */
+.field-note-hint {
+  margin: -2px 0 0;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  line-height: 1.5;
 }
 
 .step2-form label {

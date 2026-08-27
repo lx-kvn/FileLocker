@@ -125,6 +125,16 @@ public static class Argon2KeyDerivation
         int memoryCostKb = KeyDerivationDefaults.MemoryCostKb,
         int parallelism = KeyDerivationDefaults.Parallelism)
     {
+        // 空密碼直接判定失敗，不往下丟給 Argon2——底層函式庫收到空的 byte 陣列會拋
+        // ArgumentException，讓整個行程帶著 stack trace 崩掉，而不是得到一句「密碼不正確」。
+        // 加密路徑本來就擋住了空密碼（CLI 的 encrypt 有明確檢查、GUI 的送出鍵在密碼空白時是
+        // 停用的），所以空密碼永遠不可能是對的，回報驗證失敗就是正確答案。這個判斷放在這裡
+        // 而不是各個呼叫端，是因為每個輸入端各自檢查一次遲早會漏掉一個（CLI 的 unlock 就漏了）。
+        if (string.IsNullOrEmpty(password))
+        {
+            return (false, null);
+        }
+
         var derived = DeriveKeys(password, salt, timeCost, memoryCostKb, parallelism);
         var isValid = CryptographicOperations.FixedTimeEquals(derived.VerificationHash, storedVerificationHash);
 

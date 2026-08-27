@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using FileLocker.Core.Crypto;
 using Xunit;
 
@@ -71,6 +71,37 @@ public class Argon2KeyDerivationTests
 
         var (isValid, encryptionKey) = Argon2KeyDerivation.VerifyPassword(
             "wrong password", salt, originalKeys.VerificationHash, FastTimeCost, FastMemoryCostKb, FastParallelism);
+
+        Assert.False(isValid);
+        Assert.Null(encryptionKey);
+    }
+
+    // ---- 空密碼：不能讓底層函式庫的例外直接冒出來 ----
+    //
+    // Konscious 的 Argon2 建構子收到空的 byte 陣列會丟 ArgumentException。加密路徑本來就擋住了
+    // 空密碼（CLI 的 encrypt 有明確檢查、GUI 送出鍵在密碼空白時是停用的），所以「用空密碼來驗證」
+    // 這件事只可能發生在解密／刪除這些輸入端——結果是整個行程帶著 stack trace 崩掉，而不是
+    // 得到一句「密碼不正確」。既然空密碼永遠不可能是對的，這裡直接回報驗證失敗。
+
+    [Fact]
+    public void VerifyPassword_WithEmptyPassword_ReturnsInvalidInsteadOfThrowing()
+    {
+        var salt = Argon2KeyDerivation.GenerateSalt();
+        var derived = Argon2KeyDerivation.DeriveKeys("real-password", salt);
+
+        var (isValid, encryptionKey) = Argon2KeyDerivation.VerifyPassword("", salt, derived.VerificationHash);
+
+        Assert.False(isValid);
+        Assert.Null(encryptionKey);
+    }
+
+    [Fact]
+    public void VerifyPassword_WithNullPassword_ReturnsInvalidInsteadOfThrowing()
+    {
+        var salt = Argon2KeyDerivation.GenerateSalt();
+        var derived = Argon2KeyDerivation.DeriveKeys("real-password", salt);
+
+        var (isValid, encryptionKey) = Argon2KeyDerivation.VerifyPassword(null!, salt, derived.VerificationHash);
 
         Assert.False(isValid);
         Assert.Null(encryptionKey);

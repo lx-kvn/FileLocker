@@ -33,6 +33,7 @@ import {
   formatNestedGuardedNames,
   shouldOfferNestedGuardedRetry,
 } from './nestedGuardedRetry.js'
+import { gatesFor } from './protectionTiers.js'
 import {
   groupVaultItems,
   batchPreviewText as batchPreviewTextPure,
@@ -940,6 +941,18 @@ const messageHandlers = {
       return
     }
 
+    // 永久刪除是整個工具裡唯一按下去內容就真的救不回來的動作（T3，見 protectionTiers.js）——
+    // 密碼只證明「這個人知道密碼」，已經設定過關鍵操作驗證的話還要再過一次 Windows Hello，
+    // 才跟它的不可逆程度相稱。改版前這裡只要密碼，比刪本機日誌還鬆。
+    const gates = gatesFor('deleteRecord', settingsCriticalActionConfigured.value)
+    if (gates.needsCriticalAction) {
+      const verifyResult = await requestMessage('verifyCriticalAction', 'verifyCriticalActionResult')
+      if (!verifyResult.success) {
+        showToast(t('alert.deleteVerificationFailed'))
+        return
+      }
+    }
+
     const confirmed = await askConfirm(t('confirm.deleteWarning', { name: item?.originalName ?? '' }), {
       confirmLabel: t('list.delete'),
       variant: 'danger'
@@ -1626,29 +1639,31 @@ async function handleNestedGuardedEncrypt(errorDetail) {
   passwordPromptValue.value = ''
 }
 
-// 三個步驟，缺一不可：①先問「真的要刪嗎」，確定鍵本身就是「用 Passkey 驗證身份」的觸發鍵——
-// ②按下去才真的觸發 Windows Hello 挑戰簽章；③驗證通過後再問一次「真的要刪嗎」，這一步不用
-// Passkey icon（身份已經驗證過了，這裡純粹是不可逆動作的最後提醒）。跟既有的刪除加密項目流程
-// 一樣，身份驗證跟破壞性意圖確認分開問，不合併成一步。
+// 身份驗證跟破壞性意圖確認分開問，不合併成一步：先問「真的要刪嗎」（已設定過關鍵操作驗證時，
+// 這個確定鍵本身就是觸發 Windows Hello 的按鈕，所以帶一個 Passkey icon 表明按下去會發生什麼），
+// 通過之後再問一次最終確認（這一步不帶 icon，身份已經驗證過了，純粹是最後提醒）。
+//
+// 沒設定過關鍵操作驗證時退回一般確認彈窗，不再整個功能鎖死——清除的是本機操作日誌，加密內容
+// 一個都沒少，用「不設定就完全不能用」擋住它，比整個工具裡唯一真正不可逆的「永久刪除加密項目」
+// 還重，輕重顛倒（見 protectionTiers.js）。
 async function requestClearHistory() {
-  if (!settingsCriticalActionConfigured.value) {
-    showToast(t('history.clearNeedsSetupFirst'))
-    return
-  }
+  const gates = gatesFor('clearHistory', settingsCriticalActionConfigured.value)
 
-  const wantsToVerify = await askConfirm(t('confirm.clearHistoryPrompt'), {
-    confirmLabel: t('history.verifyWithPasskey'),
-    confirmIconUrl: passkeyWhiteUrl,
+  const wantsToProceed = await askConfirm(t('confirm.clearHistoryPrompt'), {
+    confirmLabel: gates.needsCriticalAction ? t('history.verifyWithPasskey') : t('history.clearAll'),
+    confirmIconUrl: gates.needsCriticalAction ? passkeyWhiteUrl : null,
     variant: 'danger'
   })
-  if (!wantsToVerify) {
+  if (!wantsToProceed) {
     return
   }
 
-  const verifyResult = await requestMessage('verifyCriticalAction', 'verifyCriticalActionResult')
-  if (!verifyResult.success) {
-    showToast(t('history.clearVerificationFailed'))
-    return
+  if (gates.needsCriticalAction) {
+    const verifyResult = await requestMessage('verifyCriticalAction', 'verifyCriticalActionResult')
+    if (!verifyResult.success) {
+      showToast(t('history.clearVerificationFailed'))
+      return
+    }
   }
 
   const finalConfirmed = await askConfirm(t('confirm.clearHistoryFinalWarning'), {
@@ -1713,11 +1728,11 @@ function handleFileDrop(event) {
   window.chrome.webview.postMessageWithAdditionalObjects({ type: 'filesDroppedFromWebView' }, files)
 }
 
-// 有設定過「關鍵操作驗證」才需要先過一次 Windows Hello，沒設定過就直接跳資料夾選擇器，
-// 維持原本的行為。選在開啟資料夾選擇器之前擋，而不是選完資料夾之後才驗證，避免使用者
-// 選好資料夾、等了一下才被擋下來的落差感。
+// 搬移集中管理區是 T2（影響範圍大但可逆，見 protectionTiers.js）：有設定過關鍵操作驗證才需要
+// 先過一次 Windows Hello，沒設定過就直接跳資料夾選擇器。選在開啟資料夾選擇器之前擋，而不是選完
+// 資料夾之後才驗證，避免使用者選好資料夾、等了一下才被擋下來的落差感。
 async function pickVaultFolder() {
-  if (settingsCriticalActionConfigured.value) {
+  if (gatesFor('moveVault', settingsCriticalActionConfigured.value).needsCriticalAction) {
     const verifyResult = await requestMessage('verifyCriticalAction', 'verifyCriticalActionResult')
     if (!verifyResult.success) {
       showToast(t('settings.vaultMoveVerificationFailed'))
@@ -3097,6 +3112,12 @@ const isAnyBlockingModalOpen = computed(() =>
             <section class="modal--help__section">
               <h3>{{ t('help.precautionsTitle') }}</h3>
               <p>{{ t('help.precautionsBody') }}</p>
+            </section>
+            <!-- 四套憑證的對照：三套都叫「密碼」、三套都能配 Passkey，但忘記之後的下場
+                 天差地遠。這個差別是它們之間最有實質意義的區別，集中講一次比散在各處清楚。 -->
+            <section class="modal--help__section">
+              <h3>{{ t('help.credentialsTitle') }}</h3>
+              <p>{{ t('help.credentialsBody') }}</p>
             </section>
             <section class="modal--help__section">
               <h3>{{ t('help.criticalActionTitle') }}</h3>

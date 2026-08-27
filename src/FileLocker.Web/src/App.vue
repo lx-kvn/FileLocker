@@ -506,6 +506,9 @@ const decryptItemInfo = ref(null) // { uuid, originalName, hint, passkeyEnabled,
 const showDecryptOverlay = ref(false)
 const decryptVerifyState = ref({ status: 'idle' })
 const decryptCommitState = ref({ status: 'idle' })
+// 還原中的真實進度（0-100），由後端 decryptProgress 推上來。跟加密那一半同一個作法——
+// 改版前只有加密看得到百分比，解密只能乾等，同一個工具裡兩半的回饋不一致。
+const decryptRealProgressPercent = ref(0)
 
 // ---- 已加密檔案子頁籤 ----
 const vaultItems = ref([])
@@ -795,6 +798,10 @@ const messageHandlers = {
   verifyDecryptRecoveryKeyResult(data) {
     resolvePending('verifyDecryptRecoveryKeyResult', data)
   },
+  decryptProgress(data) {
+    decryptRealProgressPercent.value = data.percent
+  },
+
   commitPendingDecryptResult(data) {
     resolvePending('commitPendingDecryptResult', data)
   },
@@ -1899,6 +1906,7 @@ async function commitPendingDecrypt(destinationDir) {
   const uuid = decryptItemInfo.value?.uuid
   if (!uuid) return
   decryptCommitState.value = { status: 'restoring' }
+  decryptRealProgressPercent.value = 0
   const result = await requestMessage('commitPendingDecrypt', 'commitPendingDecryptResult', { uuid, destinationDir })
   if (result.success) {
     decryptCommitState.value = { status: 'success', restoredPath: result.restoredPath }
@@ -3025,6 +3033,7 @@ const isAnyBlockingModalOpen = computed(() =>
           :recovery-key-icon-url="recoveryKeyIconUrl"
           :verify-state="decryptVerifyState"
           :commit-state="decryptCommitState"
+          :progress-percent="decryptRealProgressPercent"
           @submit-password="submitDecryptPassword"
           @verify-passkey="verifyDecryptPasskey"
           @submit-recovery-key="submitDecryptRecoveryKey"

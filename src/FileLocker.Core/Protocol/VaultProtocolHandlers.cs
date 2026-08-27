@@ -151,8 +151,12 @@ public sealed class VaultProtocolHandlers
     public Task<VerifyPasswordResult> VerifyDecryptByRecoveryKeyAsync(string uuid, string recoveryKeyInput, string? flockedPath = null)
         => _lockService.VerifyDecryptByRecoveryKeyAsync(uuid, recoveryKeyInput, flockedPath);
 
-    public Task<UnlockResult> CommitPendingDecryptAsync(string uuid, string? destinationDir)
-        => _lockService.CommitPendingDecryptAsync(uuid, destinationDir);
+    /// <summary>
+    /// progress 跟加密那一半（EncryptPendingBatchAsync）同一個作法：這一層只負責往下傳，
+    /// 不知道也不需要知道呼叫端會把它變成一個 WebView2 訊息。
+    /// </summary>
+    public Task<UnlockResult> CommitPendingDecryptAsync(string uuid, string? destinationDir, IProgress<double>? progress = null)
+        => _lockService.CommitPendingDecryptAsync(uuid, destinationDir, progress);
 
     public Task CancelPendingDecryptAsync(string uuid)
         => _lockService.CancelPendingDecryptAsync(uuid);

@@ -677,16 +677,16 @@ public class LockService
     /// 其中一份漏更新，導致 CLI 的 --unlock 對 .flocked 檔案失敗過一次（已修正，見對應的
     /// commit）——集中到這裡之後，同一個 bug 不會再發生第二次，因為根本沒有第二份可以漏改。
     /// </summary>
-    public Task<UnlockResult> DecryptFileAsync(string filePath, string password)
+    public Task<UnlockResult> DecryptFileAsync(string filePath, string password, IProgress<double>? progress = null)
         => string.Equals(Path.GetExtension(filePath), ".flocked", StringComparison.OrdinalIgnoreCase)
-            ? DecryptFlockedFileAsync(filePath, password)
-            : DecryptAsync(filePath, password);
+            ? DecryptFlockedFileAsync(filePath, password, progress)
+            : DecryptAsync(filePath, password, progress);
 
     /// <summary>對應原本雙擊 .locked 檔案的解密流程：先讀 marker 驗證簽章，再往下走。</summary>
-    public Task<UnlockResult> DecryptAsync(string lockedMarkerPath, string password)
-        => Task.Run(() => DecryptViaMarkerCore(lockedMarkerPath, password));
+    public Task<UnlockResult> DecryptAsync(string lockedMarkerPath, string password, IProgress<double>? progress = null)
+        => Task.Run(() => DecryptViaMarkerCore(lockedMarkerPath, password, progress));
 
-    private UnlockResult DecryptViaMarkerCore(string lockedMarkerPath, string password)
+    private UnlockResult DecryptViaMarkerCore(string lockedMarkerPath, string password, IProgress<double>? progress = null)
     {
         var marker = LockedMarkerFile.ReadFrom(lockedMarkerPath);
         if (marker is null)
@@ -714,7 +714,7 @@ public class LockService
             return new UnlockResult(false, "", "無法判斷指標檔所在的資料夾", ErrorCode: ErrorCodes.CannotDetermineFolder);
         }
 
-        var result = DecryptAndRestore(metadata, password, parentDir);
+        var result = DecryptAndRestore(metadata, password, parentDir, progress: progress);
 
         if (result.Success)
         {
@@ -733,8 +733,8 @@ public class LockService
     /// metadata.OriginalPath 反推位置，這樣使用者把 .flocked 搬到別的資料夾之後還是雙擊得開，
     /// 才對得起規劃文件講的「獨立可攜」。
     /// </summary>
-    public Task<UnlockResult> DecryptFlockedFileAsync(string flockedFilePath, string password)
-        => Task.Run(() => DecryptFlockedFileCore(flockedFilePath, password));
+    public Task<UnlockResult> DecryptFlockedFileAsync(string flockedFilePath, string password, IProgress<double>? progress = null)
+        => Task.Run(() => DecryptFlockedFileCore(flockedFilePath, password, progress));
 
     /// <summary>
     /// 恢復金鑰的路徑式入口，對應雙擊 `.flocked` 檔案後在密碼小視窗改用恢復金鑰解鎖。
@@ -743,7 +743,8 @@ public class LockService
     /// 定位就是「密碼忘了」時的救命繩，換一台裝置或 Vault 遺失之後更是唯一還可能有用的手段——
     /// 這種時候呼叫端手上只有這顆檔案，沒有任何 Vault 紀錄可以先查出 uuid。
     /// </summary>
-    public Task<UnlockResult> DecryptFlockedFileByRecoveryKeyAsync(string flockedFilePath, string recoveryKeyInput)
+    public Task<UnlockResult> DecryptFlockedFileByRecoveryKeyAsync(
+        string flockedFilePath, string recoveryKeyInput, IProgress<double>? progress = null)
         => Task.Run(() =>
         {
             if (!FlockedFileFormat.TryReadUuid(flockedFilePath, out var uuid) || uuid is null)
@@ -751,7 +752,7 @@ public class LockService
                 return new UnlockResult(false, "", "找不到或無法解析這個 .flocked 檔案", ErrorCode: ErrorCodes.FlockedParseFailed);
             }
 
-            return DecryptByRecoveryKeyCore(uuid, recoveryKeyInput, destinationDir: null, flockedPath: flockedFilePath);
+            return DecryptByRecoveryKeyCore(uuid, recoveryKeyInput, destinationDir: null, flockedPath: flockedFilePath, progress: progress);
         });
 
     /// <summary>
@@ -771,7 +772,7 @@ public class LockService
         return DecryptByPasskeyAsync(uuid, ownerWindowHandle, destinationDir: null, flockedPath: flockedFilePath);
     }
 
-    private UnlockResult DecryptFlockedFileCore(string flockedFilePath, string password)
+    private UnlockResult DecryptFlockedFileCore(string flockedFilePath, string password, IProgress<double>? progress = null)
     {
         if (!FlockedFileFormat.TryReadUuid(flockedFilePath, out var uuid) || uuid is null)
         {
@@ -792,7 +793,7 @@ public class LockService
             return new UnlockResult(false, "", "無法判斷 .flocked 檔案所在的資料夾", ErrorCode: ErrorCodes.CannotDetermineFolder);
         }
 
-        var result = DecryptAndRestore(metadata, password, parentDir, explicitFlockedPath: flockedFilePath);
+        var result = DecryptAndRestore(metadata, password, parentDir, explicitFlockedPath: flockedFilePath, progress: progress);
 
         if (result.Success)
         {
@@ -893,10 +894,14 @@ public class LockService
     }
 
     /// <summary>對應「恢復金鑰」備援路徑：不需要密碼、不需要 Windows Hello，用使用者自己抄下來的恢復金鑰解鎖。</summary>
-    public Task<UnlockResult> DecryptByRecoveryKeyAsync(string uuid, string recoveryKeyInput, string? destinationDir = null, string? flockedPath = null)
-        => Task.Run(() => DecryptByRecoveryKeyCore(uuid, recoveryKeyInput, destinationDir, flockedPath));
+    public Task<UnlockResult> DecryptByRecoveryKeyAsync(
+        string uuid, string recoveryKeyInput, string? destinationDir = null, string? flockedPath = null,
+        IProgress<double>? progress = null)
+        => Task.Run(() => DecryptByRecoveryKeyCore(uuid, recoveryKeyInput, destinationDir, flockedPath, progress));
 
-    private UnlockResult DecryptByRecoveryKeyCore(string uuid, string recoveryKeyInput, string? destinationDir, string? flockedPath = null)
+    private UnlockResult DecryptByRecoveryKeyCore(
+        string uuid, string recoveryKeyInput, string? destinationDir, string? flockedPath = null,
+        IProgress<double>? progress = null)
     {
         if (!TryLoadMetadata(uuid, flockedPath, out var metadata, out var notFoundResult))
         {
@@ -936,7 +941,7 @@ public class LockService
             CryptographicOperations.ZeroMemory(recoveryKeyBytes);
         }
 
-        return FinishAfterKeyResolved(metadata, uuid, contentKey, destinationDir, "recoveryKey", flockedPath);
+        return FinishAfterKeyResolved(metadata, uuid, contentKey, destinationDir, "recoveryKey", flockedPath, progress);
     }
 
     /// <summary>
@@ -1083,7 +1088,7 @@ public class LockService
     /// 找不到 pending 紀錄（沒有 verify 過，或已經 commit/cancel 過）視為呼叫端的邏輯錯誤，
     /// 回傳明確的錯誤碼而不是拋例外。
     /// </summary>
-    public Task<UnlockResult> CommitPendingDecryptAsync(string uuid, string? destinationDir)
+    public Task<UnlockResult> CommitPendingDecryptAsync(string uuid, string? destinationDir, IProgress<double>? progress = null)
         => Task.Run(() =>
         {
             if (!_pendingDecrypts.TryRemove(uuid, out var pending))
@@ -1100,7 +1105,7 @@ public class LockService
                     return new UnlockResult(false, "", resolveError!, ErrorCode: ErrorCodes.ResolveDestinationError, ErrorDetail: resolveError);
                 }
 
-                var result = DecryptAndRestore(pending.Metadata, pending.Password, destinationParentDir, pending.FlockedPath);
+                var result = DecryptAndRestore(pending.Metadata, pending.Password, destinationParentDir, pending.FlockedPath, progress);
                 if (result.Success)
                 {
                     CleanupOriginalArtifactIfMatches(pending.Metadata, uuid, pending.FlockedPath);
@@ -1109,7 +1114,7 @@ public class LockService
             }
 
             return FinishAfterKeyResolved(
-                pending.Metadata, uuid, pending.ContentKey!, destinationDir, pending.UnlockMethod, pending.FlockedPath);
+                pending.Metadata, uuid, pending.ContentKey!, destinationDir, pending.UnlockMethod, pending.FlockedPath, progress);
         });
 
     /// <summary>
@@ -1139,7 +1144,7 @@ public class LockService
     /// </summary>
     private UnlockResult FinishAfterKeyResolved(
         LockedItemMetadata metadata, string uuid, byte[] contentKey, string? destinationDir, string unlockMethod,
-        string? flockedPath = null)
+        string? flockedPath = null, IProgress<double>? progress = null)
     {
         var destinationParentDir = ResolveDestinationParentDir(metadata, destinationDir, flockedPath, out var resolveError);
         if (destinationParentDir is null)
@@ -1148,7 +1153,7 @@ public class LockService
             return new UnlockResult(false, "", resolveError!, ErrorCode: ErrorCodes.ResolveDestinationError, ErrorDetail: resolveError);
         }
 
-        var result = RestoreFromKey(metadata, contentKey, destinationParentDir, unlockMethod, flockedPath);
+        var result = RestoreFromKey(metadata, contentKey, destinationParentDir, unlockMethod, flockedPath, progress);
 
         if (result.Success)
         {
@@ -1296,7 +1301,9 @@ public class LockService
     }
 
     /// <summary>密碼路徑：驗證密碼、拿到內容金鑰後，交給 RestoreFromKey 做剩下的還原工作。</summary>
-    private UnlockResult DecryptAndRestore(LockedItemMetadata metadata, string password, string destinationParentDir, string? explicitFlockedPath = null)
+    private UnlockResult DecryptAndRestore(
+        LockedItemMetadata metadata, string password, string destinationParentDir,
+        string? explicitFlockedPath = null, IProgress<double>? progress = null)
     {
         var verification = VerifyPasswordAndDeriveKey(metadata, password);
         if (!verification.Success)
@@ -1304,7 +1311,7 @@ public class LockService
             return new UnlockResult(false, "", verification.ErrorMessage!, ErrorCode: verification.ErrorCode, ErrorDetail: verification.ErrorDetail);
         }
 
-        return RestoreFromKey(metadata, verification.EncryptionKey!, destinationParentDir, "password", explicitFlockedPath);
+        return RestoreFromKey(metadata, verification.EncryptionKey!, destinationParentDir, "password", explicitFlockedPath, progress);
     }
 
     /// <summary>
@@ -1492,7 +1499,9 @@ public class LockService
     /// 呼叫端負責把 encryptionKey 準備好（不管是密碼衍生、Passkey 解包，還是恢復金鑰解包出來的），
     /// 這裡負責用完清零；unlockMethod 只是拿來寫進使用紀錄，不影響解密邏輯本身。
     /// </summary>
-    private UnlockResult RestoreFromKey(LockedItemMetadata metadata, byte[] encryptionKey, string destinationParentDir, string unlockMethod, string? explicitFlockedPath = null)
+    private UnlockResult RestoreFromKey(
+        LockedItemMetadata metadata, byte[] encryptionKey, string destinationParentDir, string unlockMethod,
+        string? explicitFlockedPath = null, IProgress<double>? progress = null)
     {
         if (!IsSafeRestoreFileName(metadata.OriginalName))
         {
@@ -1533,7 +1542,12 @@ public class LockService
                 using (var encStream = OpenContentStreamForDecrypt(metadata, explicitFlockedPath))
                 using (var outputStream = File.Create(actualWritePath))
                 {
-                    ChunkedCipher.DecryptStream(encryptionKey, encStream, outputStream);
+                    // totalBytes 用加密當下記錄的明文大小（資料夾的話是打包後那顆 zip 的大小），
+                    // 跟加密那一半同一個語意。metadata 讀不到大小（極舊的紀錄沒有這個欄位）時傳
+                    // null，DecryptStream 會整段跳過回報，不會除以零。
+                    ChunkedCipher.DecryptStream(
+                        encryptionKey, encStream, outputStream,
+                        progress, metadata.OriginalSizeBytes > 0 ? metadata.OriginalSizeBytes : null);
                 }
             }
             catch

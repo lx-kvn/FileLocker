@@ -59,6 +59,7 @@
   "decrypt.verifying": "Verifying…",
   "decrypt.verified": "Verified",
   "decrypt.pickDestination": "Choose save location",
+  "decrypt.restoring": "Restoring...",
   "decrypt.cancel": "Cancel",
   "decrypt.restoredSuccess": "Restored to the chosen location",
   "decrypt.success": "Decryption succeeded! Restored to: {path}",

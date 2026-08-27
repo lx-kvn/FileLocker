@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 using FileLocker.Core.Crypto;
 using Xunit;
@@ -145,5 +145,83 @@ public class ChunkedCipherTests
     private sealed class SyncProgress(List<double> sink) : IProgress<double>
     {
         public void Report(double value) => sink.Add(value);
+    }
+
+    // ---- 解密也回報真實進度（通盤檢討改善計畫第 4 輪）----
+    //
+    // 改版前只有加密這一半接了進度回報，解密的 DecryptStream 連參數都沒有——同一個工具裡
+    // 加密看得到百分比、解密只能乾等。totalBytes 用的是「明文總位元組數」，跟加密那一半同一個
+    // 語意（解密時呼叫端手上就有這個數字，它存在 metadata 的 OriginalSizeBytes 欄位）。
+
+    [Fact]
+    public void DecryptStream_MultipleChunks_ReportsIncreasingProgressEndingAtOne()
+    {
+        var key = new byte[32];
+        RandomNumberGenerator.Fill(key);
+        var original = new byte[777 * 3 + 100];
+        RandomNumberGenerator.Fill(original);
+
+        using var ciphertextStream = new MemoryStream();
+        using (var plaintextInput = new MemoryStream(original))
+        {
+            ChunkedCipher.EncryptStream(key, plaintextInput, ciphertextStream, chunkSizeBytes: 777);
+        }
+        ciphertextStream.Position = 0;
+
+        var reported = new List<double>();
+        IProgress<double> syncProgress = new SyncProgress(reported);
+        using var plaintextOutput = new MemoryStream();
+
+        ChunkedCipher.DecryptStream(key, ciphertextStream, plaintextOutput, syncProgress, original.Length);
+
+        Assert.Equal(original, plaintextOutput.ToArray());
+        Assert.NotEmpty(reported);
+        Assert.Equal(reported.OrderBy(v => v), reported); // 只會往前，不會倒退
+        Assert.All(reported, v => Assert.InRange(v, 0.0, 1.0));
+        Assert.Equal(1.0, reported[^1], 6);
+    }
+
+    [Fact]
+    public void DecryptStream_WithoutProgress_StillDecryptsCorrectly()
+    {
+        // 兩個新參數都是選填的，既有呼叫端（沒有進度需求的路徑）不用跟著改。
+        var key = new byte[32];
+        RandomNumberGenerator.Fill(key);
+        var original = new byte[5000];
+        RandomNumberGenerator.Fill(original);
+
+        using var ciphertextStream = new MemoryStream();
+        using (var plaintextInput = new MemoryStream(original))
+        {
+            ChunkedCipher.EncryptStream(key, plaintextInput, ciphertextStream);
+        }
+        ciphertextStream.Position = 0;
+
+        using var plaintextOutput = new MemoryStream();
+        ChunkedCipher.DecryptStream(key, ciphertextStream, plaintextOutput);
+
+        Assert.Equal(original, plaintextOutput.ToArray());
+    }
+
+    [Fact]
+    public void DecryptStream_ZeroTotalBytes_SkipsReportingWithoutDividingByZero()
+    {
+        var key = new byte[32];
+        RandomNumberGenerator.Fill(key);
+
+        using var ciphertextStream = new MemoryStream();
+        using (var emptyInput = new MemoryStream(Array.Empty<byte>()))
+        {
+            ChunkedCipher.EncryptStream(key, emptyInput, ciphertextStream);
+        }
+        ciphertextStream.Position = 0;
+
+        var reported = new List<double>();
+        IProgress<double> syncProgress = new SyncProgress(reported);
+        using var plaintextOutput = new MemoryStream();
+
+        ChunkedCipher.DecryptStream(key, ciphertextStream, plaintextOutput, syncProgress, 0);
+
+        Assert.Empty(reported);
     }
 }

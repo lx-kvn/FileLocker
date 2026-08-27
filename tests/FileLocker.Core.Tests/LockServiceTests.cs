@@ -1417,4 +1417,56 @@ public class LockServiceTests : IDisposable
         var entry = Assert.Single(_history.ReadAll(), e => e.Action == HistoryAction.Decrypted);
         Assert.Equal("以集中管理區為準的檔案.txt", entry.OriginalName);
     }
+
+    // ---- 解密進度一路從 ChunkedCipher 傳到公開入口（通盤檢討改善計畫第 4 輪）----
+    //
+    // ChunkedCipher 那一層自己有測試，這裡驗證的是「中間那幾層真的有把 progress 往下傳」——
+    // 參數加了但某一層忘記轉交，是這種一路貫穿式改動最容易漏掉、而且完全不會報錯的地方。
+
+    private sealed class SyncProgress(List<double> sink) : IProgress<double>
+    {
+        public void Report(double value) => sink.Add(value);
+    }
+
+    [Fact]
+    public async Task DecryptFlockedFileAsync_ReportsProgressAllTheWayUp()
+    {
+        var filePath = Path.Combine(_workDir.FullName, "看得到進度的檔案.bin");
+        // 大於一個 chunk（預設 1 MB）才會有多次回報，只有一塊的話看不出「有沒有真的傳下去」。
+        var content = new byte[3 * 1024 * 1024];
+        RandomNumberGenerator.Fill(content);
+        File.WriteAllBytes(filePath, content);
+        var lockResult = await _service.EncryptAsync(filePath, "progress-password", null, storageMode: StorageMode.Standalone);
+        Assert.True(lockResult.Success);
+        var flockedPath = Path.Combine(_workDir.FullName, "看得到進度的檔案.flocked");
+
+        var reported = new List<double>();
+        var unlockResult = await _service.DecryptFlockedFileAsync(flockedPath, "progress-password", new SyncProgress(reported));
+
+        Assert.True(unlockResult.Success);
+        Assert.True(reported.Count > 1, "多於一個區塊的內容應該回報不只一次");
+        Assert.All(reported, v => Assert.InRange(v, 0.0, 1.0));
+        Assert.Equal(1.0, reported[^1], 6);
+    }
+
+    [Fact]
+    public async Task CommitPendingDecryptAsync_ReportsProgressAllTheWayUp()
+    {
+        // GUI 的信封解密真正落地就是走這條路——verify 之後才 commit，進度要在 commit 這一段出現。
+        var filePath = Path.Combine(_workDir.FullName, "信封解密進度.bin");
+        var content = new byte[3 * 1024 * 1024];
+        RandomNumberGenerator.Fill(content);
+        File.WriteAllBytes(filePath, content);
+        var lockResult = await _service.EncryptAsync(filePath, "progress-password", null);
+        var verify = await _service.VerifyDecryptPasswordAsync(lockResult.Uuid, "progress-password");
+        Assert.True(verify.Success);
+
+        var reported = new List<double>();
+        var unlockResult = await _service.CommitPendingDecryptAsync(
+            lockResult.Uuid, destinationDir: null, progress: new SyncProgress(reported));
+
+        Assert.True(unlockResult.Success);
+        Assert.True(reported.Count > 1);
+        Assert.Equal(1.0, reported[^1], 6);
+    }
 }

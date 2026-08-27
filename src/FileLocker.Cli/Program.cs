@@ -54,50 +54,34 @@ string Yellow(string s) => stderrIsTty ? $"{ansiEsc}[33m{s}{ansiEsc}[0m" : s;
 var showSpinner = !jsonOutput && !Console.IsOutputRedirected;
 
 /// <summary>
-/// LockService.EncryptAsync／DecryptAsync 這類方法簽章上雖然收 IProgress&lt;double&gt;，但
-/// 全專案（含 GUI）從來沒有任何地方真的呼叫過 .Report(...)——那個參數是預留的死插座，GUI
-/// 端看起來會動的進度條其實是依檔案大小估算出來的動畫時間，不是真的加解密進度回報（見
-/// MainWindow.xaml.cs GetPathSizesAsync 上的既有說明）。與其在 CLI 這裡假裝算得出真正的
-/// 百分比，不如老實用一個「還在跑，不是當機」的忙碌旋轉指示器——不承諾任何虛假的精確度。
-/// 只在真的接到終端機、且不是 --output json 時才顯示，跑完（無論成功/失敗）用空白蓋掉那一行，
-/// 不會在 stdout 留下殘影字元。
+/// 加解密進行中顯示真實百分比。數字來自 ChunkedCipher 實際處理掉的位元組數，一路經由
+/// LockService 的 IProgress&lt;double&gt; 傳上來，不是依檔案大小估算出來的動畫時間。
+///
+/// 這裡曾經是一個「還在跑，不是當機」的忙碌旋轉指示器，當時的理由是全專案沒有任何地方真的
+/// 呼叫過 .Report(...)，與其假裝算得出百分比不如誠實顯示轉圈圈。那個前提在信封加密流程接上
+/// 真實進度之後就不成立了，但依據它做的決定一直留著——結果是同一個工具，GUI 看得到百分比、
+/// CLI 只有轉圈圈。現在兩邊都是同一個來源的真實數字。
+///
+/// 只在真的接到終端機、且不是 --output json 時才顯示（被導向檔案／管線時完全關閉，不污染
+/// 腳本要解析的內容，這是既有行為）；跑完（無論成功/失敗）用空白蓋掉那一行，不會在標準輸出
+/// 留下殘影字元。
 /// </summary>
-async Task<T> WithSpinnerAsync<T>(Func<Task<T>> operation, string label)
+async Task<T> WithProgressAsync<T>(Func<IProgress<double>?, Task<T>> operation, string label)
 {
     if (!showSpinner)
     {
-        return await operation();
+        return await operation(null);
     }
 
-    using var cts = new CancellationTokenSource();
-    var spinnerTask = Task.Run(async () =>
-    {
-        char[] frames = ['|', '/', '-', '\\'];
-        var i = 0;
-        while (!cts.Token.IsCancellationRequested)
-        {
-            Console.Write($"\r{label} {frames[i % frames.Length]}");
-            i++;
-            try
-            {
-                await Task.Delay(120, cts.Token);
-            }
-            catch (TaskCanceledException)
-            {
-                // 正常收尾路徑（下面 finally 取消），不是錯誤。
-            }
-        }
-    });
-
+    var progress = new ConsoleProgressReporter(label);
     try
     {
-        return await operation();
+        progress.Report(0);
+        return await operation(progress);
     }
     finally
     {
-        await cts.CancelAsync();
-        try { await spinnerTask; } catch (OperationCanceledException) { }
-        Console.Write($"\r{new string(' ', label.Length + 2)}\r");
+        progress.Clear();
     }
 }
 
@@ -260,7 +244,7 @@ async Task RunBatchCommandAsync<TItem, TResult>(
     foreach (var item in items)
     {
         // 忙碌指示器要不要顯示、顯示什麼字，由呼叫端自己決定要不要在 runItem 裡包
-        // WithSpinnerAsync——Delete 是純 metadata 操作、原本就沒有 spinner，這裡不強加。
+        // WithProgressAsync——Delete 是純 metadata 操作，沒有位元組可以量，不強加進度顯示。
         var result = await runItem(item);
         if (isSuccess(result))
         {
@@ -366,11 +350,11 @@ async Task EncryptCommandAsync(string[] targetPaths, CliOptions options)
 
     await RunBatchCommandAsync(
         targetPaths,
-        runItem: targetPath => WithSpinnerAsync(
-            () => service.EncryptAsync(
+        runItem: targetPath => WithProgressAsync(
+            progress => service.EncryptAsync(
                 targetPath, password, string.IsNullOrWhiteSpace(hint) ? null : hint,
                 enablePasskey: false, ownerWindowHandle: IntPtr.Zero,
-                enableRecoveryKey: enableRecoveryKey, batchId: batchId,
+                enableRecoveryKey: enableRecoveryKey, batchId: batchId, progress: progress,
                 storageMode: options.StandaloneEnabled ? StorageMode.Standalone : StorageMode.Vault,
                 destinationDir: options.DestinationDir),
             CliLocalization.T("encrypting") + " " + Path.GetFileName(targetPath)),
@@ -476,8 +460,8 @@ async Task UnlockCommandAsync(string[] markerPaths, CliOptions options)
         // LockService.DecryptFileAsync（GUI 的 VaultProtocolHandlers.DecryptAsync 也呼叫
         // 同一個方法）——這裡以前手刻過一份一模一樣的判斷，漏改導致 .flocked 檔案跑
         // --unlock 曾經失敗，現在只有一份實作，不會再各自漏改。
-        runItem: markerPath => WithSpinnerAsync(
-            () => service.DecryptFileAsync(markerPath, password),
+        runItem: markerPath => WithProgressAsync(
+            progress => service.DecryptFileAsync(markerPath, password, progress),
             CliLocalization.T("decrypting") + " " + Path.GetFileName(markerPath)),
         isSuccess: result => result.Success,
         toJson: (markerPath, result) => new
@@ -532,10 +516,10 @@ async Task UnlockByRecoveryKeyCommandAsync(string uuidOrFlockedPath, string reco
     // 為了「只有一項」另外寫一份殼子。
     await RunBatchCommandAsync(
         [uuid],
-        runItem: _ => WithSpinnerAsync(
-            () => isFlockedPath
-                ? service.DecryptFlockedFileByRecoveryKeyAsync(uuidOrFlockedPath, recoveryKey)
-                : service.DecryptByRecoveryKeyAsync(uuid, recoveryKey, destinationDir),
+        runItem: _ => WithProgressAsync(
+            progress => isFlockedPath
+                ? service.DecryptFlockedFileByRecoveryKeyAsync(uuidOrFlockedPath, recoveryKey, progress)
+                : service.DecryptByRecoveryKeyAsync(uuid, recoveryKey, destinationDir, progress: progress),
             CliLocalization.T("decrypting")),
         isSuccess: result => result.Success,
         toJson: (u, result) => new

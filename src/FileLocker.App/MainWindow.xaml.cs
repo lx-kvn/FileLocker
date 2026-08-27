@@ -791,7 +791,11 @@ public partial class MainWindow : Window
             ? destProp.GetString()
             : null;
 
-        var result = await _protocolHandlers.CommitPendingDecryptAsync(uuid, destinationDir);
+        // 解密也回報真實進度（通盤檢討改善計畫第 4 輪）——比照加密那一半的 encryptProgress，
+        // 用 IProgress<double> 的 callback 直接呼叫 SendToFrontend，底下幾層完全不知道
+        // 「WebView2 訊息」這件事存在。
+        var progress = new Progress<double>(percent => SendToFrontend(new { type = "decryptProgress", percent = percent * 100 }));
+        var result = await _protocolHandlers.CommitPendingDecryptAsync(uuid, destinationDir, progress);
 
         SendToFrontend(new
         {

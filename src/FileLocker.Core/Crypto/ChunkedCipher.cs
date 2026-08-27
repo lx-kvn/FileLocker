@@ -66,10 +66,19 @@ public static class ChunkedCipher
     /// <summary>
     /// 逐塊解密並直接寫進 plaintextOutput，呼叫端永遠不會在記憶體裡同時擁有「整份」明文——
     /// 每次只處理一個 chunk 大小（依加密時的設定，預設 1MB），用完就清掉再處理下一塊。
+    ///
+    /// progress／totalBytes 的語意跟 <see cref="EncryptStream"/> 那一半完全相同：totalBytes 是
+    /// 明文的總位元組數，每解完一個 chunk 回報一次「目前寫了多少 / 總共多少」。解密時呼叫端
+    /// 手上就有這個數字（metadata 的 OriginalSizeBytes），不需要先掃過整個密文才算得出來。
+    /// 兩者都是選填，沒帶就完全不回報，既有呼叫端不用跟著改。
     /// </summary>
-    public static void DecryptStream(byte[] key, Stream ciphertextInput, Stream plaintextOutput)
+    public static void DecryptStream(
+        byte[] key, Stream ciphertextInput, Stream plaintextOutput,
+        IProgress<double>? progress = null, long? totalBytes = null)
     {
         var lengthBuffer = new byte[LengthPrefixBytes];
+        long bytesProcessed = 0;
+        var canReportProgress = progress is not null && totalBytes is > 0;
 
         while (true)
         {
@@ -111,6 +120,13 @@ public static class ChunkedCipher
             // 不在這裡吞掉——呼叫端需要知道解密失敗才能清除已經寫出去的不完整輸出檔案。
             var plaintext = AesGcmCipher.Decrypt(key, nonce, ciphertext, tag);
             plaintextOutput.Write(plaintext, 0, plaintext.Length);
+
+            if (canReportProgress)
+            {
+                bytesProcessed += plaintext.Length;
+                progress!.Report(Math.Min(1.0, (double)bytesProcessed / totalBytes!.Value));
+            }
+
             CryptographicOperations.ZeroMemory(plaintext);
         }
     }

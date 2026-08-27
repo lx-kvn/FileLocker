@@ -30,6 +30,9 @@ const props = defineProps({
   verifyState: { type: Object, default: () => ({ status: 'idle' }) },
   // { status: 'idle' | 'restoring' | 'success' | 'failed', restoredPath? }
   commitState: { type: Object, default: () => ({ status: 'idle' }) },
+  // 還原中的真實進度（0-100），由後端逐塊回報。只有 commitState.status === 'restoring'
+  // 期間才有意義——其餘時候按鈕維持原本的文字，不顯示一個沒有意義的 0%。
+  progressPercent: { type: Number, default: 0 },
 })
 
 const emit = defineEmits([
@@ -247,6 +250,14 @@ watch(() => props.verifyState, (state) => {
 // ---- 選存檔位置 sheet ----
 const destinationDone = ref(false)
 
+// 還原中把這顆按鈕的文字換成真實進度百分比（按鈕這時本來就是停用狀態，不會被誤按）——
+// 改版前只有「變成灰色」這一個回饋，大檔案還原時看起來跟卡住沒兩樣。位置比照加密那一半
+// 的送出按鈕，不另外挪出一條進度條，讓兩邊的視覺語彙一致。
+const destinationButtonLabel = computed(() =>
+  props.commitState.status === 'restoring'
+    ? `${props.t('decrypt.restoring')} ${Math.round(props.progressPercent)}%`
+    : props.t('decrypt.pickDestination'))
+
 function pickDestination() {
   emit('pick-destination')
 }
@@ -341,7 +352,7 @@ const createdAtDisplay = computed(() => {
     <!-- 存檔位置 sheet：驗證成功、信封打開後才會抽出 -->
     <div ref="destinationSheetEl" class="sheet destination-sheet" :class="sheetClass('destination')">
       <div v-if="!destinationDone" class="destination-sheet__body">
-        <button class="button button--primary" type="button" :disabled="commitState.status === 'restoring'" @click="pickDestination">{{ t('decrypt.pickDestination') }}</button>
+        <button class="button button--primary" type="button" :disabled="commitState.status === 'restoring'" @click="pickDestination">{{ destinationButtonLabel }}</button>
         <button class="decrypt-sheet__link" type="button" :disabled="commitState.status === 'restoring'" @click="cancelAtDestination">{{ t('decrypt.cancel') }}</button>
       </div>
       <div v-else class="destination-sheet__success">{{ t('decrypt.restoredSuccess') }}</div>

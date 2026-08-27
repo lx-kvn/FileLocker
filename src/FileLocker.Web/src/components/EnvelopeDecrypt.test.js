@@ -222,4 +222,31 @@ describe('EnvelopeDecrypt', () => {
     await vi.advanceTimersByTimeAsync(SETTLE_HOLD_MS + 500)
     expect(wrapper.emitted('done')).toHaveLength(1)
   })
+
+  // ---- 還原中的真實進度（通盤檢討改善計畫第 4 輪）----
+  // 改版前解密只有「按鈕變成停用」這個回饋，大檔案會像卡住一樣；加密那一半早就在顯示
+  // 真實百分比了，兩半的回饋落差沒有理由。
+
+  it('還原中時，選存檔位置的按鈕改顯示進度百分比', async () => {
+    const wrapper = mountEnvelope({ verifyState: { status: 'success' } })
+    await advancePastEntrance(wrapper)
+    await vi.advanceTimersByTimeAsync(SETTLE_HOLD_MS + SHEET_PHASE_MS * 2 + 30)
+    await wrapper.vm.$nextTick()
+
+    await wrapper.setProps({ commitState: { status: 'restoring' }, progressPercent: 37 })
+    await wrapper.vm.$nextTick()
+
+    const label = wrapper.find('.destination-sheet__body .button--primary').text()
+    expect(label).toContain('37')
+  })
+
+  it('還原還沒開始時，按鈕維持原本的文字，不顯示 0%', async () => {
+    const wrapper = mountEnvelope({ verifyState: { status: 'success' } })
+    await advancePastEntrance(wrapper)
+    await vi.advanceTimersByTimeAsync(SETTLE_HOLD_MS + SHEET_PHASE_MS * 2 + 30)
+    await wrapper.vm.$nextTick()
+
+    const label = wrapper.find('.destination-sheet__body .button--primary').text()
+    expect(label).toBe('decrypt.pickDestination')
+  })
 })

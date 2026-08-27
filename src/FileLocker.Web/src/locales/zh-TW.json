@@ -61,6 +61,7 @@
   "decrypt.verifying": "驗證中…",
   "decrypt.verified": "驗證成功",
   "decrypt.pickDestination": "選擇存檔位置",
+  "decrypt.restoring": "還原中...",
   "decrypt.cancel": "取消",
   "decrypt.restoredSuccess": "已還原到指定位置",
   "list.title": "已加密清單",

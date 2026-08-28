@@ -69,7 +69,7 @@
 ### 建置與執行
 
 ```bash
-# 後端測試（三個測試專案，目前共約 395 個測試）
+# 後端測試（三個測試專案，目前共約 407 個測試）
 dotnet test
 
 # 前端開發伺服器（Debug 建置會連到 http://localhost:5173）
@@ -165,7 +165,7 @@ Full architecture, encryption flow, and IPC protocol details live in [`FileLocke
 ### Build & run
 
 ```bash
-# Backend tests (three test projects, ~395 tests total)
+# Backend tests (three test projects, ~407 tests total)
 dotnet test
 
 # Frontend dev server (Debug build points to http://localhost:5173)

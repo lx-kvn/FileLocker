@@ -1,5 +1,5 @@
 {
-  "app_dir": "D:\\Github\\FileLocker_專案\\FileLocker\\src\\FileLocker.App\\bin\\Release\\net10.0-windows10.0.19041.0\\publish\\cli",
+  "app_dir": "D:\\Github\\FileLocker_專案\\FileLocker\\src\\FileLocker.App\\bin\\Release\\net10.0-windows10.0.19041.0\\cli-standalone",
   "png_icon": "D:\\Github\\FileLocker_專案\\icon.png",
   "ico_icon": "D:\\Github\\FileLocker_專案\\icon.ico",
   "app_name": "FileLocker CLI",

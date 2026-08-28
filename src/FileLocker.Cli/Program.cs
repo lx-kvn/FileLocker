@@ -1,4 +1,5 @@
 ﻿using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -6,6 +7,26 @@ using FileLocker.Cli;
 using FileLocker.Core;
 using FileLocker.Core.Models;
 using FileLocker.Core.Vault;
+
+// 找不到共用套件時的備援載入邏輯（AssemblyLoadContext.Resolving）掛在
+// BundleTrimming.RegisterFallbackAssemblyResolver（[ModuleInitializer]），不是這裡——
+// 掛在 Main 裡當第一行實測還是太晚，見該方法開頭關於 JIT 時機的完整說明。
+
+// --internal-trim-bundle 是建置期才會用到的隱藏指令（GUI 安裝檔的 CopyCliForRelease 這一步
+// 呼叫，不是給終端使用者用的公開功能），刻意放在最開頭、連 --lang／--help 都還沒處理之前就
+// 攔截掉——這個指令不需要語言、不需要 Vault，純粹是檔案系統操作，混進正常的指令分派流程裡
+// （CliArgumentParser／CliCommandNormalizer／shell completion）只會讓那些主要服務終端使用者
+// 的邏輯多一個不相干的分支要考慮。見 BundleTrimming 開頭的說明：GUI 跟 CLI 是同一次建置產出，
+// cli/ 子資料夾裡有一大塊（Microsoft.Windows.SDK.NET.dll＋runtimes/，約 57MB）跟外層 GUI
+// 資料夾位元組完全相同，這個指令把這些重複檔案從 cli/ 刪掉——瘦身後還能正常執行是靠上面那個
+// AssemblyLoadContext.Resolving 備援，不是這個指令自己做的事。**只給 GUI 安裝檔內嵌的 cli/
+// 用，獨立發布的 CLI_setup／CLI_zip 絕對不能跑這個指令**——那個情境沒有外層 GUI 資料夾可以
+// 借，跑了會讓獨立安裝出來的 CLI 因為找不到 DLL 而無法執行。
+if (args is [ "--internal-trim-bundle", var cliDirArg, var mainRootDirArg ])
+{
+    TrimBundleForGuiInstaller(cliDirArg, mainRootDirArg);
+    return;
+}
 
 // --lang 是全域旗標，連「沒帶任何指令、只印用法說明」這條路徑都要吃它（使用者可能只是想看
 // 英文版的用法說明），所以要在最開頭、任何指令分派之前就先抽出來、解析語言、設定好——下面
@@ -771,6 +792,61 @@ string ReadPasswordFromFlag(CliOptions options)
 void PrintCompletionScript(string shell)
 {
     Console.WriteLine(CliShellCompletion.Generate(shell));
+}
+
+/// <summary>
+/// 實際的檔案系統操作——純邏輯（要不要跳過複製）在 BundleTrimming 裡測過，這裡只負責
+/// 列檔案／算雜湊／刪檔這幾件跟純邏輯本身無關的 I/O 膠水工作。<paramref name="cliDir"/>
+/// 是 GUI 建置輸出裡的 cli/ 子資料夾（會被就地刪減），<paramref name="mainRootDir"/> 是
+/// 外層 GUI 資料夾（唯讀，只拿來算雜湊比對，不會被這個指令動到）。瘦身後 CLI 還能正常
+/// 執行是靠 Program.cs 最開頭掛的 AssemblyLoadContext.Resolving 備援，這裡不用碰
+/// runtimeconfig.json。
+/// </summary>
+void TrimBundleForGuiInstaller(string cliDir, string mainRootDir)
+{
+    string RelativePath(string root, string fullPath) =>
+        Path.GetRelativePath(root, fullPath).Replace('\\', '/');
+
+    string HashFile(string path)
+    {
+        using var stream = File.OpenRead(path);
+        using var sha256 = SHA256.Create();
+        return Convert.ToHexString(sha256.ComputeHash(stream));
+    }
+
+    var cliFiles = Directory.EnumerateFiles(cliDir, "*", SearchOption.AllDirectories)
+        .Select(path => (RelativePath: RelativePath(cliDir, path), FullPath: path))
+        .ToList();
+    var cliFileHashes = cliFiles
+        .Select(f => (f.RelativePath, Hash: HashFile(f.FullPath)));
+
+    var mainRootFiles = Directory.EnumerateFiles(mainRootDir, "*", SearchOption.AllDirectories)
+        .ToDictionary(
+            path => RelativePath(mainRootDir, path),
+            HashFile,
+            StringComparer.OrdinalIgnoreCase);
+
+    var filesToSkip = BundleTrimming.GetFilesToSkip(cliFileHashes, mainRootFiles);
+
+    foreach (var relativePath in filesToSkip)
+    {
+        var fullPath = Path.Combine(cliDir, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        File.Delete(fullPath);
+    }
+
+    // 刪完檔案後，遞迴清掉變空的子資料夾（例如整個 runtimes/ 底下都被判定成重複）——
+    // 由深到淺處理，不然刪掉最深層那個資料夾之後，它的父層可能也跟著變空但沒被清到。
+    var directoriesDeepestFirst = Directory.EnumerateDirectories(cliDir, "*", SearchOption.AllDirectories)
+        .OrderByDescending(dir => dir.Length);
+    foreach (var directory in directoriesDeepestFirst)
+    {
+        if (Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any())
+        {
+            Directory.Delete(directory);
+        }
+    }
+
+    Console.WriteLine($"[trim-bundle] 跳過 {filesToSkip.Count} 個跟外層 GUI 資料夾重複的檔案。");
 }
 
 void PrintVersion()

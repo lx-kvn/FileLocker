@@ -131,8 +131,15 @@
     新加的 path_target_exe 欄位——加入系統 PATH 的只有 cli/ 這一層，不會把 GUI 那堆 DLL
     所在的安裝根目錄整個暴露進使用者的 PATH。
   -->
+  <!--
+    -p:Version=$(Version) 讓 FileLocker.Cli.exe 的檔案版本號跟著這次發布的版本走，不是永遠
+    停在 .NET SDK 預設的 1.0.0.0——這是獨立另開的 dotnet build 呼叫（Exec 直接開一個新的
+    命令列行程），不會自動繼承外層 dotnet publish 指令當下的 -p: 參數，要另外顯式傳一次。
+    $(Version) 沒有從外層傳入時（例如日常開發直接 dotnet build，沒有特地帶 -p:Version）
+    會是 MSBuild 的預設值 1.0.0，等同沒改過的既有行為，不會因為這個改動而報錯。
+  -->
   <Target Name="BuildCli" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
-    <Exec Command="dotnet build ..\FileLocker.Cli\FileLocker.Cli.csproj -c Release" />
+    <Exec Command="dotnet build ..\FileLocker.Cli\FileLocker.Cli.csproj -c Release -p:Version=$(Version)" />
   </Target>
 
   <Target Name="CopyCliForRelease" AfterTargets="BuildCli" Condition="'$(Configuration)' == 'Release'">
@@ -141,18 +148,43 @@
       單獨跑過 dotnet publish，它自己的 bin\Release\...\ 底下就會多一份 publish\ 子資料夾，
       這裡的 **\*.* 萬用字元不排除的話會把那份也一起遞迴掃進來，複製出巢狀重複的內容
       （cli\publish\... 裡面又是一份完整拷貝）。
+
+      複製兩份：cli\ 之後會被下面的 TrimCliForGuiInstaller 就地瘦身，發布進 GUI 安裝檔；
+      cli-standalone\ 保持完整不動，供 filelocker_cli_installer.json（CLI_setup）／CLI_zip
+      使用。cli-standalone\ 刻意留在 $(OutDir) 底下、不透過 ResolvedFileToPublish 發布進
+      publish\ 資料夾——filelocker_installer.json 的 app_dir 是整個 publish\ 目錄，如果
+      cli-standalone\ 也在裡面，GUI 安裝檔又會把這 58MB 重新打包回去，白費瘦身的功夫。
     -->
     <ItemGroup>
       <CliFiles Include="..\FileLocker.Cli\bin\Release\net10.0-windows10.0.19041.0\**\*.*"
                 Exclude="..\FileLocker.Cli\bin\Release\net10.0-windows10.0.19041.0\publish\**\*.*" />
     </ItemGroup>
     <Copy SourceFiles="@(CliFiles)" DestinationFolder="$(OutDir)cli\%(RecursiveDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(CliFiles)" DestinationFolder="$(OutDir)cli-standalone\%(RecursiveDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <!--
+    cli/ 資料夾裡有一大塊（Microsoft.Windows.SDK.NET.dll＋runtimes/，約 57MB）跟外層 GUI
+    資料夾位元組完全相同——GUI 跟 CLI 是同一次建置產出，沒有理由在同一顆 GUI 安裝檔裡重複
+    打包兩份（見 FileLocker.Cli/BundleTrimming.cs 開頭的完整說明）。cli-standalone\ 是上面
+    CopyCliForRelease 留的未瘦身備份，這裡只對 cli\ 本身動手。
+  -->
+  <Target Name="TrimCliForGuiInstaller" AfterTargets="CopyCliForRelease" Condition="'$(Configuration)' == 'Release'">
+    <!-- 路徑結尾補上 "." 再收尾引號——$(OutDir) 本身帶結尾反斜線，直接接引號會被 Windows
+         命令列參數解析規則吃掉、跟下一個字元黏在一起，是這類建置腳本常見的坑。 -->
+    <Exec Command="&quot;..\FileLocker.Cli\bin\Release\net10.0-windows10.0.19041.0\FileLocker.Cli.exe&quot; --internal-trim-bundle &quot;$(OutDir)cli\.&quot; &quot;$(OutDir).&quot;" />
   </Target>
 
   <Target Name="AddCliToPublishOutput" BeforeTargets="ComputeFilesToPublish" Condition="'$(Configuration)' == 'Release' AND Exists('..\FileLocker.Cli\bin\Release\net10.0-windows10.0.19041.0')">
+    <!--
+      這裡發布的是 $(OutDir)cli\ 已經被 TrimCliForGuiInstaller 瘦身過的內容，不是重新從
+      FileLocker.Cli 自己的 bin\Release\ 原封不動抓一份。cli-standalone\（完整未瘦身）
+      刻意不發布進 publish\，見 CopyCliForRelease 開頭的說明——filelocker_cli_installer.json
+      的 app_dir／CLI_zip 直接指向 $(OutDir)cli-standalone\（bin\Release\...\ 底下），
+      不是 publish\ 底下的路徑。
+    -->
     <ItemGroup>
-      <CliFilesForPublish Include="..\FileLocker.Cli\bin\Release\net10.0-windows10.0.19041.0\**\*.*"
-                           Exclude="..\FileLocker.Cli\bin\Release\net10.0-windows10.0.19041.0\publish\**\*.*" />
+      <CliFilesForPublish Include="$(OutDir)cli\**\*.*" />
       <ResolvedFileToPublish Include="@(CliFilesForPublish)">
         <RelativePath>cli\%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
         <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
@@ -172,7 +204,9 @@
     下本來就是關閉的，不需要 Debug 建置也帶著這支協助行程。
   -->
   <Target Name="BuildUpdateRelauncher" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
-    <Exec Command="dotnet build ..\FileLocker.UpdateRelauncher\FileLocker.UpdateRelauncher.csproj -c Release" />
+    <!-- -p:Version=$(Version)，理由跟 BuildCli 那邊一致——獨立的 Exec 呼叫不會自動繼承外層
+         dotnet publish 帶的版本號。 -->
+    <Exec Command="dotnet build ..\FileLocker.UpdateRelauncher\FileLocker.UpdateRelauncher.csproj -c Release -p:Version=$(Version)" />
   </Target>
 
   <Target Name="CopyUpdateRelauncherForRelease" AfterTargets="BuildUpdateRelauncher" Condition="'$(Configuration)' == 'Release'">

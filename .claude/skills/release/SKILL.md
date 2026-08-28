@@ -23,7 +23,9 @@ description: 依照這個專案實際的流程準備一次新版本發布——�
 7. **打 tag**：跟使用者確認要不要打這個 tag、要不要 push（`git tag vX.Y.Z` 本身跟 push 都是視覺化「發布」的動作，兩個都要先問，不要自動打／自動推）。
 8. **打包安裝程式**：這一步不用跟使用者確認，執行 release skill 時直接自動打包——這是使用者明確要求的規則（只有建立 GitHub Release、push、打 tag 這三件事才需要先問）。**開始之前先 Read `d:\Github\mac-style-windows-installer_專案\mac-style-windows-installer\CLI_USAGE.md`**——mswi-cli 用法隨時可能改版，使用者會持續把最新用法寫回這份文件，不要憑記憶或這份 skill 裡舊的範例假設。需要更完整脈絡（例如安裝路徑、跟 GUI 的對照）再讀同目錄下的 `使用說明書.md`。
 
-   `dotnet publish src/FileLocker.App/FileLocker.App.csproj -c Release` 先確保 `publish/`（含 `cli/` 子資料夾）是最新的，再跑（以下是目前已知的範例，flag 名稱／JSON 欄位如果跟剛讀到的 `CLI_USAGE.md` 對不上，一律以文件為準）：
+   `dotnet publish src/FileLocker.App/FileLocker.App.csproj -c Release -p:Version=X.Y.Z` 先確保 `publish/`（含 `cli/` 子資料夾）是最新的，再跑（以下是目前已知的範例，flag 名稱／JSON 欄位如果跟剛讀到的 `CLI_USAGE.md` 對不上，一律以文件為準）：
+
+   **`-p:Version=X.Y.Z` 這個參數不能漏**——沒帶的話 `FileLocker.exe`／`FileLocker.Cli.exe`／`FileLocker.UpdateRelauncher.exe` 的檔案版本號（檔案總管右鍵「內容」→「詳細資料」看得到那個欄位）會全部停在 .NET SDK 預設的 `1.0.0.0`，跟這次實際發布的版本號對不上。`FileLocker.App.csproj` 裡 `BuildCli`／`BuildUpdateRelauncher` 這兩個 Target 各自另開一個 `dotnet build` 呼叫（Exec 直接開新的命令列行程），不會自動繼承外層 `dotnet publish` 帶的版本號，已經在這兩個 Target 裡加上 `-p:Version=$(Version)` 顯式往下傳——只要這裡最外層的 `dotnet publish` 有帶版本號，$(Version) 就會正確傳到底。
    ```
    mswi-cli pack --config installer/filelocker_installer.json --version X.Y.Z --exe-name FileLocker_vX.Y.Z_setup
    ```
@@ -34,7 +36,7 @@ description: 依照這個專案實際的流程準備一次新版本發布——�
 
    **另外還有兩個 CLI 獨立發布產物（CLI_setup／CLI_zip），跟 GUI 安裝檔同一次發布一起打包，不要漏掉**（見 `CONTEXT.md`「CLI 獨立發布產物」詞條——v2.1.0 這輪第一次手動打包驗證過沒有意外的坑，從這輪起收進自動化流程）：
    - `FileLocker_CLI_vX.Y.Z_setup.exe`：`mswi-cli pack --config installer/filelocker_cli_installer.json --version X.Y.Z --exe-name FileLocker_CLI_vX.Y.Z_setup`（跟 GUI 那份一樣，`--version`／`--exe-name` 覆蓋 JSON 預設值，`installer/filelocker_cli_installer.json` 裡的版本號／`exe_name` 欄位維持舊值不用改，理由跟 `filelocker_installer.json` 一致）。
-   - `FileLocker_CLI_vX.Y.Z_portable.zip`：把 `publish/cli/` 資料夾內容原封不動打包，額外加一份中英雙語 `README.md`（說明手動加入 PATH 的步驟，內容可比照上一輪的版本微調版本號），不需要另開 build 流程。`Compress-Archive -Path '<暫存資料夾>/*' -DestinationPath 'FileLocker_CLI_vX.Y.Z_portable.zip' -Force`。
+   - `FileLocker_CLI_vX.Y.Z_portable.zip`：把 `src/FileLocker.App/bin/Release/net10.0-windows10.0.19041.0/cli-standalone/` 資料夾內容原封不動打包（**不是 `publish/cli/`，也不是 `bin/.../cli/`**——那兩份從這輪起被 `TrimCliForGuiInstaller` 瘦身過，缺少共用套件、要靠旁邊的 GUI 資料夾補齊，獨立打包會裝出一個找不到 DLL、跑不起來的 CLI；`cli-standalone/` 才是完整自足的那份，見 `FileLocker.App.csproj` 裡 `CopyCliForRelease` 開頭的說明——這份資料夾刻意留在 `bin/Release/` 底下、不會被發布進 `publish/`），額外加一份中英雙語 `README.md`（說明手動加入 PATH 的步驟，內容可比照上一輪的版本微調版本號），不需要另開 build 流程。`Compress-Archive -Path '<暫存資料夾>/*' -DestinationPath 'FileLocker_CLI_vX.Y.Z_portable.zip' -Force`。
    - 兩者都複製到同一個 `d:\Github\FileLocker_專案\vX.Y.Z\` 資料夾，跟 GUI 安裝檔放在一起。
 9. **建立 GitHub Release**：先 `gh release list --repo lx-kvn/FileLocker` 確認這個版本還沒發布過。沒發布過的話，把要跑的指令（大致是 `gh release create vX.Y.Z <GUI安裝檔路徑> --title "FileLocker vX.Y.Z" --notes-file docs/releases/vX.Y.Z.md`，再用 `gh release upload vX.Y.Z <CLI_setup路徑> <CLI_zip路徑> --repo lx-kvn/FileLocker` 補上另外兩個 CLI 產物，三個檔案一起列出來給使用者確認也可以，不一定要分兩次指令）列出來給使用者看過、明確同意後才執行——不能自己直接發布。使用者也可能自己先在網頁上手動建立了，跑之前的確認步驟就會發現，發現的話就不用再跑 `gh release create`，直接跟使用者核對內容（Release Notes、附件檔名/大小，這次應該有三個檔案）對不對即可。
 

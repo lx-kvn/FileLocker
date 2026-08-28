@@ -40,6 +40,8 @@ description: 依照這個專案實際的流程準備一次新版本發布——�
    - 兩者都複製到同一個 `d:\Github\FileLocker_專案\vX.Y.Z\` 資料夾，跟 GUI 安裝檔放在一起。
 9. **建立 GitHub Release**：先 `gh release list --repo lx-kvn/FileLocker` 確認這個版本還沒發布過。沒發布過的話，把要跑的指令（大致是 `gh release create vX.Y.Z <GUI安裝檔路徑> --title "FileLocker vX.Y.Z" --notes-file docs/releases/vX.Y.Z.md`，再用 `gh release upload vX.Y.Z <CLI_setup路徑> <CLI_zip路徑> --repo lx-kvn/FileLocker` 補上另外兩個 CLI 產物，三個檔案一起列出來給使用者確認也可以，不一定要分兩次指令）列出來給使用者看過、明確同意後才執行——不能自己直接發布。使用者也可能自己先在網頁上手動建立了，跑之前的確認步驟就會發現，發現的話就不用再跑 `gh release create`，直接跟使用者核對內容（Release Notes、附件檔名/大小，這次應該有三個檔案）對不對即可。
 
+   **真實抓到的 bug（v2.1.0 這輪）**：GitHub Release 頁面／API 回傳的 assets 順序是照檔名字母排序，不是照上傳順序——`FileLocker_CLI_v2.1.0_setup.exe` 的 `C` 字母順序排在 `FileLocker_v2.1.0_setup.exe` 的 `v` 之前，所以先建 Release 只丟 GUI 安裝檔、之後才 `gh release upload` 補 CLI 產物，並不能保證 GUI 安裝檔在 assets 清單裡排第一個。應用程式自動更新（`FetchLatestGitHubReleaseAsync`）原本「掃 assets 抓第一個 .exe」的邏輯因此選錯，實際下載並靜默安裝了 CLI 版安裝檔，回報成功但 GUI 本體完全沒被更新——已改成 `SelfUpdateAssetSelector`（`src/FileLocker.Core/UpdateCheck/SelfUpdateAssetSelector.cs`）明確排除檔名含 `_CLI_` 的資產，不依賴上傳順序或 GitHub 的排序方式。這裡純粹記錄一下：**上傳順序本來就救不了這個問題，不用想著靠調整 `gh release create`／`gh release upload` 的呼叫順序防禦，真正的防線在應用程式端的篩選邏輯。**
+
 ## 不做的事
 
 - 不自動打 tag、不自動 push——一律先問。

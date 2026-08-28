@@ -1331,9 +1331,15 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>查 GitHub 最新 release：tag、更新內容（release 的 body 欄位）、安裝檔下載連結
-    /// （assets 裡副檔名是 .exe 的那個）。downloadUrl 每次都重新查、不快取、不讓前端傳回來——
-    /// 前端只被允許「知道有沒有下載連結」，實際網址由後端自己決定，避免前端能左右下載目標。</summary>
+    /// <summary>查 GitHub 最新 release：tag、更新內容（release 的 body 欄位）、GUI 安裝檔下載
+    /// 連結。downloadUrl 每次都重新查、不快取、不讓前端傳回來——前端只被允許「知道有沒有下載
+    /// 連結」，實際網址由後端自己決定，避免前端能左右下載目標。
+    ///
+    /// 真實抓到的 bug：v2.1.0 這輪同一次 release 多了 CLI 獨立發布產物（FileLocker_CLI_vX.Y.Z_
+    /// setup.exe／_portable.zip），原本「抓第一個副檔名是 .exe 的」選到的是 CLI 版安裝檔——
+    /// GitHub Release 附件清單順序不保證跟上傳順序一致，v2.1.0 這輪 CLI_setup.exe 剛好排在
+    /// GUI 版前面，靜默裝到完全不同的資料夾，GUI 本體從頭到尾沒被更新卻回報成功。篩選邏輯
+    /// 抽到 SelfUpdateAssetSelector（見該類別開頭的完整說明），排除掉 CLI 版安裝檔。</summary>
     private async Task<(string? Tag, string? ReleaseNotes, string? DownloadUrl)> FetchLatestGitHubReleaseAsync()
     {
         s_updateCheckHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd("FileLocker-UpdateCheck");
@@ -1351,14 +1357,21 @@ public partial class MainWindow : Window
         string? downloadUrl = null;
         if (doc.RootElement.TryGetProperty("assets", out var assets))
         {
+            var urlByName = new Dictionary<string, string>(StringComparer.Ordinal);
+            var namesInOrder = new List<string>();
             foreach (var asset in assets.EnumerateArray())
             {
-                var name = asset.GetProperty("name").GetString() ?? "";
-                if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                var name = asset.GetProperty("name").GetString();
+                var url = asset.GetProperty("browser_download_url").GetString();
+                if (!string.IsNullOrEmpty(name) && url is not null && urlByName.TryAdd(name, url))
                 {
-                    downloadUrl = asset.GetProperty("browser_download_url").GetString();
-                    break;
+                    namesInOrder.Add(name);
                 }
+            }
+            var selectedName = SelfUpdateAssetSelector.SelectGuiInstallerAssetName(namesInOrder);
+            if (selectedName is not null)
+            {
+                downloadUrl = urlByName[selectedName];
             }
         }
         return (tag, releaseNotes, downloadUrl);

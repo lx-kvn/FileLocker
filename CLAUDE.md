@@ -121,7 +121,7 @@ cl /LD /EHsc /utf-8 dllmain.cpp /Fe:FileLockerShellExtension.dll /link /DEF:File
 ## 建置與驗證
 Commit 前一律先跑過完整測試套件（`dotnet test`，目前三個測試專案共約 349 個測試都要過；這個數字會隨開發持續增加，抓「跑完顯示失敗:0」為準，不要死記這個數字）。部署到 `Program Files` 需要提權的 shell——如果拿不到提權權限，就先建置到本機暫存資料夾，把確切的手動提權指令交給使用者執行，不要悄悄跳過驗證步驟。
 
-**這台機器上有兩台驗證用虛擬機可以叫得動（Windows 11 25H2 繁體中文、Windows 10 1809 LTSC 英文），不要以為只能在開發機上驗證。** 需要「正式安裝程式裝進乾淨系統之後」才驗得到的東西——檔案總管雙擊 `.flocked`／`.lockfolder`、右鍵選單有沒有正確註冊、系統匣與開機自動啟動、瀏覽器擴充功能連線、真正的標準使用者帳號（不在 Administrators 群組）底下的資料夾防護行為——都可以丟上去跑，用法見 `.claude/skills/run-test-vm/SKILL.md`。技術規格文件第 24.1 節那幾條長期卡著的「待人工實機驗證」，大部分其實這套環境涵蓋得到。驅動虛擬機的模組實體放在 `D:\Github\mac-style-windows-installer_專案\mac-style-windows-installer\tools\vms.py`（機器層級的事實不在每個 repo 各留一份，避免多份互相矛盾）。
+**這台機器上有兩台驗證用虛擬機可以叫得動（Windows 11 25H2 繁體中文、Windows 10 1809 LTSC 英文），不要以為只能在開發機上驗證。** 需要「正式安裝程式裝進乾淨系統之後」才驗得到的東西——檔案總管雙擊 `.flocked`／`.lockfolder`、右鍵選單有沒有正確註冊、系統匣與開機自動啟動、瀏覽器擴充功能連線、真正的標準使用者帳號（不在 Administrators 群組）底下的資料夾防護行為——都可以丟上去跑，用法見 `.claude/skills/run-test-vm/SKILL.md`。技術規格文件第 24.1 節那幾條長期卡著的「待人工實機驗證」，大部分其實這套環境涵蓋得到。驅動虛擬機的模組實體放在 `D:\Github\mac-style-windows-installer_專案\mac-style-windows-installer\tools\vms.py`（機器層級的事實不在每個 repo 各留一份，避免多份互相矛盾）；多個 session 同時搶同一台機器的占用協調，由獨立的 vm-lease 套件負責——**碰虛擬機之前先走 `use-vm-lease` 這個 skill**，第一次用要先 `pip install -e D:\Github\vm-lease_專案\vm-lease`。
 
 **不要自己判斷「差不多了」就直接下 `git commit`。** 當你認為工作已經到一個可以或應該 commit 的段落時，先跟使用者說一聲（例如「這輪改動看起來完整了，要 commit 嗎？」），等對方明確要求（像是直接說「commit」）才執行。使用者曾經明確要求要保留這個確認步驟。
 

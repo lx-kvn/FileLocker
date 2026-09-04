@@ -18,13 +18,23 @@ description: 操作本機的驗證用虛擬機——Windows 11 25H2（繁體中�
 D:\Github\mac-style-windows-installer_專案\mac-style-windows-installer\tools\vms.py
 ```
 
-不複製一份到 FileLocker repo，因為裡面記的是「這台實體機器上有哪些虛擬機、快照叫什麼名字、
-密碼放在哪個環境變數」——那是機器層級的事實，不是專案層級的事實。每個 repo 各留一份的話，
-之後新增快照或換路徑會出現多份互相矛盾的版本。代價是那個 repo 被搬走或改掉 API 時，這個
-skill 會跟著失效；發生時去該 repo 的 `.claude/skills/run-test-vm/` 對照現況即可。
+不複製一份到 FileLocker repo：那是機器層級的事實，不是專案層級的事實，每個 repo 各留一份
+的話，之後改動會出現多份互相矛盾的版本。代價是那個 repo 被搬走或改掉 API 時這個 skill 會
+跟著失效；發生時去該 repo 的 `.claude/skills/run-test-vm/` 對照現況即可。
 
 更詳細的手寫 vmrun 指令、九項實測出來的陷阱、兩台機器各自的環境事實，記在那邊的
-`REFERENCE.md`，平常不用讀。
+`.claude/skills/run-test-vm/REFERENCE.md`，平常不用讀。
+
+**還有一個相依**：占用協調由獨立的 `vm-lease` 套件負責，它不屬於任何一個 repo（同一批機器
+兩邊都在用，規則只能有一份）。**動任何虛擬機之前先走 `use-vm-lease` 那份 skill**，這裡不
+重複它的規則。第一次用要先裝：
+
+```bash
+pip install -e D:\Github\vm-lease_專案\vm-lease
+```
+
+機器清單（有哪些機器、快照叫什麼、密碼放在哪個環境變數）也由 `vm-lease` 保管，不再寫在
+`vms.py` 裡。下面那兩張表是給人看的摘要，**以 `vm-lease machines show win11` 的輸出為準**。
 
 ## 機器清單
 
@@ -63,51 +73,43 @@ skill 會跟著失效；發生時去該 repo 的 `.claude/skills/run-test-vm/` �
 import sys; sys.path.insert(0, r"D:\Github\mac-style-windows-installer_專案\mac-style-windows-installer")
 from tools import vms
 
-vm = vms.connect("win11")                    # 密碼自環境變數讀，不落地
+# connect 順手佔住這台機器（見「先佔住再動手」），purpose 會讓被擋下來的另一邊
+# 知道你在忙什麼。密碼自環境變數讀，不落地。
+vm = vms.connect("win11", purpose="驗證雙擊 .flocked 解密")
 with vms.preserved_tab(vm.machine.vmx):      # 用完把 VMware 分頁補回去
     vms.fresh_boot(vm)                       # 還原 → 開機 → 等到真的可用
-    vm.copy_in(local_installer, r"C:\Windows\Temp\FileLocker_Setup.exe")
+    vm.copy_in(local_installer, r"C:\Users\Tester\FileLocker_Setup.exe")
     vms.write_guest_script(local_ps1, script_text)   # 寫成客體讀得懂的編碼
-    vm.copy_in(local_ps1, r"C:\Windows\Temp\job.ps1")
+    vm.copy_in(local_ps1, r"C:\Users\Tester\job.ps1")
     vm.run_program(POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass",
-                   "-File", r"C:\Windows\Temp\job.ps1")
-    vm.copy_out(r"C:\Windows\Temp\out.txt", back)
+                   "-File", r"C:\Users\Tester\job.ps1")
+    vm.copy_out(r"C:\Users\Tester\out.txt", back)
     vm.capture_screen(shot)
     vm.stop()
+vms.release("win11")                         # 用完交回去
 ```
+
+**送進客體的檔案放 `C:\Users\<帳號>\`，不要放 `C:\Windows\Temp`。** 檔案是以背景那個高權限
+身分寫進去的，桌面工作階段的使用者讀不到，而 `interactive=True` 啟動時回報的是「找不到
+檔案」——訊息完全指錯方向（mswi `REFERENCE.md` 陷阱第 3 條，這輪也實際撞到一次）。
 
 `run_program(..., interactive=True)` 讓程式跑在使用者看得到的桌面上；`check=False` 讓客體的
 非零結束碼不算錯誤（驗證「本來就該失敗」的情況時用）。
 
 ## 先佔住再動手（多個 session 同時在跑）
 
-這批虛擬機不只 FileLocker 在用——mac-style-windows-installer 那個 repo 走的是同一批
-機器，而使用者有時會同時開著兩個 agent session。`revertToSnapshot` 是破壞性的：
-另一邊裝到一半的安裝程式、正在等的畫面，會在毫無徵兆的情況下被還原掉，事後從症狀
-也看不出成因（看起來只像「剛才那步沒生效」）。
+這批虛擬機不只 FileLocker 在用——mac-style-windows-installer 那個 repo 走的是同一批機器，
+而使用者有時會同時開著兩個 agent session。還原快照是破壞性的：另一邊裝到一半的安裝程式、
+正在等的畫面，會在毫無徵兆的情況下被抹掉，事後從症狀也看不出成因。
 
-`connect()` 預設就會取得占用租約，不需要另外做什麼，但**要先讓自己有名字**：
+**規則全部寫在 `use-vm-lease` 那份 skill，動手之前先走它，這裡不重複一遍。** 重複的下場是
+兩份講法遲早會分歧，而分歧的那一刻沒有人會發現——這正是那套工具被搬到獨立 repo 的理由。
 
-```bash
-$env:VM_LOCK_OWNER = "filelocker-ca"      # 用你的 session 代號
-```
+跟 FileLocker 有關的只有兩點補充：
 
-沒設會直接失敗並告訴你要設什麼——不接受匿名持有，否則誰都能續租別人的租約。
-
-```python
-vm = vms.connect("win11", purpose="驗證雙擊 .flocked 解密")   # 佔住，並說明為什麼
-...
-vms.release("win11")                                          # 用完交回去
-```
-
-機器被別人佔著時 `connect()` 會拋 `VmBusy`，訊息裡有持有者、用途、租約到幾點——
-**直接把那句話轉述給使用者，不要自己去搶**。要不要搶是使用者的決定。
-
-租約預設 30 分鐘，同一個持有者重複 `connect()` 是續租。時間到自動失效，所以卡住
-不會變成永久鎖死。租約檔在 `%LocalAppData%\vm-locks\<機器代號>.lock`，是人看得懂的
-JSON，使用者想強制放掉直接刪檔即可。
-
-協調機制本身（`tools/vm_lock.py`）跟 `vms.py` 放在一起，同樣在 mswi 那個 repo。
+- 走 `vms.connect()` 的話占用與自動延長都已經接好，正常情況下不用自己呼叫任何東西。
+- **開有畫面的模式請使用者親手點按鈕**（見下方第二點，驗雙擊行為時會用到）那段期間沒有任何
+  操作在發生，自動延長不會被觸發，要自己借久一點：`vms.connect(..., lock_minutes=30)`。
 
 ## 對 FileLocker 特別要留意的四件事
 

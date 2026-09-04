@@ -1047,7 +1047,7 @@ ACL 拒絕規則掛在目前登入帳號的 SID 上，FileLocker App 自己的�
 - **雲端同步跨裝置人工實測**：見第 11.2 節，目前僅完成自動化測試（模擬多裝置同步、衝突情境），跨裝置的完整人工實測待使用者自行進行。
 - **雙擊已上鎖資料夾直接解鎖的實際互動驗證**：見第 21.6 節，`.lockfolder` 標記檔機制的 C# 端邏輯已完成並通過單元測試，但實際雙擊標記檔跳出解鎖彈窗的互動流程尚待完整人工實測。
 - **背景模式主視窗／系統匣選單彈出位置排查**：見第 23 節已知限制，已改用 Win32 API 直接以物理像素定位，但實測位置仍不如預期，根因尚未確認，待後續找時間深入排查。
-- **PasswordVault 獨立化——實際安裝環境的人工互動驗證**：見 24.2 節「FileLocker 本體切換消費來源」，程式碼層級已完成並通過單元測試，但實際從 `lx-kvn/PasswordVault` Release 自動下載、切換部件生效這條路徑，需要正式打包 PasswordVault 那邊的 Release 資產（符合「資產命名規則」）之後才能人工實測，目前只驗證到程式碼層級。
+- **PasswordVault 獨立化——設定頁「安裝密碼庫」按鈕的人工點擊驗證**：整條「查 Release → 挑資產 → 下載 → 解壓 → 切換生效 → 載入 → 建立主密碼」已用本體自己的程式碼打真實 GitHub API 驗證過（見 24.2 節），剩下的只有在正式安裝的環境裡實際點一次那顆按鈕，確認 UI 狀態轉換與「重啟才生效」的流程沒有意外。
 
 ### 24.2 已完成之待辦
 
@@ -1065,7 +1065,7 @@ ACL 拒絕規則掛在目前登入帳號的 SID 上，FileLocker App 自己的�
 - **修正空密碼會讓 CLI 崩潰**：`Argon2KeyDerivation.VerifyPassword` 把空密碼原樣交給 Konscious 的 Argon2 建構子，那裡會丟 `ArgumentException`，結果是整個行程帶著 stack trace 結束，而不是回報「密碼不正確」（`FileLocker.Cli unlock` 在 stdin 為空時即可重現）。修正放在 `VerifyPassword` 開頭直接回報驗證失敗——判斷放在這一層而不是各個輸入端，是因為每個呼叫端各自檢查一次遲早會漏掉一個，`unlock` 就是漏掉的那一個。加密路徑本來就不允許空密碼，所以空密碼永遠不可能是正確的，回報失敗即為正確語意。
 - **打包安裝程式**：對接 mac-style-windows-installer，含 `.locked` 檔案關聯與圖示接入，見第 19 節。
 - **CLI 隨裝發布**：`FileLocker.Cli` 打包進 `cli/` 子資料夾，安裝程式透過 `path_target_exe` 加入系統 PATH，見第 19 節。
-- **PasswordVault 獨立化——FileLocker 本體切換消費來源**：`PasswordLockerModuleInstaller`（改查 `lx-kvn/PasswordVault` Release）、`PasswordLockerAssetSelector`（改認新命名規則）、`PasswordLockerPluginLoader`（改找 `PasswordVault.Core.dll`）、`PasswordLockerNativeHostRegistrar`／`App.xaml.cs`（改找 `PasswordVault.NativeHost.exe`）皆已完成並通過單元測試；`plugins/PasswordLocker/` 資料夾名稱依定案維持不變。額外清掉 FileLocker repo 裡重複的舊原始碼：`src/FileLocker.PasswordLocker/`、`src/FileLocker.PasswordLockerNativeHost/`、`src/FileLocker.Extension/`、`tests/FileLocker.PasswordLocker.Tests/`——這些已經遷出成為 `PasswordVault` repo 的唯一真相來源，見 [`PasswordVault_獨立化_規劃.md`](features/PasswordVault_獨立化_規劃.md) 第 17 節、ADR-0003。
+- **PasswordVault 獨立化——FileLocker 本體切換消費來源**：`PasswordLockerModuleInstaller`（改查 `lx-kvn/PasswordVault` Release）、`PasswordLockerAssetSelector`（改認新命名規則）、`PasswordLockerPluginLoader`（改找 `PasswordVault.Core.dll`）、`PasswordLockerNativeHostRegistrar`／`App.xaml.cs`（改找 `PasswordVault.NativeHost.exe`）皆已完成並通過單元測試；`plugins/PasswordLocker/` 資料夾名稱依定案維持不變。額外清掉 FileLocker repo 裡重複的舊原始碼：`src/FileLocker.PasswordLocker/`、`src/FileLocker.PasswordLockerNativeHost/`、`src/FileLocker.Extension/`、`tests/FileLocker.PasswordLocker.Tests/`——這些已經遷出成為 `PasswordVault` repo 的唯一真相來源，見 [`PasswordVault_獨立化_規劃.md`](features/PasswordVault_獨立化_規劃.md) 第 17 節、ADR-0003。**2026-09-05 補上實機驗證**：PasswordVault 那邊已產出符合命名規則的資產（`PasswordVault_v0.1.0_for-FileLocker-2.1.0-to-2.1.1.zip`，掛在 v0.1.0 Release 上），並以上述這幾支程式碼打真實的 GitHub API 跑通整條路徑——挑到正確資產、下載、解壓到 `plugins/PasswordLocker.pending/`、切換生效、載入回報 `Ok`、送出 `setupPasswordLockerCredential` 建立主密碼成功（這步會真的跑 Argon2id 金鑰衍生，是先前實測漏掉的那一段）。
 - **資料夾防護（Folder Guard）功能開發**：純 ACL 資料夾存取限制、共用密碼＋選配 Passkey、右鍵上鎖/解鎖、清單頁管理，見第 21 節。
 - **軟體更新檢查功能開發**：設定頁一鍵檢查 GitHub Release、下載安裝檔並啟動，見第 22 節。
 - **CLI 英文化**：`FileLocker.Cli` 新增 `CliLocalization`（`src/FileLocker.Cli/CliLocalization.cs`），提供跟 GUI 端 `t('key')` 精神一致但更輕量的訊息查表機制（純 C# Dictionary，不另外拉 JSON 讀取機制）。語言判斷：全域 `--lang <zh-TW|en>` 旗標優先（任何指令、任何參數位置都適用，連沒帶指令的用法說明也吃），沒帶就跟著 `CultureInfo.CurrentUICulture` 走，系統語言不是中文（`zh`）就一律用英文。錯誤訊息額外透過 `TranslateError` 依 `ErrorCode` 查表翻譯（跟 GUI 的 `translateError()` 同一套邏輯與文案，只收錄 CLI 實際會走到的路徑可能回傳的錯誤代碼，不是 GUI 那 56 個 `error.*` 詞條的完整鏡射——CLI 不支援 Passkey、不會碰到 Folder Guard／Password Locker／軟體更新這些功能）；查無對應詞條就退回後端原始的繁體中文 `ErrorMessage`，跟 GUI 端未收錄代碼時的退回行為一致。

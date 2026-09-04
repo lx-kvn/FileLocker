@@ -163,7 +163,11 @@ FileLocker 本體 UI 上「密碼庫」分頁的中文名稱維持不變——�
 - 反過來先啟動 `FileLocker.exe` 再啟動 `PasswordVault.exe`：結果相同。
 - 照 Chrome 的規矩（4 位元組長度前綴 + UTF-8 JSON）驅動登錄機碼指到的那支轉接程式，送出 `findPasswordLockerCredentialsForDomain`，收到 `findPasswordLockerCredentialsForDomainResult` 正常回應，不再是 `Pipe is broken`。兩種啟動順序皆然。
 
-**這次實測涵蓋不到的範圍，記在這裡避免被誤讀成「部件的手動組裝方式已驗證完整」**：該環境沒有網路，無法用正式流程下載密碼庫部件，因此是照 `CLAUDE.md`「已知的坑」記載的步驟手動把檔案組進 `plugins/PasswordLocker/`——組進去的內容**不包含 `PasswordVault.Core.deps.json`**，而 `FileLocker.App` 仍成功載入部件並回應了憑證查詢。這件事與 `PasswordLockerPluginLoader` 的實作（`AssemblyDependencyResolver` 依賴 `<組件名>.deps.json` 解析相依）在推論上不一致，最可能的解釋是：該次查詢的密碼庫是空的、也未解鎖，整條路徑沒有觸及 Argon2 金鑰衍生，因此 `Konscious.Security.Cryptography.*` 從頭到尾未被載入。也就是說，**「部件只要有 Core.dll 與兩個 Konscious dll 就能運作」這件事並未被這次實測證實**，需要以一個真的會觸及密碼雜湊的操作（建立主密碼、或以主密碼解鎖）另外驗證，並據以決定發布用 zip 的實際內容。相關要件見 PasswordVault repo 的 `docs/specs/features/PasswordVault_Release打包_待辦.md`。
+**這次實測涵蓋不到的範圍，記在這裡避免被誤讀成「部件的手動組裝方式已驗證完整」**：該環境沒有網路，無法用正式流程下載密碼庫部件，因此是照 `CLAUDE.md`「已知的坑」記載的步驟手動把檔案組進 `plugins/PasswordLocker/`——組進去的內容**不包含 `PasswordVault.Core.deps.json`**，而 `FileLocker.App` 仍成功載入部件並回應了憑證查詢。這件事與 `PasswordLockerPluginLoader` 的實作（`AssemblyDependencyResolver` 依賴 `<組件名>.deps.json` 解析相依）在推論上不一致，最可能的解釋是：該次查詢的密碼庫是空的、也未解鎖，整條路徑沒有觸及 Argon2 金鑰衍生，因此 `Konscious.Security.Cryptography.*` 從頭到尾未被載入。也就是說，**「部件只要有 Core.dll 與兩個 Konscious dll 就能運作」這件事並未被這次實測證實**，需要以一個真的會觸及密碼雜湊的操作另外驗證。
+
+**2026-09-05 補：已用建立主密碼（會真的跑 Argon2id 金鑰衍生）驗證完畢，結論是「不需要 deps.json」。** 沒有 `<組件名>.deps.json` 時 `AssemblyDependencyResolver` 會直接掃元件所在的資料夾，所以相依組件跟 `PasswordVault.Core.dll` 放在一起就解析得到；而 PasswordVault.Core 建置產出的那份 deps.json 內容指向 NuGet 快取路徑，在使用者機器上不存在，放進 zip 也起不了作用。
+
+同一輪驗證另外發現一件更需要注意的事：**`FileLocker.App` 自己也帶著同名的 `Konscious.Security.Cryptography.*`**（本體加密用同一套）。部件若漏放這兩個檔，載入器解析不到時會安靜退回宿主那一份，當下不會有任何錯誤——因此「裝起來能用」不足以證明部件內容完整，必須驗到相依組件確實解析自部件資料夾。PasswordVault repo 的 `PasswordLockerModulePackagingTests` 就是照這個寫的。完整定案理由見該 repo 的 `docs/specs/features/PasswordVault_Release打包.md`。
 
 驗證方法不使用 Chrome：Chrome 在這條路徑上只做兩件事——從登錄機碼查出轉接程式的路徑、把它啟動起來並以固定格式對話——直接照同一套規矩驅動，測到的是完全同一條路徑，且不需要在無網路的測試環境裡設法安裝瀏覽器與側載擴充功能。**驅動轉接程式的行程必須用一般權限**：用已提升的權限啟動時，一般權限的宿主程式讀不到高權限行程的模組路徑，`VerifyClientIsExpectedHost` 的反查被系統拒絕而回報「對不上」，症狀跟真正的路徑不符完全一樣（都是 `Pipe is broken`），這一輪實際踩到過。
 

@@ -15,7 +15,7 @@
 
 選擇方案 2，因為 PasswordVault 這次明確定位成獨立品牌、獨立版本號、獨立發布節奏的產品（不是 FileLocker 的附屬功能），原始碼留在 FileLocker repo 裡會讓這個定位變得名不符實——貢獻者想改 PasswordVault 的程式碼，還是得先 clone 一個叫 FileLocker 的 repo；FileLocker 這邊的 CI／測試套件也會被迫等待一個邏輯上完全獨立產品的建置結果。
 
-FileLocker.App 消費 `PasswordVault.Core` 的方式維持既有的「執行期偵測外部 dll、動態載入」可選配部件架構（見 `docs/specs/features/密碼庫_功能規劃.md` 第 2 節）不變，只是這個 dll 的原始碼來源換成新 repo 編譯產出，FileLocker repo 這邊看到的仍然只是一份二進位相依。
+FileLocker.App 消費 `PasswordVault.Core` 的方式維持既有的「執行期偵測外部 dll、動態載入」可選配部件架構（見 `docs/specs/features/已完成/密碼庫_功能規劃.md` 第 2 節）不變，只是這個 dll 的原始碼來源換成新 repo 編譯產出，FileLocker repo 這邊看到的仍然只是一份二進位相依。
 
 ## 代價與風險
 

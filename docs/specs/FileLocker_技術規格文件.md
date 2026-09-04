@@ -939,7 +939,7 @@ C++（`dllmain.cpp`），CLSID `{A1B2C3D4-E5F6-4789-9ABC-DEF012345678}`。實作
 
 ## 21. 資料夾防護（Folder Guard）
 
-獨立於「加密」之外的第二種保護機制：**不加密內容**，純粹透過 Windows ACL 拒絕目前登入帳號對某資料夾的存取權，資料夾原地保留、不搬動、不需要提權。定位是「防隨手瀏覽」，不是「防蓄意繞過」——完整的威脅模型與機制取捨推理見 [`docs/adr/0001-folder-guard-deny-acl-not-ownership-transfer.md`](../adr/0001-folder-guard-deny-acl-not-ownership-transfer.md)；設計訪談的原始逐項紀錄見 [`資料夾防護_功能規劃.md`](features/資料夾防護_功能規劃.md)（規劃文件，現已實作完成，本節是併入後的目前狀態說明）。
+獨立於「加密」之外的第二種保護機制：**不加密內容**，純粹透過 Windows ACL 拒絕目前登入帳號對某資料夾的存取權，資料夾原地保留、不搬動、不需要提權。定位是「防隨手瀏覽」，不是「防蓄意繞過」——完整的威脅模型與機制取捨推理見 [`docs/adr/0001-folder-guard-deny-acl-not-ownership-transfer.md`](../adr/0001-folder-guard-deny-acl-not-ownership-transfer.md)；設計訪談的原始逐項紀錄見 [`資料夾防護_功能規劃.md`](features/已完成/資料夾防護_功能規劃.md)（規劃文件，現已實作完成，本節是併入後的目前狀態說明）。
 
 跟「加密」分頁刻意保持語彙區隔：加密用「加密／解密」，資料夾防護用「上鎖／解鎖」，兩邊動詞互不共用，避免使用者混淆兩種保護等級的差異。
 
@@ -1053,7 +1053,7 @@ ACL 拒絕規則掛在目前登入帳號的 SID 上，FileLocker App 自己的�
 
 以下項目過去曾列在待辦／已知限制中，目前已完成，記錄於此保留歷史脈絡：
 
-- **通盤檢討與五輪改善**（詳見 [`通盤檢討_改善計畫.md`](features/通盤檢討_改善計畫.md)）。一次針對「單獨看每個設計都有寫明理由，但組合起來互相矛盾」所做的檢討，分五輪執行：
+- **通盤檢討與五輪改善**（詳見 [`通盤檢討_改善計畫.md`](features/已完成/通盤檢討_改善計畫.md)）。一次針對「單獨看每個設計都有寫明理由，但組合起來互相矛盾」所做的檢討，分五輪執行：
   - **第 1 輪：收斂加密流程的雙軌狀態，並修正側欄命名**。信封流程導入時保留的舊「一次到位」加密路徑（含依檔案大小估算的假進度條）整套移除；執行時另外發現「巢狀資料夾防護解鎖並重試」的引導整條無法被觸發——它唯一的呼叫端掛在舊路徑的結果處理常式上，而舊路徑的入口函式已無任何呼叫端，形成沒有入口的封閉迴圈，使用者只會看到一則錯誤訊息，一併修復並改接到信封流程。側欄「加密」改名為「檔案加密」，四個導覽項目統一為名詞。
   - **第 2 輪：`.flocked` 檔案自足化與 `.lockfolder` 驗證**。`.flocked` 升級至 v2、驗證材料改為嵌入檔尾（見第 5.4 節）；`.lockfolder` 標記檔改以防護索引為驗證判準（見第 21.6 節）。
   - **第 3 輪：保護等級一致化**。永久刪除提升至 T3、清除使用紀錄下降至 T2、規則收斂為單一句子（見第 8.2 節）；資料夾防護的鎖定退避上限由 1 小時降至 60 秒（見第 9 節）；四套憑證各自命名並載明遺失後果（見第 8.3 節）。
@@ -1076,4 +1076,4 @@ ACL 拒絕規則掛在目前登入帳號的 SID 上，FileLocker App 自己的�
   - `--output`／`-o <text|json>`：`json` 模式下 `list`／`encrypt`／`unlock`／`unlock-recovery`／`delete` 都印一份結構化 JSON 到 stdout，其餘資訊性文字（Vault 位置、進度提示、互動提示）改印到 stderr，stdout 保持乾淨單一的 JSON 文件，方便腳本直接 parse；`list` 的 JSON 輸出刻意只投影安全欄位，不直接序列化 `LockedItemMetadata`（那個型別帶著 Salt／密碼雜湊等密碼學內部細節）。
   - 子命令化：`encrypt`／`unlock`／`unlock-recovery`／`list`／`delete`（不帶開頭 `--`）是現在推薦的新寫法，跟主流工具的「動詞當子命令」慣例看齊；舊的 `--encrypt` 等旗標寫法完整保留、行為完全不變，用到時印一行過時提醒到 stderr，不強制、不設移除時間表（`CliCommandNormalizer` 負責雙向換算＋標記，`CliArgumentParserTests` 涵蓋兩種寫法）。
   - `FileLocker.Cli completion <bash|zsh|pwsh>` 印出對應 shell 的自動完成腳本（`CliShellCompletion`，靜態子命令／旗標補全，不做動態的 UUID／路徑補全）——這個指令跟 `-h`／`--version` 一樣不需要碰 Vault，刻意放在 Vault 路徑設定之前處理，避免「Vault location: ...」那行 banner 混進要拿去 `source` 的腳本輸出裡（曾經發生過，已修正）。
-  - 成功／失敗訊息依終端機偵測（`Console.IsOutputRedirected`）決定要不要上色（綠／紅），尊重 `NO_COLOR`（https://no-color.org）環境變數；`encrypt`／`unlock`／`unlock-recovery` 執行中顯示真實的進度百分比（`ConsoleProgressReporter`），數字來自 `ChunkedCipher` 實際處理掉的位元組數，經由 `LockService` 的 `IProgress<double>` 傳上來，跟 GUI 端的進度條是同一個來源。這裡原本是忙碌旋轉指示器，當時的理由是全專案沒有任何地方真的呼叫過 `.Report(...)`；那個前提在信封加密流程接上真實進度之後即不成立，第 4 輪一併修正（見 `docs/specs/features/通盤檢討_改善計畫.md`）。進度顯示在 `--output json` 或輸出被導向檔案／管線時自動關閉，不會污染腳本要解析的內容。`delete` 不顯示進度——那是純 metadata 操作，沒有位元組可以量。
+  - 成功／失敗訊息依終端機偵測（`Console.IsOutputRedirected`）決定要不要上色（綠／紅），尊重 `NO_COLOR`（https://no-color.org）環境變數；`encrypt`／`unlock`／`unlock-recovery` 執行中顯示真實的進度百分比（`ConsoleProgressReporter`），數字來自 `ChunkedCipher` 實際處理掉的位元組數，經由 `LockService` 的 `IProgress<double>` 傳上來，跟 GUI 端的進度條是同一個來源。這裡原本是忙碌旋轉指示器，當時的理由是全專案沒有任何地方真的呼叫過 `.Report(...)`；那個前提在信封加密流程接上真實進度之後即不成立，第 4 輪一併修正（見 `docs/specs/features/已完成/通盤檢討_改善計畫.md`）。進度顯示在 `--output json` 或輸出被導向檔案／管線時自動關閉，不會污染腳本要解析的內容。`delete` 不顯示進度——那是純 metadata 操作，沒有位元組可以量。

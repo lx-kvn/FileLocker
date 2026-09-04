@@ -35,7 +35,7 @@
 
 ## 1. 背景
 
-`密碼庫_功能規劃.md` 第 12 節原本把「獨立單機介面版本」列為明確擱置的構想。可選配部件架構（含第二階段自動安裝）落地之後，重新排入規劃，並在這輪 grilling 中決定：不是單純幫既有的 `FileLocker.PasswordLocker` 部件多做一份 UI 外殼，而是把整個密碼庫功能獨立成一個品牌、一個產品——**PasswordVault**，原始碼遷出到獨立 repo（見 [ADR-0003](../../adr/0003-passwordvault-separate-repo.md)）。
+`已完成/密碼庫_功能規劃.md` 第 12 節原本把「獨立單機介面版本」列為明確擱置的構想。可選配部件架構（含第二階段自動安裝）落地之後，重新排入規劃，並在這輪 grilling 中決定：不是單純幫既有的 `FileLocker.PasswordLocker` 部件多做一份 UI 外殼，而是把整個密碼庫功能獨立成一個品牌、一個產品——**PasswordVault**，原始碼遷出到獨立 repo（見 [ADR-0003](../../adr/0003-passwordvault-separate-repo.md)）。
 
 FileLocker 本體跟 PasswordVault 的關係，从「FileLocker 的一個可選配部件」重新定位成「FileLocker 是 PasswordVault 的其中一個消費端」——FileLocker.App 要用密碼庫功能，一樣是下載編譯好的核心元件（見第 3 節）動態載入。
 
@@ -163,7 +163,7 @@ PasswordVault 內建 CLI（隨 `PasswordVault.exe` 一起發布、一起編號�
 
 `PasswordVault.Core` 與 `PasswordVault.exe`（含內建 CLI）同一個 repo、同一個版號——因為 `PasswordVault.exe` 編譯期直接內建 `PasswordVault.Core`（見第 3 節），兩者本來就是同一次建置的產物，沒有獨立編號的必要，版號從 `0.1.0` 起算（沿用現有 `FileLocker.PasswordLocker` 的既有慣例）。
 
-`FileLocker.App` 下載使用的部件版本，維持「版號各自獨立」——這是既有慣例（見 `密碼庫_功能規劃.md`），FileLocker 本體發新版不代表部件也要跟著出新版，PasswordVault 獨立化後這個既有規則不變。
+`FileLocker.App` 下載使用的部件版本，維持「版號各自獨立」——這是既有慣例（見 `已完成/密碼庫_功能規劃.md`），FileLocker 本體發新版不代表部件也要跟著出新版，PasswordVault 獨立化後這個既有規則不變。
 
 ## 14. 單一執行個體 Mutex／系統匣圖示
 

@@ -15,6 +15,7 @@
 - [7. 資料遷移](#7-資料遷移)
 - [8. 瀏覽器擴充功能／Native Messaging Host 共存](#8-瀏覽器擴充功能native-messaging-host-共存)
   - [8.1 實測發現的缺口：兩邊各自的 NativeHost.exe 副本與註冊表互相打架（2026-08-26）](#81-實測發現的缺口兩邊各自的-nativehostexe-副本與註冊表互相打架2026-08-26)
+  - [8.2 登錄機碼由誰寫：兩邊都寫，靠「內容一致」取代協商（2026-09-04 定案並實作）](#82-登錄機碼由誰寫兩邊都寫靠內容一致取代協商2026-09-04-定案並實作)
 - [9. 發布方式](#9-發布方式)
 - [10. Repo 遷移的實際步驟](#10-repo-遷移的實際步驟)
 - [11. 安裝程式打包](#11-安裝程式打包)
@@ -133,9 +134,36 @@ FileLocker 本體 UI 上「密碼庫」分頁的中文名稱維持不變——�
 **實作完成（2026-08-26，同一天稍晚）**：共用位置固定為 `%LocalAppData%\PasswordVault\NativeHost\`。
 
 - `FileLocker.App`：`PasswordLockerNativeHostRegistrar` 新增 `SharedExePath`（固定回傳共用路徑字串，不檢查檔案是否存在）與 `EnsureSharedExeCopied`（誰先啟動就把 `plugins/PasswordLocker/` 底下所有 `PasswordVault.NativeHost.*` 檔案複製到共用位置，共用位置已經有檔案就什麼都不做，不比對版本新舊）；manifest 的 `path` 欄位改寫共用路徑。`App.xaml.cs` 建構 `PasswordLockerNativePipeServer` 時的 `expectedClientExePath` 也改傳 `SharedExePath`。
-- `PasswordVault.App`：新增 `PasswordVaultNativeHostSync`（同一套邏輯的獨立實作，因為兩個 repo 沒有共用程式碼），`App.xaml.cs` 啟動時呼叫 `EnsureCopiedFrom(AppContext.BaseDirectory)` 後，`PasswordVaultNativePipeServer` 的 `expectedClientExePath` 改傳 `SharedExePath`。**這裡刻意沒有一併補上 `PasswordVault.exe` 自己的登錄檔／manifest 寫入邏輯**——那是待辦事項另一個獨立缺口（見下方待辦事項一節），目前只有 `FileLocker.App` 會寫登錄檔，這次只需要確保它寫入的 `path` 指向共用位置即可收斂一致，不需要 `PasswordVault.exe` 也重複寫一次登錄檔。
+- `PasswordVault.App`：新增 `PasswordVaultNativeHostSync`（同一套邏輯的獨立實作，因為兩個 repo 沒有共用程式碼），`App.xaml.cs` 啟動時呼叫 `EnsureCopiedFrom(AppContext.BaseDirectory)` 後，`PasswordVaultNativePipeServer` 的 `expectedClientExePath` 改傳 `SharedExePath`。當時未一併補上 `PasswordVault.exe` 自己的登錄檔／manifest 寫入邏輯，理由是「只有 `FileLocker.App` 會寫登錄檔，這次只需要確保它寫入的 `path` 指向共用位置即可收斂一致」。那個理由只在使用者兩邊都裝、而且密碼庫部件也裝好的情況下成立——2026-09-04 的虛擬機實測顯示其餘情況下根本沒有任何一方會寫登錄機碼，瀏覽器整合完全不會運作。補上的方式見第 8.2 節。
 - 實測：先靜默啟動 `FileLocker.exe --startup`，確認共用資料夾被建立、四個檔案（`.exe`/`.dll`/`.deps.json`/`.runtimeconfig.json`）都複製過去、manifest 的 `path` 欄位正確指向共用路徑；關掉後再啟動 `PasswordVault.exe --startup`，確認共用資料夾已存在時不會重複複製、程式正常啟動不崩潰。`dotnet test` 兩邊都全數通過（FileLocker 349 個、PasswordVault 159 個）。
 - **尚未驗證**：兩邊 App 同時開著、透過真實 Chrome 擴充功能實際觸發一次自動填入，確認不再出現「Pipe is broken」——這一步需要瀏覽器環境與已載入的擴充功能，留給使用者實機操作確認。
+
+### 8.2 登錄機碼由誰寫：兩邊都寫，靠「內容一致」取代協商（2026-09-04 定案並實作）
+
+第 8.1 節解掉的是「轉接程式的實體檔案與路徑」那一半。剩下的一半是**登錄機碼本身只有一個值，而兩邊都想寫**——`FileLocker.App` 過去是唯一會寫的一方，`PasswordVault.exe` 完全沒有對應邏輯。
+
+這個缺口的實際嚴重性在 2026-09-04 的虛擬機實測中被確認：在一台乾淨的 Windows 11 上安裝正式的 `FileLocker v2.1.1` 與 `PasswordVault v0.1.0`，兩個 App 以兩種順序輪流啟動共四次，`HKCU\Software\Google\Chrome\NativeMessagingHosts\com.filelocker.passwordlocker` **從頭到尾沒有被建立過**。原因是 `FileLocker.App` 只有在密碼庫部件已安裝時才註冊，而該環境沒有網路、也還沒有符合命名規則的部件 Release 資產可以下載。也就是說這個缺口不是「只裝 PasswordVault 的人會不方便」，而是**那些情況下瀏覽器整合完全不會運作**。
+
+**定案：兩邊都寫，但寫出來的內容必須逐位元組相同。** 內容相同的話，「最後啟動的一方贏」就不再產生任何差異，不需要發明一套跨行程的協商機制（誰先誰後、誰讓誰、如何交接）——跟第 8 節拒絕「強制接手 Pipe」、ADR-0001 拒絕「擁有權轉移」是同一種判斷：不為了邊緣情境換取不成比例的架構成本。為了讓「內容相同」成立，以下三點是必要條件：
+
+1. **manifest 檔案也搬到共用位置**（`%LocalAppData%\PasswordVault\NativeHost\com.filelocker.passwordlocker.json`），不再放在 `%LocalAppData%\FileLocker\NativeMessagingHost\`。除了讓兩邊寫同一個檔案之外，還修掉一個實際的洞：manifest 放在 FileLocker 自己的資料夾時，使用者移除 FileLocker、只留 PasswordVault，登錄機碼會指著一個已經被刪掉的檔案，而 PasswordVault 不會去修它。舊位置的殘留檔案由新版 `FileLocker.App` 順手刪除——擴充功能的排查說明曾經要使用者去看那個路徑，留著一份內容過時的檔案會讓排查時判斷錯誤。
+2. **manifest 的 `description` 欄位不帶任何一邊的品牌**（固定為「密碼庫瀏覽器整合（Native Messaging Host）」）。寫成「FileLocker 密碼庫瀏覽器整合」這種帶自己品牌的版本，會讓兩邊各寫各的、內容不一致，重新退化成「最後寫的贏」。這個字串只出現在 manifest 檔案裡，使用者介面上看不到，不需要雙語版本。
+3. **`allowed_origins` 用併集，不是整欄覆蓋**。兩邊各自帶著不同的擴充功能識別碼時（例如上架 Chrome 線上應用程式商店拿到正式識別碼、其中一邊還沒跟著更新），整欄覆蓋會讓 manifest 在兩個值之間來回震盪：今天 A 先啟動就寫 A 的、明天 B 先啟動就寫 B 的，而且兩種狀態下都有一邊的擴充功能連不上。這個欄位本來就是陣列，改成「把自己的識別碼併進去」就沒有震盪可言。代價是舊識別碼會一直留著、沒有清除機制——這是接受的取捨：識別碼由擴充功能的簽署金鑰決定，而那把金鑰在使用者自己手上，留著一個不再使用的識別碼的風險，遠小於「兩邊互相把對方擦掉」造成的功能失效。要清除時直接刪掉 manifest 檔案，下次啟動會重建。
+
+識別碼清單輸出前先排序，序列化選項固定（縮排開啟、屬性順序照宣告順序），否則兩邊即使拿到同一組識別碼也會算出不同的位元組。
+
+**共用轉接程式改為比對版本**。第 8.1 節當時定的規則是「共用位置有檔案就什麼都不做，不比對版本新舊」，在當時是對的——目標只是讓兩邊指向同一個地址。但它的後果是共用位置永遠停在最早安裝的那個版本，之後任何一邊修好了轉接程式都送不過去。改為「手上這份比較新才覆蓋」；判斷不了新舊時傾向不動（覆蓋可能把新的換成舊的，維持現狀至少不會讓已經正常運作的組合退化），唯一的例外是「共用位置那份讀不出版本」——認不出身分的檔案沒辦法保證完整可用（例如上一次複製到一半被中斷），換成一個版本明確的副本比留著一個來歷不明的好。複製失敗（最常見是瀏覽器正好把轉接程式叫起來、檔案被占用）安靜放棄，下次啟動再試。
+
+**實作位置**：兩邊各有一份對等的獨立副本（`FileLocker.App/NativeHostRegistration.cs` 與 `PasswordVault.App/NativeHostRegistration.cs`），因為兩個 repo 沒有共用程式碼（ADR-0003）。「該寫什麼內容」與「該不該換掉共用位置那份」被抽成不碰登錄檔、不碰檔案系統的純計算，兩邊各自都有一份守住同一組行為的測試（各 17 個）——原本的 `EnsureRegistered` 把判斷與寫入綁在一起，測一次就得真的動使用者的登錄檔。**任何一邊改了 manifest 的欄位、順序、說明文字或序列化選項，另一邊要跟著改**，否則協調會無聲失效。
+
+**實測驗證（2026-09-04，Windows 11 25H2 繁體中文虛擬機，乾淨快照）**：
+
+- 只啟動 `PasswordVault.exe`：登錄機碼被建立，指向共用位置的 manifest，內容正確。
+- 接著啟動 `FileLocker.exe`（已手動組好密碼庫部件）：登錄機碼與 manifest 內容完全不變，舊位置的殘留檔案被清除。
+- 反過來先啟動 `FileLocker.exe` 再啟動 `PasswordVault.exe`：結果相同。
+- 照 Chrome 的規矩（4 位元組長度前綴 + UTF-8 JSON）驅動登錄機碼指到的那支轉接程式，送出 `findPasswordLockerCredentialsForDomain`，收到 `findPasswordLockerCredentialsForDomainResult` 正常回應，不再是 `Pipe is broken`。兩種啟動順序皆然。
+
+驗證方法不使用 Chrome：Chrome 在這條路徑上只做兩件事——從登錄機碼查出轉接程式的路徑、把它啟動起來並以固定格式對話——直接照同一套規矩驅動，測到的是完全同一條路徑，且不需要在無網路的測試環境裡設法安裝瀏覽器與側載擴充功能。**驅動轉接程式的行程必須用一般權限**：用已提升的權限啟動時，一般權限的宿主程式讀不到高權限行程的模組路徑，`VerifyClientIsExpectedHost` 的反查被系統拒絕而回報「對不上」，症狀跟真正的路徑不符完全一樣（都是 `Pipe is broken`），這一輪實際踩到過。
 
 ## 9. 發布方式
 
@@ -224,12 +252,11 @@ PasswordVault_v{PasswordVault.Core 自己的版本}_for-FileLocker-{相容最小
 
 ## 待辦事項
 
-- **`PasswordVault.exe` 自己的 Native Messaging Host 註冊機制尚未實作**：目前只有 `PasswordVaultNativePipeServer`（Named Pipe Server 本體）遷移過來，對應的「寫入 `com.filelocker.passwordlocker.json` manifest、登記 `HKCU\Software\Google\Chrome\NativeMessagingHosts\...`」這一段（比照 `FileLocker.App` 那邊的 `PasswordLockerNativeHostRegistrar`）還沒有 `PasswordVault` 自己的版本——見 `PasswordVault.Extension/README.md` 已經記錄的同一個缺口。
-  - **實際觀察到的症狀**（2026-08-26）：目前登記在 Chrome 底下的 manifest 路徑，是先前某次跑 `FileLocker.App` Debug 建置時寫下的舊路徑，跟使用者實際在跑的 `PasswordVault.exe`（或 Program Files 安裝版 `FileLocker.exe`，該台機器上這個安裝版根本沒裝密碼庫部件）路徑都對不上。兩邊 Pipe Server 各自的 `VerifyClientIsExpectedHost` 安全檢查會因為路徑不符直接切斷連線，瀏覽器擴充功能收到「Pipe is broken」；且因為兩邊搶同一條 Named Pipe（見第 8 節），這次連線被哪一邊接走帶有隨機性，導致「時好時壞」。
-  - **How to apply**：補這塊時要一併考慮「兩邊都能各自正確註冊、但只有一份 manifest 位置」的情境——目前設計是後啟動的一方發現 Pipe 已被佔用就不再起自己的 Server（第 8 節），但**登錄機碼／manifest 路徑該由誰寫、寫誰的 exe 路徑**這件事目前完全沒定案，需要在動工前先想清楚，不然會重演這次「manifest 指向的路徑，兩邊實際在跑的程式都對不上」的狀況。
+- **PasswordVault 的 Release 打包流程尚未真正產出符合資產命名規則（`PasswordVault_v{版本}_for-FileLocker-{相容區間}.zip`）的 zip**：`FileLocker.App` 從 `lx-kvn/PasswordVault` Release 自動下載、切換部件來源這條路徑，目前只驗證到程式碼層級。這條沒完成的直接後果之一，在 2026-09-04 的虛擬機實測中出現：無法用正式流程把密碼庫部件裝進 FileLocker，只能照 `CLAUDE.md` 記載的手動步驟把檔案組進 `plugins/PasswordLocker/` 才驗得到 FileLocker 那側的註冊行為。
 
 ## 已完成之待辦
 
+- **`PasswordVault.exe` 自己的 Native Messaging Host 註冊機制**：已定案並實作（2026-09-04），見第 8.2 節。原本只有 `FileLocker.App` 那側會寫登錄機碼，而它又只在密碼庫部件已安裝時才寫，因此只裝 PasswordVault、或裝了 FileLocker 但沒裝部件的使用者，瀏覽器擴充功能連要把轉接程式啟動起來都做不到。
 - 資料遷移失敗的處理細節：已定案並實作——複製不刪舊檔、新舊路徑都有資料時新路徑優先安靜略過，見 `PasswordVault` repo 的 `LegacyDataMigration`。
 - `mac-style-windows-installer` 設定檔的實際欄位：已完成，見 `PasswordVault` repo 的 `installer/passwordvault_installer.json`，`no_admin_install` 模式、雙語 EULA、實測打包成功。
 - CLI 指令集的實際語法：已定案並實作——`PasswordVault.Cli` 提供 `--list`／`--get` 兩個指令，只支援互動式輸入主密碼。
